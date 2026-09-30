@@ -17,8 +17,16 @@ def configure_webengine() -> None:
         os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{flags} --disable-gpu".strip()
 
 
+def configure_decorations() -> None:
+    """COSMIC asks Qt to draw its own title bar. The default "bradient" decoration
+    paints a rounded, antialiased frame that leaves see-through slivers along the
+    window edges at fractional scales, so prefer the "adwaita" decoration."""
+    os.environ.setdefault("QT_WAYLAND_DECORATION", "adwaita")
+
+
 def main() -> int:
     configure_webengine()
+    configure_decorations()
     app = QApplication(sys.argv)
     app.setApplicationName("study-reader")
     app.setApplicationDisplayName("Study Reader")
