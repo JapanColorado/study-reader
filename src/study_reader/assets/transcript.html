@@ -1,0 +1,96 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="katex/katex.min.css">
+<script src="katex/katex.min.js"></script>
+<script src="markdown-it.min.js"></script>
+<style>
+  :root { --bg:#fbfaf8; --fg:#1f1e1c; --muted:#6b6862; --user:#efece6; --border:#dedad2; --accent:#b8562f; --code:#f1eee8; }
+  :root[data-theme="dark"] { --bg:#1f1e1d; --fg:#ece9e2; --muted:#a09c94; --user:#2d2b29; --border:#3d3a37; --accent:#e08a63; --code:#2a2826; }
+  html, body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.55 system-ui, sans-serif; }
+  #log { padding:12px 14px 24px; }
+  .empty { color:var(--muted); text-align:center; margin-top:40px; }
+  .msg { margin:0 0 14px; overflow-wrap:anywhere; }
+  .msg.user { background:var(--user); border-radius:10px; padding:8px 12px; }
+  .msg.error { color:#c0392b; border:1px solid #c0392b; border-radius:8px; padding:8px 12px; }
+  .msg p { margin:0.4em 0; }
+  .msg > :first-child, .body > :first-child { margin-top:0; }
+  .msg > :last-child, .body > :last-child { margin-bottom:0; }
+  a.snip { display:block; text-decoration:none; color:var(--muted); border-left:3px solid var(--accent);
+           padding:2px 0 2px 10px; margin:0 0 8px; font-size:13px; cursor:pointer; }
+  a.snip:hover { color:var(--fg); }
+  a.snip .loc { display:block; font-size:11px; color:var(--accent); }
+  a.snip .quote { display:-webkit-box; -webkit-line-clamp:6; -webkit-box-orient:vertical; overflow:hidden; white-space:pre-wrap; }
+  a.snip img { max-width:100%; max-height:220px; border:1px solid var(--border); border-radius:4px; display:block; }
+  pre { background:var(--code); padding:10px; border-radius:6px; overflow-x:auto; }
+  code { background:var(--code); padding:1px 4px; border-radius:4px; font-size:13px; }
+  pre code { padding:0; background:none; }
+  table { border-collapse:collapse; } th, td { border:1px solid var(--border); padding:3px 8px; }
+  blockquote { border-left:3px solid var(--border); margin:0.4em 0; padding-left:10px; color:var(--muted); }
+  .katex-display { overflow-x:auto; overflow-y:hidden; }
+  .cursor::after { content:"▍"; color:var(--accent); animation:blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity:0; } }
+</style>
+</head>
+<body>
+<div id="log"></div>
+<script>
+const md = markdownit({ html: false, linkify: true });
+const MATH = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|\$(?!\s)([^$\n]+?)(?<!\s)\$(?!\d)/g;
+const CODE = /(```[\s\S]*?(?:```|$)|`[^`\n]*`)/;
+
+function esc(s) { return s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+// Math is lifted out before Markdown runs so underscores and backslashes survive.
+function renderMarkdown(src) {
+  const store = [];
+  const parts = src.split(CODE).map((part, i) => {
+    if (i % 2) return part;
+    return part.replace(MATH, (m, d1, d2, i1, i2) => {
+      const display = d1 !== undefined || d2 !== undefined;
+      store.push({ tex: d1 ?? d2 ?? i1 ?? i2, display });
+      return `@@MATH${store.length - 1}@@`;
+    });
+  });
+  return md.render(parts.join("")).replace(/@@MATH(\d+)@@/g, (m, n) => {
+    const { tex, display } = store[+n];
+    try { return katex.renderToString(tex, { displayMode: display, throwOnError: false }); }
+    catch (e) { return esc(tex); }
+  });
+}
+
+function snippetHtml(s) {
+  const loc = `<span class="loc">p. ${s.page + 1} · jump to source</span>`;
+  const body = s.kind === "image" ? `<img src="${esc(s.image_url)}">` : `<span class="quote">${esc(s.text)}</span>`;
+  return `<a class="snip" href="jump://snippet/${s.id}">${loc}${body}</a>`;
+}
+
+function messageHtml(m) {
+  if (m.role === "user")
+    return `<div class="msg user">${(m.snippets || []).map(snippetHtml).join("")}<div class="body">${renderMarkdown(m.text)}</div></div>`;
+  if (m.role === "error") return `<div class="msg error">${esc(m.text)}</div>`;
+  return `<div class="msg assistant">${renderMarkdown(m.text)}</div>`;
+}
+
+function render(data) {
+  document.documentElement.dataset.theme = data.dark ? "dark" : "light";
+  const log = document.getElementById("log");
+  let html = data.messages.map(messageHtml).join("");
+  if (!data.messages.length) html = `<div class="empty">${esc(data.placeholder || "")}</div>`;
+  if (data.streaming !== null) html += `<div class="msg assistant" id="stream"></div>`;
+  log.innerHTML = html;
+  if (data.streaming !== null) setStreaming(data.streaming);
+  else window.scrollTo(0, document.body.scrollHeight);
+}
+
+function setStreaming(text) {
+  const el = document.getElementById("stream");
+  if (!el) return;
+  const atBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 40;
+  el.innerHTML = text ? renderMarkdown(text) : `<span class="cursor"></span>`;
+  if (atBottom) window.scrollTo(0, document.body.scrollHeight);
+}
+</script>
+</body>
+</html>

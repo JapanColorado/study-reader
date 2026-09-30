@@ -1,0 +1,25 @@
+[workspace]
+name = "study-reader"
+version = "0.1.0"
+description = "PDF/EPUB reader with per-snippet Claude chats sharing the book as context"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[dependencies]
+python = "3.12.*"
+
+[pypi-dependencies]
+pyside6 = ">=6.7"
+pymupdf = ">=1.24"
+claude-agent-sdk = "*"
+pytest = "*"
+
+[activation.env]
+PYTHONPATH = "$PIXI_PROJECT_ROOT/src"
+
+[tasks]
+app = "python -m study_reader"
+test = "pytest -q tests"
+# Live check of priming + forking; makes real Claude requests.
+check-claude = "python scripts/check_forking.py"
+install-desktop = "install -Dm644 study-reader.desktop ~/.local/share/applications/study-reader.desktop"
