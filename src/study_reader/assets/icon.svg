@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#d9784a"/>
+      <stop offset="1" stop-color="#a8431d"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fffaf2"/>
+      <stop offset="1" stop-color="#f3e9da"/>
+    </linearGradient>
+  </defs>
+  <rect x="12" y="12" width="232" height="232" rx="56" fill="url(#tile)"/>
+  <rect x="12" y="12" width="232" height="232" rx="56" fill="none" stroke="#ffffff" stroke-opacity="0.12" stroke-width="2"/>
+
+  <!-- cover peeking out beneath the pages -->
+  <path d="M128 204 C104 190 72 186 38 190 L38 76 L50 72 L50 178 C80 174 106 180 128 192 C150 180 176 174 206 178 L206 72 L218 76 L218 190 C184 186 152 190 128 204 Z"
+        fill="#7a2e12" fill-opacity="0.55"/>
+  <!-- pages -->
+  <path d="M128 76 C106 62 78 58 50 62 L50 178 C80 174 106 180 128 192 Z" fill="url(#paper)"/>
+  <path d="M128 76 C150 62 178 58 206 62 L206 178 C176 174 150 180 128 192 Z" fill="url(#paper)"/>
+  <path d="M128 76 L128 192" stroke="#dccbb3" stroke-width="3"/>
+
+  <!-- text lines, one highlighted -->
+  <g stroke="#d6c6b0" stroke-width="6" stroke-linecap="round" fill="none">
+    <path d="M66 94 C84 91 100 92 114 97"/>
+    <path d="M66 138 C84 135 100 136 114 141"/>
+    <path d="M66 160 C80 158 92 158 102 161"/>
+    <path d="M142 97 C156 92 172 91 190 94"/>
+  </g>
+  <rect x="58" y="106" width="64" height="20" rx="5" fill="#f5c542" transform="rotate(3 90 116)"/>
+  <path d="M66 116 C84 113 100 114 114 119" stroke="#b08a2e" stroke-width="6" stroke-linecap="round" fill="none"/>
+
+  <!-- chat bubble -->
+  <path d="M166 124 H210 A22 22 0 0 1 232 146 V164 A22 22 0 0 1 210 186 H180 L156 205 L161 184 A22 22 0 0 1 144 164 V146 A22 22 0 0 1 166 124 Z"
+        fill="#ffffff" stroke="#b9502a" stroke-width="7" stroke-linejoin="round"/>
+  <g fill="#c35a30">
+    <circle cx="170" cy="155" r="6"/>
+    <circle cx="188" cy="155" r="6"/>
+    <circle cx="206" cy="155" r="6"/>
+  </g>
+</svg>

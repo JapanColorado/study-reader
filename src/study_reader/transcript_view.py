@@ -6,10 +6,11 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QPalette
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWidgets import QApplication
+
+from .theme import theme
 
 ASSETS = Path(__file__).parent / "assets"
 
@@ -38,6 +39,7 @@ class TranscriptView(QWebEngineView):
         page = _Page(self)
         page.jump.connect(self.jumpRequested)
         self.setPage(page)
+        page.setBackgroundColor(QColor(theme().colors["surface"]))
         self._ready = False
         self._pending: str | None = None
         self._stream_text = ""
@@ -48,7 +50,7 @@ class TranscriptView(QWebEngineView):
 
     def show_messages(self, messages: list[dict], streaming: str | None = None, placeholder: str = "") -> None:
         """streaming: None when idle, else the reply text received so far."""
-        dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
+        self.page().setBackgroundColor(QColor(theme().colors["surface"]))
         out = []
         for m in messages:
             snippets = [
@@ -59,7 +61,8 @@ class TranscriptView(QWebEngineView):
                 for s in m.get("snippets", [])
             ]
             out.append({"role": m["role"], "text": m["text"], "snippets": snippets})
-        data = {"messages": out, "streaming": streaming, "placeholder": placeholder, "dark": dark}
+        data = {"messages": out, "streaming": streaming, "placeholder": placeholder,
+                "dark": theme().dark, "colors": theme().colors}
         self._run(f"render({json.dumps(data)})")
 
     def set_streaming(self, text: str) -> None:

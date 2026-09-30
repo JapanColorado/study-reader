@@ -6,6 +6,7 @@ from study_reader import chat_service as cs
 from study_reader import claude_client as cc
 from study_reader.db import Database
 from study_reader.document import Document, Word, file_hash, line_rects, nearest_word, select_range, words_text
+from study_reader.theme import darken_page
 
 
 # -- db ---------------------------------------------------------------------------
@@ -31,6 +32,45 @@ def test_db_roundtrip(tmp_path):
 
     db.delete_book(book["id"])
     assert db.chats(book["id"]) == [] and db.messages(chat) == []
+
+
+def test_book_snippets_and_chat_model(tmp_path):
+    db = Database(tmp_path / "t.db")
+    book = db.upsert_book("h1", "/a.pdf", "A", 10)
+    other = db.upsert_book("h2", "/b.pdf", "B", 10)
+    a = db.create_chat(book["id"], "first", "opus")
+    b = db.create_chat(book["id"], "second")
+    db.add_message(a, "user", "q", [{"kind": "text", "page": 1, "text": "x", "rects": [[0, 0, 5, 5]]}])
+    db.add_message(b, "user", "q", [{"kind": "image", "page": 2, "image_path": "/i.png", "rects": [[1, 1, 9, 9]]}])
+    db.add_message(db.create_chat(other["id"], "elsewhere"), "user", "q", [{"kind": "text", "page": 0, "text": "y"}])
+    snips = db.book_snippets(book["id"])
+    assert [(s["chat_id"], s["page"], s["rects"]) for s in snips] == [(a, 1, [[0, 0, 5, 5]]), (b, 2, [[1, 1, 9, 9]])]
+    assert db.chat(a)["model"] == "opus" and db.chat(b)["model"] == ""
+    db.update_chat(b, title="renamed", model="haiku")
+    assert (db.chat(b)["title"], db.chat(b)["model"]) == ("renamed", "haiku")
+    db.delete_chat(a)
+    assert [s["chat_id"] for s in db.book_snippets(book["id"])] == [b]
+
+
+def test_old_database_gets_chat_model_column(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+        CREATE TABLE books (id INTEGER PRIMARY KEY, hash TEXT UNIQUE NOT NULL, path TEXT NOT NULL, title TEXT NOT NULL,
+            page_count INTEGER NOT NULL DEFAULT 0, last_page INTEGER NOT NULL DEFAULT 0, zoom REAL NOT NULL DEFAULT 0,
+            base_session_id TEXT, context_mode TEXT, opened_at REAL NOT NULL);
+        CREATE TABLE chats (id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL, title TEXT NOT NULL, session_id TEXT,
+            created_at REAL NOT NULL, updated_at REAL NOT NULL);
+        CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO books VALUES (1, 'h', '/a.pdf', 'A', 1, 0, 0, NULL, NULL, 0);
+        INSERT INTO chats VALUES (1, 1, 'old chat', NULL, 0, 0);
+        INSERT INTO settings VALUES ('model', 'sonnet');
+    """)
+    conn.commit()
+    conn.close()
+    db = Database(path)
+    assert db.chat(1)["model"] == "sonnet"  # keeps the model it was used with
 
 
 # -- document ---------------------------------------------------------------------
@@ -215,3 +255,13 @@ def test_other_failures_are_reported(monkeypatch, service, pdf_path):
     run_job(svc, events, chat_id=1, book=book(pdf_path), chat_session_id=None)
     assert events[-1] == ("failed", 1, "not logged in")
     assert not any(e[0] == "base" for e in events)
+
+
+# -- theme ------------------------------------------------------------------------
+def test_darken_page_keeps_hue():
+    # white, black, a blue and an orange; stride padded to check it is honored
+    pixels = bytes([255, 255, 255, 0, 0, 0, 51, 119, 230, 242, 153, 51]) + b"\0\0"
+    out = darken_page(pixels, 4, 1, 14, "#201e1c", "#dcd7ce")
+    px = [tuple(out[i:i + 3]) for i in range(0, 12, 3)]
+    assert px[0] == (0x20, 0x1E, 0x1C) and px[1] == (0xDC, 0xD7, 0xCE)
+    assert px[2][2] > px[2][0] and px[3][0] > px[3][2]  # blue stays blue, orange stays orange

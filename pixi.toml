@@ -13,6 +13,7 @@ pyside6 = ">=6.7"
 pymupdf = ">=1.24"
 claude-agent-sdk = "*"
 pytest = "*"
+numpy = ">=2.5.3, <3"
 
 [activation.env]
 PYTHONPATH = "$PIXI_PROJECT_ROOT/src"
@@ -22,4 +23,4 @@ app = "python -m study_reader"
 test = "pytest -q tests"
 # Live check of priming + forking; makes real Claude requests.
 check-claude = "python scripts/check_forking.py"
-install-desktop = "install -Dm644 study-reader.desktop ~/.local/share/applications/study-reader.desktop"
+install-desktop = "install -Dm644 study-reader.desktop ~/.local/share/applications/study-reader.desktop && install -Dm644 src/study_reader/assets/icon.svg ~/.local/share/icons/hicolor/scalable/apps/study-reader.svg"

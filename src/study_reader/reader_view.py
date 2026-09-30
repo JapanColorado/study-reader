@@ -1,4 +1,5 @@
-"""Continuous-scroll page view with text selection and screenshot-region capture."""
+"""Continuous-scroll page view with text selection, screenshot-region capture, and
+highlights on every passage that has been asked about."""
 
 from __future__ import annotations
 
@@ -7,9 +8,10 @@ from collections import OrderedDict
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QKeySequence, QPainter, QPen
-from PySide6.QtWidgets import QAbstractScrollArea, QFrame, QHBoxLayout, QPushButton
+from PySide6.QtWidgets import QAbstractScrollArea, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QPushButton
 
 from .document import Document, Word, line_rects, select_range, words_text
+from .theme import darken_page, theme
 
 GAP = 14
 MARGIN = 16
@@ -19,6 +21,12 @@ MIN_ZOOM, MAX_ZOOM = 0.4, 4.0
 
 SELECT_COLOR = QColor(60, 130, 230, 90)
 FLASH_COLOR = QColor(255, 200, 40, 110)
+SHADOW = [(3, 10), (2, 14), (1, 22)]  # (spread px, alpha), outermost first
+# Highlighter ink: multiplied onto light pages, screened onto dark ones, so text stays legible.
+MARK_LIGHT = (QColor(255, 228, 130), QColor(255, 204, 80))  # (normal, hovered)
+MARK_DARK = (QColor(80, 62, 22), QColor(125, 95, 30))
+FRAME_COLOR = (QColor(232, 168, 40), QColor(214, 130, 20))  # screenshot regions: (normal, hovered)
+CLICK_SLOP = 4  # px a press may move and still count as a click
 
 
 class ReaderView(QAbstractScrollArea):
@@ -26,6 +34,7 @@ class ReaderView(QAbstractScrollArea):
     snippetChosen = Signal(dict, bool)
     pageChanged = Signal(int)
     zoomChanged = Signal(float)
+    highlightClicked = Signal(list, QPoint)  # snippets under the click, global position
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -44,20 +53,27 @@ class ReaderView(QAbstractScrollArea):
         self._region: tuple[int, tuple[float, float, float, float]] | None = None
         self._flash: tuple[int, list] | None = None
         self._page = 0
+        self._marks: dict[int, list[dict]] = {}  # page -> dict(kind, rects, snippets)
+        self._hover: list[dict] = []
+        self._press: QPointF | None = None
 
-        self.viewport().setMouseTracking(False)
+        self.viewport().setMouseTracking(True)
         self.viewport().setCursor(Qt.CursorShape.IBeamCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
-        self._popup = QFrame(self.viewport())
-        self._popup.setFrameShape(QFrame.Shape.StyledPanel)
-        self._popup.setAutoFillBackground(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        theme().changed.connect(self.viewport().update)
+
+        self._popup = QFrame(self.viewport(), objectName="popup")
         self._popup.setCursor(Qt.CursorShape.ArrowCursor)
+        shadow = QGraphicsDropShadowEffect(self._popup, blurRadius=24, offset=QPointF(0, 4))
+        shadow.setColor(QColor(0, 0, 0, 70))
+        self._popup.setGraphicsEffect(shadow)
         row = QHBoxLayout(self._popup)
-        row.setContentsMargins(4, 4, 4, 4)
+        row.setContentsMargins(6, 6, 6, 6)
         row.setSpacing(4)
         ask = QPushButton("Ask in new chat")
-        ask.setDefault(True)
+        ask.setProperty("primary", True)
         ask.clicked.connect(lambda: self.choose(True))
         add = QPushButton("Add to current chat")
         add.clicked.connect(lambda: self.choose(False))
@@ -71,6 +87,7 @@ class ReaderView(QAbstractScrollArea):
     def set_document(self, doc: Document | None, page: int = 0, zoom: float | None = None) -> None:
         self.doc = doc
         self._cache.clear()
+        self._marks, self._hover = {}, []
         self.clear_selection()
         self._sizes = [doc.page_size(i) for i in range(doc.page_count)] if doc else []
         # zoom <= 0 (or None) means "fit width", the default for new books.
@@ -135,6 +152,39 @@ class ReaderView(QAbstractScrollArea):
         first = max(bisect.bisect_right(self._tops, top) - 1, 0)
         last = bisect.bisect_right(self._tops, top + self.viewport().height()) - 1
         return range(first, min(last, len(self._tops) - 1) + 1)
+
+    # -- highlights ----------------------------------------------------------------
+    def set_highlights(self, snippets: list[dict]) -> None:
+        """snippets: db rows (page, kind, rects, chat_id, ...). Identical passages share one mark."""
+        groups: dict[tuple, dict] = {}
+        for sn in snippets:
+            key = (sn["page"], tuple(map(tuple, sn["rects"])))
+            groups.setdefault(key, {"kind": sn["kind"], "rects": sn["rects"], "snippets": []})["snippets"].append(sn)
+        self._marks = {}
+        for (page, _), mark in groups.items():
+            self._marks.setdefault(page, []).append(mark)
+        self._hover = []
+        self.viewport().update()
+
+    def _marks_at(self, pos: QPointF) -> list[dict]:
+        hit = self._hit(pos)
+        if hit is None:
+            return []
+        page, x, y = hit
+        rect = self._page_rect(page)
+        if not rect.contains(pos):
+            return []
+        return [
+            m for m in self._marks.get(page, [])
+            if any(r[0] - 1 <= x <= r[2] + 1 and r[1] - 1 <= y <= r[3] + 1 for r in m["rects"])
+        ]
+
+    def snippet_from(self, sn: dict) -> dict:
+        """A saved snippet, rebuilt in the form snippetChosen emits."""
+        png = None
+        if sn["kind"] == "image" and self.doc and sn["rects"]:
+            png = self.doc.render(sn["page"], CAPTURE_SCALE, clip=tuple(sn["rects"][0])).tobytes("png")
+        return {"kind": sn["kind"], "page": sn["page"], "text": sn["text"], "rects": sn["rects"], "png": png}
 
     # -- navigation --------------------------------------------------------------
     def current_page(self) -> int:
@@ -202,11 +252,16 @@ class ReaderView(QAbstractScrollArea):
     # -- painting ------------------------------------------------------------------
     def _image(self, i: int) -> QImage:
         dpr = self.devicePixelRatioF()
-        key = (i, round(self.zoom, 3), dpr)
+        c = theme().colors if theme().pages_dark else None
+        key = (i, round(self.zoom, 3), dpr, c and (c["page_bg"], c["page_fg"]))
         img = self._cache.get(key)
         if img is None:
             pix = self.doc.render(i, self.zoom * dpr)
-            img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888).copy()
+            samples, stride = pix.samples, pix.stride
+            if c:
+                samples = darken_page(samples, pix.width, pix.height, stride, c["page_bg"], c["page_fg"])
+                stride = pix.width * 3
+            img = QImage(samples, pix.width, pix.height, stride, QImage.Format.Format_RGB888).copy()
             self._cache[key] = img
             while len(self._cache) > CACHE_PAGES:
                 self._cache.popitem(last=False)
@@ -220,13 +275,16 @@ class ReaderView(QAbstractScrollArea):
 
     def paintEvent(self, event) -> None:
         p = QPainter(self.viewport())
-        p.fillRect(self.viewport().rect(), self.palette().color(self.backgroundRole()).darker(115))
+        p.fillRect(self.viewport().rect(), QColor(theme().colors["canvas"]))
         if not self.doc:
             return
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         for i in self._visible_pages():
             rect = self._page_rect(i)
+            for spread, alpha in SHADOW:
+                p.fillRect(rect.adjusted(-spread, -spread + 1, spread, spread + 1), QColor(0, 0, 0, alpha))
             p.drawImage(rect, self._image(i))
+            self._paint_marks(p, i, rect)
             for r in line_rects(self._selection.get(i, [])):
                 p.fillRect(self._to_view(rect, r), SELECT_COLOR)
             if self._region and self._region[0] == i:
@@ -237,6 +295,31 @@ class ReaderView(QAbstractScrollArea):
             if self._flash and self._flash[0] == i:
                 for r in self._flash[1]:
                     p.fillRect(self._to_view(rect, r), FLASH_COLOR)
+
+    def _paint_marks(self, p: QPainter, page: int, rect: QRectF) -> None:
+        marks = self._marks.get(page)
+        if not marks:
+            return
+        normal, hovered = MARK_DARK if theme().pages_dark else MARK_LIGHT
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        for m in marks:
+            hover = any(m is h for h in self._hover)
+            if m["kind"] == "image":
+                # A frame just outside the region, so the figure itself stays untouched.
+                p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+                p.setPen(QPen(FRAME_COLOR[hover], 3 if hover else 2))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                for r in m["rects"]:
+                    p.drawRoundedRect(self._to_view(rect, r).adjusted(-4, -4, 4, 4), 4, 4)
+            else:
+                p.setCompositionMode(
+                    QPainter.CompositionMode.CompositionMode_Screen if theme().pages_dark
+                    else QPainter.CompositionMode.CompositionMode_Multiply
+                )
+                for r in m["rects"]:
+                    p.fillRect(self._to_view(rect, r).adjusted(-1, 0, 1, 0), hovered if hover else normal)
+        p.restore()
 
     # -- selection -------------------------------------------------------------------
     def set_region_mode(self, on: bool) -> None:
@@ -270,10 +353,14 @@ class ReaderView(QAbstractScrollArea):
             return
         self.clear_selection()
         self._anchor = self._hit(event.position())
+        self._press = event.position()
         self._dragging = True
 
     def mouseMoveEvent(self, event) -> None:
-        if not self._dragging or not self._anchor:
+        if not self._dragging:
+            self._update_hover(event.position())
+            return
+        if not self._anchor:
             return
         if self.region_mode:
             page, ax, ay = self._anchor
@@ -287,6 +374,15 @@ class ReaderView(QAbstractScrollArea):
         if event.button() != Qt.MouseButton.LeftButton or not self._dragging:
             return
         self._dragging = False
+        if not self.region_mode and self._press is not None and (
+            (event.position() - self._press).manhattanLength() < CLICK_SLOP
+        ):
+            self.clear_selection()
+            marks = self._marks_at(event.position())
+            if marks:
+                snippets = [sn for m in marks for sn in m["snippets"]]
+                self.highlightClicked.emit(snippets, self.viewport().mapToGlobal(event.position().toPoint()))
+            return
         if self._region:
             r = self._region[1]
             if (r[2] - r[0]) * self.zoom < 6 or (r[3] - r[1]) * self.zoom < 6:
@@ -294,6 +390,20 @@ class ReaderView(QAbstractScrollArea):
         if self.has_selection():
             self._show_popup(event.position().toPoint())
         self.viewport().update()
+
+    def _update_hover(self, pos: QPointF) -> None:
+        marks = [] if self.region_mode else self._marks_at(pos)
+        if [id(m) for m in marks] != [id(m) for m in self._hover]:
+            self._hover = marks
+            self.viewport().update()
+        if not self.region_mode:
+            self.viewport().setCursor(Qt.CursorShape.PointingHandCursor if marks else Qt.CursorShape.IBeamCursor)
+
+    def leaveEvent(self, event) -> None:
+        if self._hover:
+            self._hover = []
+            self.viewport().update()
+        super().leaveEvent(event)
 
     def _show_popup(self, pos: QPoint) -> None:
         self._copy_btn.setVisible(bool(self._selection))

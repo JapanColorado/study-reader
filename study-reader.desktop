@@ -3,6 +3,7 @@ Type=Application
 Name=Study Reader
 Comment=PDF/EPUB reader with per-snippet Claude chats
 Exec=/home/russell/.pixi/bin/pixi run --manifest-path /home/russell/Projects/study-reader/pixi.toml app %f
+Icon=study-reader
 Terminal=false
 Categories=Office;Viewer;Education;
 MimeType=application/pdf;application/epub+zip;

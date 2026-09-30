@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS chats (
     book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
     session_id TEXT,
+    model TEXT NOT NULL DEFAULT '', -- '' = the Claude Code default
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -65,7 +66,17 @@ class Database:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(chats)")}
+        if "model" not in cols:
+            # Existing chats keep the model that was selected globally before chats had their own.
+            self.conn.execute("ALTER TABLE chats ADD COLUMN model TEXT NOT NULL DEFAULT ''")
+            self.conn.execute(
+                "UPDATE chats SET model=COALESCE((SELECT value FROM settings WHERE key='model'), '')"
+            )
 
     # -- books ---------------------------------------------------------------
     def upsert_book(self, hash: str, path: str, title: str, page_count: int) -> sqlite3.Row:
@@ -93,12 +104,12 @@ class Database:
             self.conn.execute("DELETE FROM books WHERE id=?", (book_id,))
 
     # -- chats ---------------------------------------------------------------
-    def create_chat(self, book_id: int, title: str) -> int:
+    def create_chat(self, book_id: int, title: str, model: str = "") -> int:
         now = time.time()
         with self.conn:
             cur = self.conn.execute(
-                "INSERT INTO chats (book_id, title, created_at, updated_at) VALUES (?,?,?,?)",
-                (book_id, title, now, now),
+                "INSERT INTO chats (book_id, title, model, created_at, updated_at) VALUES (?,?,?,?,?)",
+                (book_id, title, model, now, now),
             )
         return cur.lastrowid
 
@@ -149,6 +160,15 @@ class Database:
     def snippet(self, snippet_id: int) -> dict | None:
         s = self.conn.execute("SELECT * FROM snippets WHERE id=?", (snippet_id,)).fetchone()
         return {**dict(s), "rects": json.loads(s["rects"])} if s else None
+
+    def book_snippets(self, book_id: int) -> list[dict]:
+        """Every snippet asked about in any of the book's chats, with its chat id."""
+        rows = self.conn.execute(
+            "SELECT s.*, m.chat_id FROM snippets s JOIN messages m ON m.id=s.message_id "
+            "JOIN chats c ON c.id=m.chat_id WHERE c.book_id=? ORDER BY s.id",
+            (book_id,),
+        )
+        return [{**dict(s), "rects": json.loads(s["rects"])} for s in rows]
 
     # -- settings ------------------------------------------------------------
     def get_setting(self, key: str, default: str = "") -> str:

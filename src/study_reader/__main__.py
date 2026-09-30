@@ -1,9 +1,11 @@
 import os
 import sys
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from .main_window import MainWindow
+from .transcript_view import ASSETS
 
 
 def configure_webengine() -> None:
@@ -21,6 +23,7 @@ def main() -> int:
     app.setApplicationName("study-reader")
     app.setApplicationDisplayName("Study Reader")
     app.setDesktopFileName("study-reader")
+    app.setWindowIcon(QIcon(str(ASSETS / "icon.svg")))
     window = MainWindow()
     window.show()
     if len(sys.argv) > 1:

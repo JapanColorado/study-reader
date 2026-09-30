@@ -24,8 +24,13 @@ Requires the `claude` CLI to be logged in (`claude` → `/login`). The app talks
 | Jump back to a snippet's source | Click the quote or thumbnail in the chat |
 | Zoom | `Ctrl+=` / `Ctrl+-` or `Ctrl`+wheel |
 | Library / open file / new chat | `Ctrl+L` / `Ctrl+O` / `Ctrl+N` |
+| Show or hide contents / chats | `F9` / `F10` |
+| Revisit a passage you asked about | Click its highlight → pick one of its chats, or start a new one |
+| Rename a chat | Double-click it (or `F2`, or right-click → **Rename…**) |
+| Model | The chat header's dropdown sets the open chat's model. **Settings** (toolbar, right) → **Default model for new chats** sets what new chats start with |
+| Theme | **Settings** → **Theme**: match the system, light, or dark. **Dark pages** recolors the book itself in dark mode |
 
-Right-click a chat or a library entry to delete it.
+Every passage and screenshot region you ask about stays highlighted in the book. Right-click a chat or a library entry to delete it; deleting a chat removes its highlights.
 
 ## How the shared context works
 
