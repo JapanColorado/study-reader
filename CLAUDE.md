@@ -32,6 +32,7 @@ Tests never hit Claude: `FakeClaude` in `tests/test_core.py` monkeypatches `clau
 - `main_window.py` wires everything: library vs. reader, toolbar/settings menu, TOC dock, highlights → chat navigation.
 - `reader_view.py` is a custom `QAbstractScrollArea` that renders pages with PyMuPDF, handles word-level text selection, region screenshots, persistent highlights, and the flash-on-jump effect.
 - `chat_panel.py` holds the chat list, composer, and per-chat model selector, and builds `Job`s for the worker.
+- `calculator.py` has a Qt-free `Calculator` (safe `ast`-based evaluator; never `eval`) and the `CalculatorPanel` that shares the right-hand `QStackedWidget` slot with `ChatPanel` (F10/F11 are mutually exclusive). History is per book in the `calculations` table; `ans` and variables are restored from stored values, not by re-evaluating.
 - `transcript_view.py` is a `QWebEngineView` loading `assets/transcript.html` (markdown-it + KaTeX, bundled offline in `assets/`). Snippet clicks come back as `jump:<snippet_id>` navigations intercepted in `_Page.acceptNavigationRequest`.
 - `theme.py` has a global `theme()` singleton (light/dark/system plus "dark pages" recoloring via `darken_page`) that emits `changed`, and draws line icons from inline SVG.
 

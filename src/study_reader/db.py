@@ -47,6 +47,14 @@ CREATE TABLE IF NOT EXISTS snippets (
     image_path TEXT NOT NULL DEFAULT '',
     rects TEXT NOT NULL DEFAULT '[]' -- JSON [[x0,y0,x1,y1],...] in page points
 );
+CREATE TABLE IF NOT EXISTS calculations (
+    id INTEGER PRIMARY KEY,
+    book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    expr TEXT NOT NULL,
+    result TEXT NOT NULL,           -- as displayed
+    value TEXT NOT NULL,            -- repr() of the int/float, to restore `ans` and variables
+    created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
@@ -173,6 +181,26 @@ class Database:
             (book_id,),
         )
         return [{**dict(s), "rects": json.loads(s["rects"])} for s in rows]
+
+    # -- calculator -----------------------------------------------------------
+    def add_calculation(self, book_id: int, expr: str, result: str, value: str) -> int:
+        with self.conn:
+            cur = self.conn.execute(
+                "INSERT INTO calculations (book_id, expr, result, value, created_at) VALUES (?,?,?,?,?)",
+                (book_id, expr, result, value, time.time()),
+            )
+        return cur.lastrowid
+
+    def calculations(self, book_id: int) -> list[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM calculations WHERE book_id=? ORDER BY id", (book_id,)).fetchall()
+
+    def delete_calculation(self, calc_id: int) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM calculations WHERE id=?", (calc_id,))
+
+    def clear_calculations(self, book_id: int) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM calculations WHERE book_id=?", (book_id,))
 
     # -- settings ------------------------------------------------------------
     def get_setting(self, key: str, default: str = "") -> str:

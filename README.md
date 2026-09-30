@@ -26,6 +26,7 @@ Requires the `claude` CLI to be logged in (`claude` → `/login`). The app talks
 | Crop the page margins so the text fills the view | **Crop margins** (`Ctrl+Shift+0`), remembered per book |
 | Library / open file / new chat | `Ctrl+L` / `Ctrl+O` / `Ctrl+N` |
 | Show or hide contents / chats | `F9` / `F10` |
+| Calculator (takes the chat panel's place) | `F11`. Type e.g. `v = 3.2`, `v * 12 / ans`, `sqrt(2)^3`, `sin(30)` in **DEG**; ↑ recalls earlier input; history is kept per book |
 | Revisit a passage you asked about | Click its highlight → pick one of its chats, or start a new one |
 | Rename a chat | Double-click it (or `F2`, or right-click → **Rename…**) |
 | Model | The chat header's dropdown sets the open chat's model. **Settings** (toolbar, right) → **Default model for new chats** sets what new chats start with |

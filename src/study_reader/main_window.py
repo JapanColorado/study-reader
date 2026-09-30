@@ -1,4 +1,4 @@
-"""Main window: table of contents | reader or library | chats."""
+"""Main window: table of contents | reader or library | chats or calculator."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QStackedWidget, QToolBar, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+from .calculator import CalculatorPanel
 from .chat_panel import MODELS, ChatPanel
 from .chat_service import ChatWorker
 from .db import Database, data_dir
@@ -48,10 +49,14 @@ class MainWindow(QMainWindow):
         self.center.addWidget(self.reader)
         self.chat = ChatPanel(self.db, self.worker)
         self.chat.current_page = self.reader.current_page
+        self.calc = CalculatorPanel(self.db)
+        self.right = QStackedWidget()  # chats and the calculator take turns in the same slot
+        self.right.addWidget(self.chat)
+        self.right.addWidget(self.calc)
 
         split = QSplitter()
         split.setChildrenCollapsible(False)
-        for w in (self.sidebar, self.center, self.chat):
+        for w in (self.sidebar, self.center, self.right):
             split.addWidget(w)
         split.setStretchFactor(1, 1)
         split.setSizes([240, 800, 460])
@@ -176,6 +181,8 @@ class MainWindow(QMainWindow):
         settings.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         bar.addWidget(settings)
 
+        self.calc_action = action("Calculator", "F11", self._toggle_calc, "calculator", checkable=True)
+        bar.addAction(self.calc_action)
         self.chat_action = action("Chats", "F10", self._toggle_chat, "panel-right", checkable=True)
         self.chat_action.setChecked(True)
         bar.addAction(self.chat_action)
@@ -194,7 +201,23 @@ class MainWindow(QMainWindow):
         self.sidebar.setVisible(on and self.toc.topLevelItemCount() > 0)
 
     def _toggle_chat(self, on: bool) -> None:
-        self.chat.setVisible(on and self.book_id is not None)
+        if on:
+            self.calc_action.setChecked(False)
+        self._sync_right()
+
+    def _toggle_calc(self, on: bool) -> None:
+        if on:
+            self.chat_action.setChecked(False)
+        self._sync_right()
+        if on and self.right.isVisible():
+            self.calc.focus_input()
+
+    def _sync_right(self) -> None:
+        """Show whichever of chats / calculator is toggled on, or neither."""
+        panel = self.chat if self.chat_action.isChecked() else self.calc if self.calc_action.isChecked() else None
+        if panel:
+            self.right.setCurrentWidget(panel)
+        self.right.setVisible(panel is not None and self.book_id is not None)
 
     # -- library / opening --------------------------------------------------------
     def show_library(self) -> None:
@@ -210,6 +233,7 @@ class MainWindow(QMainWindow):
         self.page_total.setText("")
         self.setWindowTitle("Study Reader")
         self.chat.set_book(None)
+        self.calc.set_book(None)
         self.library.refresh()
         self.center.setCurrentWidget(self.library)
         self._set_book_ui(False)
@@ -220,7 +244,8 @@ class MainWindow(QMainWindow):
         for a in self.book_items:
             a.setVisible(reading)
         self.chat_action.setEnabled(reading)
-        self.chat.setVisible(reading and self.chat_action.isChecked())
+        self.calc_action.setEnabled(reading)
+        self._sync_right()
         has_toc = reading and self.toc.topLevelItemCount() > 0
         self.toc_action.setEnabled(has_toc)
         self.sidebar.setVisible(has_toc and self.toc_action.isChecked())
@@ -263,6 +288,7 @@ class MainWindow(QMainWindow):
             QApplication.restoreOverrideCursor()
         self._on_page_changed(self.reader.current_page())
         self.chat.set_book(self.book_id)
+        self.calc.set_book(self.book_id)
         self._refresh_highlights()
 
     def _fill_toc(self) -> None:

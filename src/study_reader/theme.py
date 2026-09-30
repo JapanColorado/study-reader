@@ -60,6 +60,11 @@ ICONS = {
              '<path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>',
     "chevron-down": '<path d="m6 9 6 6 6-6"/>',
     "chevron-right": '<path d="m9 18 6-6-6-6"/>',
+    "calculator": '<rect width="16" height="20" x="4" y="2" rx="2"/><path d="M8 6h8"/><path d="M16 14v4"/>'
+                  '<path d="M16 10h.01"/><path d="M12 10h.01"/><path d="M8 10h.01"/><path d="M12 14h.01"/>'
+                  '<path d="M8 14h.01"/><path d="M12 18h.01"/><path d="M8 18h.01"/>',
+    "trash": '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>',
+    "help": '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
 }
 
 
@@ -244,6 +249,12 @@ QFrame#composer[focused="true"] { border-color: $accent; }
 QPlainTextEdit#composerInput { background: transparent; color: $fg; border: none; }
 QFrame#chip { background: $accent_soft; border-radius: 8px; }
 QFrame#chip QLabel { font-size: 9pt; }
+QLineEdit#calcInput { background: transparent; color: $fg; border: none; font-size: 12pt; padding: 2px 0; }
+QLabel#calcResult { font-size: 13pt; font-weight: 600; }
+QLabel[role="error"] { color: $error; }
+QToolButton#angle { color: $muted; font-size: 8pt; font-weight: 600; padding: 4px 6px; }
+QListView#calcHistory::item, QListView#calcHistory::item:selected { background: transparent; padding: 0; }
+QListView#calcHistory::item:hover { background: $hover; }
 QFrame#popup { background: $raised; border: 1px solid $border; border-radius: 10px; }
 """)
 
