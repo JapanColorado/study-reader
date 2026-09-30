@@ -10,11 +10,12 @@ from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QKeySequence, QPainter, QPen
 from PySide6.QtWidgets import QAbstractScrollArea, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QPushButton
 
-from .document import Document, Word, line_rects, select_range, words_text
+from .document import Document, Rect, Word, line_rects, select_range, words_text
 from .theme import darken_page, theme
 
 GAP = 14
 MARGIN = 16
+CROP_GAP = 6  # between pages when margins are cropped; the side margin is then 0
 CACHE_PAGES = 10
 CAPTURE_SCALE = 2.0
 MIN_ZOOM, MAX_ZOOM = 0.4, 4.0
@@ -42,7 +43,10 @@ class ReaderView(QAbstractScrollArea):
         self.zoom = 1.25
         self.region_mode = False
         self.fit_mode = True
-        self._sizes: list[tuple[float, float]] = []
+        self.crop = False
+        self._content_box: Rect | None = None
+        self._clips: list[Rect] = []  # visible part of each page, in page points
+        self._sizes: list[tuple[float, float]] = []  # size of each clip
         self._tops: list[float] = []
         self._total_h = 0.0
         self._max_w = 0.0
@@ -84,12 +88,16 @@ class ReaderView(QAbstractScrollArea):
         self._popup.hide()
 
     # -- document / layout -----------------------------------------------------
-    def set_document(self, doc: Document | None, page: int = 0, zoom: float | None = None) -> None:
+    def set_document(
+        self, doc: Document | None, page: int = 0, zoom: float | None = None, crop: bool = False
+    ) -> None:
         self.doc = doc
         self._cache.clear()
         self._marks, self._hover = {}, []
         self.clear_selection()
-        self._sizes = [doc.page_size(i) for i in range(doc.page_count)] if doc else []
+        self._content_box = None
+        self.crop = crop
+        self._set_clips()
         # zoom <= 0 (or None) means "fit width", the default for new books.
         self.fit_mode = not (zoom and zoom > 0)
         self.zoom = self._fit_width_zoom() if self.fit_mode else min(max(zoom, MIN_ZOOM), MAX_ZOOM)
@@ -97,11 +105,60 @@ class ReaderView(QAbstractScrollArea):
         self.go_to(page)
         self.zoomChanged.emit(self.zoom)
 
+    def _set_clips(self) -> None:
+        """Each page's visible rect: the whole page, or the book's content box when cropping."""
+        n = self.doc.page_count if self.doc else 0
+        if self.crop and self._content_box is None and n:
+            self._content_box = self.doc.content_box()
+        box = self._content_box if self.crop else None
+        self._clips = []
+        for i in range(n):
+            w, h = self.doc.page_size(i)
+            clip = (0.0, 0.0, w, h)
+            if box:
+                c = (max(box[0], 0.0), max(box[1], 0.0), min(box[2], w), min(box[3], h))
+                if c[2] - c[0] > 20 and c[3] - c[1] > 20:
+                    clip = c
+            self._clips.append(clip)
+        self._sizes = [(c[2] - c[0], c[3] - c[1]) for c in self._clips]
+
+    @property
+    def _margin(self) -> int:
+        return 0 if self.crop else MARGIN
+
+    @property
+    def _gap(self) -> int:
+        return CROP_GAP if self.crop else GAP
+
+    def set_crop(self, on: bool) -> None:
+        """Trim the book's white margins and fit the text to the view width."""
+        if on == self.crop or not self._tops:
+            self.crop = on
+            return
+        # Keep the spot current_page() looks at (a third down the viewport) in place.
+        third = self.viewport().height() / 3
+        anchor = self.verticalScrollBar().value() + third
+        page = max(bisect.bisect_right(self._tops, anchor) - 1, 0)
+        _, top_pt, _, bottom_pt = self._clips[page]
+        y_pt = min(top_pt + max(anchor - self._tops[page], 0.0) / self.zoom, bottom_pt)
+        self.crop = on
+        self._set_clips()
+        self._cache.clear()
+        self._popup.hide()
+        self.fit_mode = True
+        self.zoom = self._fit_width_zoom()
+        self._relayout()
+        _, top_pt, _, bottom_pt = self._clips[page]
+        y = self._tops[page] + (min(max(y_pt, top_pt), bottom_pt) - top_pt) * self.zoom - third
+        self.verticalScrollBar().setValue(int(y))
+        self._check_page()
+        self.zoomChanged.emit(self.zoom)
+
     def _fit_width_zoom(self) -> float:
         widest = max((w for w, _ in self._sizes), default=0)
         if not widest:
             return self.zoom
-        avail = self.viewport().width() - 2 * MARGIN
+        avail = self.viewport().width() - 2 * self._margin
         return min(max(avail / widest, MIN_ZOOM), MAX_ZOOM)
 
     def fit_width(self) -> None:
@@ -113,10 +170,10 @@ class ReaderView(QAbstractScrollArea):
         return 0.0 if self.fit_mode else self.zoom
 
     def _relayout(self) -> None:
-        self._tops, y = [], float(GAP)
+        self._tops, y = [], float(self._gap)
         for _, h in self._sizes:
             self._tops.append(y)
-            y += h * self.zoom + GAP
+            y += h * self.zoom + self._gap
         self._total_h = y
         self._max_w = max((w for w, _ in self._sizes), default=0) * self.zoom
         self._update_scrollbars()
@@ -128,7 +185,7 @@ class ReaderView(QAbstractScrollArea):
         v.setRange(0, max(0, int(self._total_h - vp.height())))
         v.setPageStep(vp.height())
         v.setSingleStep(40)
-        h.setRange(0, max(0, int(self._max_w + 2 * MARGIN - vp.width())))
+        h.setRange(0, max(0, int(self._max_w + 2 * self._margin - vp.width())))
         h.setPageStep(vp.width())
         h.setSingleStep(40)
 
@@ -142,7 +199,8 @@ class ReaderView(QAbstractScrollArea):
         """Page rectangle in viewport coordinates."""
         w, h = self._sizes[i][0] * self.zoom, self._sizes[i][1] * self.zoom
         vw = self.viewport().width()
-        x = max((vw - w) / 2, MARGIN) if self._max_w + 2 * MARGIN <= vw else MARGIN + (self._max_w - w) / 2
+        m = self._margin
+        x = max((vw - w) / 2, m) if self._max_w + 2 * m <= vw else m + (self._max_w - w) / 2
         return QRectF(x - self.horizontalScrollBar().value(), self._tops[i] - self.verticalScrollBar().value(), w, h)
 
     def _visible_pages(self) -> range:
@@ -197,7 +255,11 @@ class ReaderView(QAbstractScrollArea):
         if not self._tops:
             return
         page = min(max(page, 0), len(self._tops) - 1)
-        self.verticalScrollBar().setValue(int(self._tops[page] + y_pt * self.zoom - (GAP if y_pt == 0 else 60)))
+        if y_pt == 0:
+            y = self._tops[page] - self._gap
+        else:
+            y = self._tops[page] + (y_pt - self._clips[page][1]) * self.zoom - 60
+        self.verticalScrollBar().setValue(int(y))
         self._check_page()
 
     def set_zoom(self, zoom: float, keep_fit: bool = False) -> None:
@@ -253,10 +315,11 @@ class ReaderView(QAbstractScrollArea):
     def _image(self, i: int) -> QImage:
         dpr = self.devicePixelRatioF()
         c = theme().colors if theme().pages_dark else None
-        key = (i, round(self.zoom, 3), dpr, c and (c["page_bg"], c["page_fg"]))
+        clip = self._clips[i] if self.crop else None
+        key = (i, round(self.zoom, 3), dpr, clip, c and (c["page_bg"], c["page_fg"]))
         img = self._cache.get(key)
         if img is None:
-            pix = self.doc.render(i, self.zoom * dpr)
+            pix = self.doc.render(i, self.zoom * dpr, clip=clip)
             samples, stride = pix.samples, pix.stride
             if c:
                 samples = darken_page(samples, pix.width, pix.height, stride, c["page_bg"], c["page_fg"])
@@ -269,9 +332,12 @@ class ReaderView(QAbstractScrollArea):
             self._cache.move_to_end(key)
         return img
 
-    def _to_view(self, page_rect: QRectF, r) -> QRectF:
-        z = self.zoom
-        return QRectF(page_rect.x() + r[0] * z, page_rect.y() + r[1] * z, (r[2] - r[0]) * z, (r[3] - r[1]) * z)
+    def _to_view(self, page: int, page_rect: QRectF, r) -> QRectF:
+        """A rect in page points -> viewport coordinates."""
+        z, (ox, oy, *_) = self.zoom, self._clips[page]
+        return QRectF(
+            page_rect.x() + (r[0] - ox) * z, page_rect.y() + (r[1] - oy) * z, (r[2] - r[0]) * z, (r[3] - r[1]) * z
+        )
 
     def paintEvent(self, event) -> None:
         p = QPainter(self.viewport())
@@ -286,15 +352,15 @@ class ReaderView(QAbstractScrollArea):
             p.drawImage(rect, self._image(i))
             self._paint_marks(p, i, rect)
             for r in line_rects(self._selection.get(i, [])):
-                p.fillRect(self._to_view(rect, r), SELECT_COLOR)
+                p.fillRect(self._to_view(i, rect, r), SELECT_COLOR)
             if self._region and self._region[0] == i:
-                vr = self._to_view(rect, self._region[1])
+                vr = self._to_view(i, rect, self._region[1])
                 p.fillRect(vr, SELECT_COLOR)
                 p.setPen(QPen(SELECT_COLOR.darker(150), 1))
                 p.drawRect(vr)
             if self._flash and self._flash[0] == i:
                 for r in self._flash[1]:
-                    p.fillRect(self._to_view(rect, r), FLASH_COLOR)
+                    p.fillRect(self._to_view(i, rect, r), FLASH_COLOR)
 
     def _paint_marks(self, p: QPainter, page: int, rect: QRectF) -> None:
         marks = self._marks.get(page)
@@ -311,14 +377,14 @@ class ReaderView(QAbstractScrollArea):
                 p.setPen(QPen(FRAME_COLOR[hover], 3 if hover else 2))
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 for r in m["rects"]:
-                    p.drawRoundedRect(self._to_view(rect, r).adjusted(-4, -4, 4, 4), 4, 4)
+                    p.drawRoundedRect(self._to_view(page, rect, r).adjusted(-4, -4, 4, 4), 4, 4)
             else:
                 p.setCompositionMode(
                     QPainter.CompositionMode.CompositionMode_Screen if theme().pages_dark
                     else QPainter.CompositionMode.CompositionMode_Multiply
                 )
                 for r in m["rects"]:
-                    p.fillRect(self._to_view(rect, r).adjusted(-1, 0, 1, 0), hovered if hover else normal)
+                    p.fillRect(self._to_view(page, rect, r).adjusted(-1, 0, 1, 0), hovered if hover else normal)
         p.restore()
 
     # -- selection -------------------------------------------------------------------
@@ -343,9 +409,9 @@ class ReaderView(QAbstractScrollArea):
             y = pos.y() + self.verticalScrollBar().value()
             page = max(bisect.bisect_right(self._tops, y) - 1, 0)
         rect = self._page_rect(page)
-        w, h = self._sizes[page]
-        x = min(max((pos.x() - rect.x()) / self.zoom, 0.0), w)
-        y = min(max((pos.y() - rect.y()) / self.zoom, 0.0), h)
+        x0, y0, x1, y1 = self._clips[page]
+        x = min(max((pos.x() - rect.x()) / self.zoom + x0, x0), x1)
+        y = min(max((pos.y() - rect.y()) / self.zoom + y0, y0), y1)
         return page, x, y
 
     def mousePressEvent(self, event) -> None:

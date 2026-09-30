@@ -71,6 +71,7 @@ def test_old_database_gets_chat_model_column(tmp_path):
     conn.close()
     db = Database(path)
     assert db.chat(1)["model"] == "sonnet"  # keeps the model it was used with
+    assert db.book(1)["crop_margins"] == 0
 
 
 # -- document ---------------------------------------------------------------------
@@ -83,6 +84,37 @@ def test_pdf_document(pdf_path):
     assert doc.render(0, 2.0).width == 800
     assert doc.render(0, 2.0, clip=(0, 0, 100, 50)).height == 100
     assert len(file_hash(pdf_path)) == 64
+
+
+def test_content_box_hugs_the_text(pdf_path):
+    x0, y0, x1, y1 = Document(pdf_path).content_box()
+    # Text sits in (40, 40, 360, 260) on a 400x300 page; the short lines leave the right side empty.
+    assert 30 < x0 < 50 and 30 < y0 < 55 and x1 < 360 and y1 < 260
+
+
+def test_reader_crop_maps_page_points(pdf_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QPointF
+    from PySide6.QtWidgets import QApplication
+    from study_reader.reader_view import ReaderView
+
+    app = QApplication.instance() or QApplication([])
+    view = ReaderView()
+    view.resize(600, 120)  # shorter than a cropped page, so every page stays scrollable
+    view.show()
+    view.set_document(Document(pdf_path), 1)
+    full_zoom = view.zoom
+    view.set_crop(True)
+    assert view.crop and view.fit_mode and view.zoom > full_zoom
+    assert view.current_page() == 1
+    x0, y0, x1, y1 = view._clips[1]
+    rect = view._page_rect(1)
+    assert rect.x() == 0 and abs(rect.width() - view.viewport().width()) < 1  # no side margins
+    page, x, y = view._hit(rect.topLeft() + QPointF(10 * view.zoom, 10 * view.zoom))
+    assert page == 1 and abs(x - (x0 + 10)) < 1e-6 and abs(y - (y0 + 10)) < 1e-6
+    assert view._to_view(1, rect, (x, y, x + 5, y + 5)).topLeft() == rect.topLeft() + QPointF(10 * view.zoom, 10 * view.zoom)
+    view.set_crop(False)
+    assert view._clips[1] == (0.0, 0.0, 400.0, 300.0) and view.current_page() == 1
 
 
 def test_epub_document(epub_path):

@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS books (
     page_count INTEGER NOT NULL DEFAULT 0,
     last_page INTEGER NOT NULL DEFAULT 0,
     zoom REAL NOT NULL DEFAULT 0,   -- 0 = fit width
+    crop_margins INTEGER NOT NULL DEFAULT 0,
     base_session_id TEXT,
     context_mode TEXT,              -- NULL (not prepared) | 'full' | 'partial'
     opened_at REAL NOT NULL
@@ -70,6 +71,9 @@ class Database:
         self.conn.commit()
 
     def _migrate(self) -> None:
+        book_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(books)")}
+        if "crop_margins" not in book_cols:
+            self.conn.execute("ALTER TABLE books ADD COLUMN crop_margins INTEGER NOT NULL DEFAULT 0")
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(chats)")}
         if "model" not in cols:
             # Existing chats keep the model that was selected globally before chats had their own.

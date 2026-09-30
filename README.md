@@ -23,6 +23,7 @@ Requires the `claude` CLI to be logged in (`claude` → `/login`). The app talks
 | Send | `Enter` (`Shift+Enter` for a new line). Sending with no text asks "Explain this." |
 | Jump back to a snippet's source | Click the quote or thumbnail in the chat |
 | Zoom | `Ctrl+=` / `Ctrl+-` or `Ctrl`+wheel |
+| Crop the page margins so the text fills the view | **Crop margins** (`Ctrl+Shift+0`), remembered per book |
 | Library / open file / new chat | `Ctrl+L` / `Ctrl+O` / `Ctrl+N` |
 | Show or hide contents / chats | `F9` / `F10` |
 | Revisit a passage you asked about | Click its highlight → pick one of its chats, or start a new one |

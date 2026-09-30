@@ -6,12 +6,16 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pymupdf
 
 # Fixed layout for reflowable formats so page numbers are stable between runs.
 REFLOW_WIDTH, REFLOW_HEIGHT, REFLOW_FONT = 600, 800, 12
 
 Rect = tuple[float, float, float, float]
+
+# Margin detection: pages scanned, render scale, what counts as ink, padding kept around it.
+CROP_SAMPLE_PAGES, CROP_SCALE, CROP_INK, CROP_PAD = 200, 0.25, 235, 6.0
 
 
 @dataclass(frozen=True)
@@ -61,6 +65,28 @@ class Document:
         return self.doc[index].get_pixmap(
             matrix=pymupdf.Matrix(scale, scale), clip=pymupdf.Rect(clip) if clip else None, alpha=False
         )
+
+    def content_box(self) -> Rect | None:
+        """One box around the ink of every (sampled) page, in page points, so a whole book
+        can be cropped consistently. Full-bleed pages (covers, scans) are ignored."""
+        n = self.page_count
+        step = max(n / CROP_SAMPLE_PAGES, 1)
+        box: list[float] | None = None
+        for i in sorted({int(k * step) for k in range(min(n, CROP_SAMPLE_PAGES))}):
+            page = self.doc[i]
+            pix = page.get_pixmap(matrix=pymupdf.Matrix(CROP_SCALE, CROP_SCALE), colorspace=pymupdf.csGRAY, alpha=False)
+            ink = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.stride)[:, : pix.width] < CROP_INK
+            rows, cols = np.flatnonzero(ink.any(axis=1)), np.flatnonzero(ink.any(axis=0))
+            if not len(rows):
+                continue
+            r = [cols[0] / CROP_SCALE, rows[0] / CROP_SCALE, (cols[-1] + 1) / CROP_SCALE, (rows[-1] + 1) / CROP_SCALE]
+            w, h = page.rect.width, page.rect.height
+            if (r[2] - r[0]) > 0.97 * w and (r[3] - r[1]) > 0.97 * h:
+                continue
+            box = r if box is None else [min(box[0], r[0]), min(box[1], r[1]), max(box[2], r[2]), max(box[3], r[3])]
+        if box is None:
+            return None
+        return (float(box[0]) - CROP_PAD, float(box[1]) - CROP_PAD, float(box[2]) + CROP_PAD, float(box[3]) + CROP_PAD)
 
     def words(self, index: int) -> list[Word]:
         if index not in self._words:

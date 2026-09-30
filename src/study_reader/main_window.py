@@ -5,7 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
-    QFileDialog, QLabel, QMainWindow, QMenu, QMessageBox, QSizePolicy, QSpinBox, QSplitter,
+    QApplication, QFileDialog, QLabel, QMainWindow, QMenu, QMessageBox, QSizePolicy, QSpinBox, QSplitter,
     QStackedWidget, QToolBar, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -109,6 +109,7 @@ class MainWindow(QMainWindow):
         zoom_out = action("Zoom out", "Ctrl+-", self.reader.zoom_out, "zoom-out")
         zoom_in = action("Zoom in", "Ctrl+=", self.reader.zoom_in, "zoom-in")
         fit = action("Fit width", "Ctrl+0", self.reader.fit_width, "fit-width")
+        self.crop_action = action("Crop margins", "Ctrl+Shift+0", self._set_crop, "crop", checkable=True)
         self.zoom_label = _muted()
         self.zoom_label.setMinimumWidth(42)
         self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -116,6 +117,7 @@ class MainWindow(QMainWindow):
         book_items += [bar.addWidget(self.zoom_label)]
         bar.addAction(zoom_in)
         bar.addAction(fit)
+        bar.addAction(self.crop_action)
         book_items += [bar.addSeparator()]
 
         self.page_spin = QSpinBox()
@@ -137,8 +139,8 @@ class MainWindow(QMainWindow):
         # Act on the current selection without reaching for the popup.
         action("Ask in new chat", "Ctrl+Return", lambda: self.reader.choose(True))
         action("Add to current chat", "Ctrl+Shift+Return", lambda: self.reader.choose(False))
-        self.book_actions = [zoom_out, zoom_in, fit, self.region_action, new_chat]
-        self.book_items = book_items + [zoom_out, zoom_in, fit, self.region_action]
+        self.book_actions = [zoom_out, zoom_in, fit, self.crop_action, self.region_action, new_chat]
+        self.book_items = book_items + [zoom_out, zoom_in, fit, self.crop_action, self.region_action]
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -253,7 +255,12 @@ class MainWindow(QMainWindow):
         self.page_total.setText(f"of {doc.page_count}")
         self.center.setCurrentWidget(self.reader)
         self._set_book_ui(True)
-        self.reader.set_document(doc, book["last_page"], book["zoom"])
+        self.crop_action.setChecked(bool(book["crop_margins"]))
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            self.reader.set_document(doc, book["last_page"], book["zoom"], crop=bool(book["crop_margins"]))
+        finally:
+            QApplication.restoreOverrideCursor()
         self._on_page_changed(self.reader.current_page())
         self.chat.set_book(self.book_id)
         self._refresh_highlights()
@@ -302,6 +309,15 @@ class MainWindow(QMainWindow):
         if not self.chat_action.isChecked():
             self.chat_action.trigger()
         then()
+
+    def _set_crop(self, on: bool) -> None:
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)  # finding the margins renders pages
+        try:
+            self.reader.set_crop(on)
+        finally:
+            QApplication.restoreOverrideCursor()
+        if self.book_id is not None:
+            self.db.update_book(self.book_id, crop_margins=int(on))
 
     # -- position -----------------------------------------------------------------
     def _on_page_changed(self, page: int) -> None:
