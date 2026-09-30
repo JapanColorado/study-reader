@@ -18,9 +18,8 @@ def configure_webengine() -> None:
 
 
 def configure_decorations() -> None:
-    """COSMIC asks Qt to draw its own title bar. The default "bradient" decoration
-    paints a rounded, antialiased frame that leaves see-through slivers along the
-    window edges at fractional scales, so prefer the "adwaita" decoration."""
+    """COSMIC asks Qt to draw its own title bar; the "adwaita" decoration looks
+    nicer than Qt's default "bradient" one."""
     os.environ.setdefault("QT_WAYLAND_DECORATION", "adwaita")
 
 
