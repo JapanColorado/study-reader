@@ -1,0 +1,42 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+Study Reader is a PySide6 desktop PDF/EPUB reader (Linux only) where selected passages or screenshot regions are sent to per-snippet Claude chats that all share the whole book as context. See README.md for user-facing behavior and keyboard shortcuts.
+
+## Commands
+
+Pixi manages the environment; `PYTHONPATH` is set to `src/` by pixi activation, so run everything through `pixi run`.
+
+```sh
+pixi run app [path/to/book.pdf]    # launch (library screen, or open a book)
+pixi run test                      # pytest -q tests
+pixi run pytest -q tests/test_core.py::test_first_chat_primes_then_forks   # single test
+pixi run check-claude              # live priming+forking check; makes real Claude requests
+```
+
+Tests never hit Claude: `FakeClaude` in `tests/test_core.py` monkeypatches `claude_client.run_turn` and `claude_client.session_exists`. Test PDFs/EPUBs are generated on the fly in `tests/conftest.py`.
+
+## Architecture
+
+**Shared book context via session forking** (the core idea, spread across `claude_client.py` and `chat_service.py`):
+- Claude is reached through the Claude Agent SDK (`query()`), which drives the local `claude` CLI and its login. Each book gets its own session working directory (`<data>/sessions/book-<id>`), since SDK sessions are scoped by `cwd`.
+- The first question for a book "primes" a base session containing the full extracted text (`[[page N]]` markers). Each new chat resumes that base session with `fork_session=True`; follow-ups resume the chat's own session without forking.
+- `ChatService.ask` decides the route: chat session exists → resume it; otherwise `ensure_base` (re-priming if the base session was pruned) then fork, replaying saved DB history as a transcript if the chat's own session was lost.
+- Books over `MAX_BOOK_TOKENS` (estimated at 3 chars/token), or whose priming fails with a "too long" error, switch to `context_mode="partial"`: no base session, and each question carries a `text_window` of pages around the current page.
+- `_options()` deliberately strips all tools, MCP servers (including claude.ai connectors via `ENABLE_CLAUDEAI_MCP_SERVERS=false`), and setting sources, and uses `max_turns=1`. `_prefer_subscription_login()` removes `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` from the environment unless `STUDY_READER_USE_API_KEY=1`.
+
+**Threading:** `ChatWorker` runs `ChatService` on a dedicated asyncio loop in a daemon thread. `ChatService` is Qt-free and reports through an `emit(name, *args)` callback; `ChatWorker._emit` maps names to Qt signals (`status`, `base`, `delta`, `done`, `failed`) that `ChatPanel` connects to. Keep new events in both places. Persisting results (session ids, `context_mode`, messages) happens on the GUI side in `ChatPanel`, not in the service.
+
+**UI modules:**
+- `main_window.py` wires everything: library vs. reader, toolbar/settings menu, TOC dock, highlights → chat navigation.
+- `reader_view.py` is a custom `QAbstractScrollArea` that renders pages with PyMuPDF, handles word-level text selection, region screenshots, persistent highlights, and the flash-on-jump effect.
+- `chat_panel.py` holds the chat list, composer, and per-chat model selector, and builds `Job`s for the worker.
+- `transcript_view.py` is a `QWebEngineView` loading `assets/transcript.html` (markdown-it + KaTeX, bundled offline in `assets/`). Snippet clicks come back as `jump:<snippet_id>` navigations intercepted in `_Page.acceptNavigationRequest`.
+- `theme.py` has a global `theme()` singleton (light/dark/system plus "dark pages" recoloring via `darken_page`) that emits `changed`, and draws line icons from inline SVG.
+
+**Documents:** `document.py` wraps PyMuPDF for both PDF and EPUB. EPUBs are laid out at a fixed size (`REFLOW_WIDTH/HEIGHT/FONT`) so page numbers stay stable across runs, which matters because snippet rects and page numbers are persisted. Books are identified by content hash (`file_hash`), so a moved file maps back to the same library entry.
+
+**Persistence:** `db.py` is plain `sqlite3` (books → chats → messages → snippets, plus a key/value `settings` table). The schema is `CREATE TABLE IF NOT EXISTS`. For new columns on existing tables, add an `ALTER TABLE` step in `Database._migrate` (see the `chats.model` migration and its test). Snippet `rects` are JSON in PDF page points. Data lives in `$STUDY_READER_DATA` or `$XDG_DATA_HOME/study-reader`.
+
+**QtWebEngine:** `__main__.configure_webengine` forces `--disable-gpu` (blank transcript on some Wayland compositors) unless `STUDY_READER_WEB_GPU=1`.
