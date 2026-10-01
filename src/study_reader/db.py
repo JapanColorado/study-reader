@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS messages (
     chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
     role TEXT NOT NULL,             -- 'user' | 'assistant' | 'error'
     text TEXT NOT NULL,
+    session_id TEXT,                -- assistant replies: the Claude session holding the reply,
+    session_uuid TEXT,              -- and its last entry, to branch from (regenerate / edit)
     created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS snippets (
@@ -89,6 +91,10 @@ class Database:
             self.conn.execute(
                 "UPDATE chats SET model=COALESCE((SELECT value FROM settings WHERE key='model'), '')"
             )
+        msg_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(messages)")}
+        for col in ("session_id", "session_uuid"):
+            if col not in msg_cols:
+                self.conn.execute(f"ALTER TABLE messages ADD COLUMN {col} TEXT")
 
     # -- books ---------------------------------------------------------------
     def upsert_book(self, hash: str, path: str, title: str, page_count: int) -> sqlite3.Row:
@@ -141,13 +147,16 @@ class Database:
             self.conn.execute("DELETE FROM chats WHERE id=?", (chat_id,))
 
     # -- messages ------------------------------------------------------------
-    def add_message(self, chat_id: int, role: str, text: str, snippets: list[dict] | None = None) -> int:
+    def add_message(
+        self, chat_id: int, role: str, text: str, snippets: list[dict] | None = None,
+        session_id: str | None = None, session_uuid: str | None = None,
+    ) -> int:
         """snippets: dicts with kind, page, text, image_path, rects."""
         now = time.time()
         with self.conn:
             cur = self.conn.execute(
-                "INSERT INTO messages (chat_id, role, text, created_at) VALUES (?,?,?,?)",
-                (chat_id, role, text, now),
+                "INSERT INTO messages (chat_id, role, text, session_id, session_uuid, created_at) VALUES (?,?,?,?,?,?)",
+                (chat_id, role, text, session_id, session_uuid, now),
             )
             for s in snippets or []:
                 self.conn.execute(
@@ -157,6 +166,11 @@ class Database:
                 )
             self.conn.execute("UPDATE chats SET updated_at=? WHERE id=?", (now, chat_id))
         return cur.lastrowid
+
+    def delete_messages_from(self, chat_id: int, message_id: int) -> None:
+        """Drop a message and everything after it in its chat (their snippets go too)."""
+        with self.conn:
+            self.conn.execute("DELETE FROM messages WHERE chat_id=? AND id>=?", (chat_id, message_id))
 
     def messages(self, chat_id: int) -> list[dict]:
         out = []

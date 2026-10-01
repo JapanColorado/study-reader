@@ -36,6 +36,8 @@ def _open_external(url: QUrl, nav_type) -> None:
 class _Page(QWebEnginePage):
     jump = Signal(int)
     openViz = Signal(int)
+    edit = Signal(int)
+    regenerate = Signal(int)
 
     def acceptNavigationRequest(self, url: QUrl, nav_type, is_main_frame: bool) -> bool:
         if not is_main_frame:  # a visualization's iframe: only its own srcdoc
@@ -43,9 +45,10 @@ class _Page(QWebEnginePage):
                 return True
             _open_external(url, nav_type)
             return False
-        if url.scheme() in ("jump", "viz"):
+        actions = {"jump": self.jump, "viz": self.openViz, "edit": self.edit, "regen": self.regenerate}
+        if url.scheme() in actions:
             if (n := _url_id(url)) is not None:
-                (self.jump if url.scheme() == "jump" else self.openViz).emit(n)
+                actions[url.scheme()].emit(n)
             return False
         if url.scheme() in ("http", "https", "mailto"):
             QDesktopServices.openUrl(url)
@@ -55,11 +58,15 @@ class _Page(QWebEnginePage):
 
 class TranscriptView(QWebEngineView):
     jumpRequested = Signal(int)  # snippet id
+    editRequested = Signal(int)  # message id
+    regenerateRequested = Signal(int)  # message id
 
     def __init__(self, parent=None):
         super().__init__(parent)
         page = _Page(self)
         page.jump.connect(self.jumpRequested)
+        page.edit.connect(self.editRequested)
+        page.regenerate.connect(self.regenerateRequested)
         page.openViz.connect(self._open_viz)
         self.setPage(page)
         page.setBackgroundColor(QColor(theme().colors["surface"]))
@@ -71,8 +78,11 @@ class TranscriptView(QWebEngineView):
         self.loadFinished.connect(self._on_loaded)
         self.load(QUrl.fromLocalFile(str(ASSETS / "transcript.html")))
 
-    def show_messages(self, messages: list[dict], streaming: str | None = None, placeholder: str = "") -> None:
-        """streaming: None when idle, else the reply text received so far."""
+    def show_messages(
+        self, messages: list[dict], streaming: str | None = None, placeholder: str = "", editing: int | None = None
+    ) -> None:
+        """streaming: None when idle, else the reply text received so far.
+        editing: id of the message being rewritten in the composer, if any."""
         self.page().setBackgroundColor(QColor(theme().colors["surface"]))
         out = []
         for m in messages:
@@ -83,8 +93,8 @@ class TranscriptView(QWebEngineView):
                 }
                 for s in m.get("snippets", [])
             ]
-            out.append({"role": m["role"], "text": m["text"], "snippets": snippets})
-        data = {"messages": out, "streaming": streaming, "placeholder": placeholder,
+            out.append({"id": m["id"], "role": m["role"], "text": m["text"], "snippets": snippets})
+        data = {"messages": out, "streaming": streaming, "placeholder": placeholder, "editing": editing,
                 "dark": theme().dark, "colors": theme().colors}
         self._run(f"render({json.dumps(data)})")
 

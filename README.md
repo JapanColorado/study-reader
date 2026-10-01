@@ -28,6 +28,8 @@ Requires the `claude` CLI to be logged in (`claude` → `/login`). The app talks
 | Show or hide contents / chats | `F9` / `F10` |
 | Calculator (takes the chat panel's place) | `F11`. Type e.g. `v = 3.2`, `v * 12 / ans`, `sqrt(2)^3`, `sin(30)` in **DEG**; ↑ recalls earlier input; history is kept per book |
 | Revisit a passage you asked about | Click its highlight → pick one of its chats, or start a new one |
+| Redo a reply | **Regenerate** under the chat's last reply (**Retry** after an error) |
+| Edit a question | Hover it → **Edit**: it loads into the box below, where you can change the text or its passages; sending replaces it and every reply after it. `Esc` cancels |
 | Rename a chat | Double-click it (or `F2`, or right-click → **Rename…**) |
 | Model | The chat header's dropdown sets the open chat's model. **Settings** (toolbar, right) → **Default model for new chats** sets what new chats start with |
 | Theme | **Settings** → **Theme**: match the system, light, or dark. **Dark pages** recolors the book itself in dark mode |
@@ -38,7 +40,7 @@ Every passage and screenshot region you ask about stays highlighted in the book.
 
 ## How the shared context works
 
-The first question for a book sends its full text to Claude once, in a "base" session. Every new chat forks that session, so all chats start from the same prefix (which the prompt cache serves cheaply) and stay independent of each other. Follow-ups resume the chat's own session.
+The first question for a book sends its full text to Claude once, in a "base" session. Every new chat forks that session, so all chats start from the same prefix (which the prompt cache serves cheaply) and stay independent of each other. Follow-ups resume the chat's own session. Regenerating or editing forks the chat's session at the reply just before the changed question, so Claude doesn't see the replaced turns.
 
 - Books too large for the context window fall back to sending the pages around the snippet. The status line under the transcript says which mode a book is in.
 - If Claude Code has pruned a session, the app re-shares the book or replays the saved transcript automatically.

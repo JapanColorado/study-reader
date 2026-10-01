@@ -34,6 +34,20 @@ def test_db_roundtrip(tmp_path):
     assert db.chats(book["id"]) == [] and db.messages(chat) == []
 
 
+def test_truncating_a_chat(tmp_path):
+    db = Database(tmp_path / "t.db")
+    book = db.upsert_book("h1", "/a.pdf", "A", 10)
+    chat = db.create_chat(book["id"], "Q")
+    db.add_message(chat, "user", "q1")
+    db.add_message(chat, "assistant", "a1", session_id="s", session_uuid="u")
+    q2 = db.add_message(chat, "user", "q2", [{"kind": "text", "page": 1, "text": "x"}])
+    db.add_message(chat, "assistant", "a2")
+    db.delete_messages_from(chat, q2)
+    msgs = db.messages(chat)
+    assert [m["text"] for m in msgs] == ["q1", "a1"] and (msgs[1]["session_id"], msgs[1]["session_uuid"]) == ("s", "u")
+    assert db.book_snippets(book["id"]) == []
+
+
 def test_book_snippets_and_chat_model(tmp_path):
     db = Database(tmp_path / "t.db")
     book = db.upsert_book("h1", "/a.pdf", "A", 10)
@@ -63,6 +77,8 @@ def test_old_database_gets_chat_model_column(tmp_path):
         CREATE TABLE chats (id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL, title TEXT NOT NULL, session_id TEXT,
             created_at REAL NOT NULL, updated_at REAL NOT NULL);
         CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE messages (id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL, role TEXT NOT NULL,
+            text TEXT NOT NULL, created_at REAL NOT NULL);
         INSERT INTO books VALUES (1, 'h', '/a.pdf', 'A', 1, 0, 0, NULL, NULL, 0);
         INSERT INTO chats VALUES (1, 1, 'old chat', NULL, 0, 0);
         INSERT INTO settings VALUES ('model', 'sonnet');
@@ -71,6 +87,7 @@ def test_old_database_gets_chat_model_column(tmp_path):
     conn.close()
     db = Database(path)
     assert db.chat(1)["model"] == "sonnet"  # keeps the model it was used with
+    db.add_message(1, "assistant", "a", session_id="s", session_uuid="u")  # messages gained branch points
     assert db.book(1)["crop_margins"] == 0
 
 
@@ -140,6 +157,72 @@ def test_asking_highlights_and_shows_chats(pdf_path, tmp_path, monkeypatch):
     assert not win.reader._marks
 
 
+def test_edit_and_regenerate_branch_the_chat(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    from PySide6.QtCore import QObject, Signal
+    from PySide6.QtWidgets import QApplication
+    from study_reader.chat_panel import ChatPanel
+
+    class Worker(QObject):
+        status, base, delta = Signal(int, str), Signal(int, str, str), Signal(int, str)
+        done, failed = Signal(int, str, str, str), Signal(int, str)
+
+        def __init__(self):
+            super().__init__()
+            self.jobs = []
+
+        def submit(self, job):
+            self.jobs.append(job)
+
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "t.db")
+    book_id = db.upsert_book("h", "/a.pdf", "A", 3)["id"]
+    worker = Worker()
+    panel = ChatPanel(db, worker)
+    panel.set_book(book_id)
+
+    def ask(text):
+        panel.input.setPlainText(text)
+        panel.send()
+        n = len(worker.jobs)
+        worker.done.emit(panel.chat_id, f"s{n}", f"a{n}", f"u{n}")
+
+    panel.add_snippet({"kind": "text", "page": 1, "text": "quote", "rects": []}, new_chat=True)
+    ask("q1")
+    ask("q2")
+    chat = panel.chat_id
+    assert worker.jobs[1].chat_session_id == "s1" and worker.jobs[1].resume_at is None
+    q1, a1, q2, a2 = db.messages(chat)
+
+    # Regenerate the last reply: forks at the reply before its question.
+    panel.regenerate(a2["id"])
+    job = worker.jobs[-1]
+    assert (job.question, job.chat_session_id, job.resume_at) == ("q2", "s1", "u1")
+    assert job.history == [("user", "q1"), ("assistant", "a1")]
+    assert [m["text"] for m in db.messages(chat)] == ["q1", "a1", "q2"] and db.chat(chat)["session_id"] is None
+    worker.done.emit(chat, "s3", "a3", "u3")
+
+    # Edit the first question: its snippet comes along, the draft is set aside, and sending starts over.
+    panel.input.setPlainText("draft")
+    panel.edit_message(q1["id"])
+    assert panel.input.toPlainText() == "q1" and len(panel._pending) == 1 and panel.pending_snippets() == []
+    panel.input.setPlainText("q1 again")
+    panel.send()
+    job = worker.jobs[-1]
+    assert (job.question, job.chat_session_id, job.resume_at, job.history) == ("q1 again", None, None, [])
+    assert [s.text for s in job.snippets] == ["quote"]
+    msgs = db.messages(chat)
+    assert [m["text"] for m in msgs] == ["q1 again"] and msgs[0]["snippets"][0]["text"] == "quote"
+    assert panel.input.toPlainText() == "draft" and panel._editing is None and not panel.edit_bar.isVisibleTo(panel)
+
+    # Escape leaves editing without changing anything.
+    worker.done.emit(chat, "s5", "a5", "u5")
+    panel.edit_message(msgs[0]["id"])
+    panel.cancel_edit()
+    assert panel.input.toPlainText() == "draft" and len(db.messages(chat)) == 2
+
+
 def test_transcript_navigation_routes_links_and_confines_visualizations(monkeypatch):
     from types import SimpleNamespace
 
@@ -150,21 +233,25 @@ def test_transcript_navigation_routes_links_and_confines_visualizations(monkeypa
     opened = []
     monkeypatch.setattr(tv.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
     emitted = []
-    page = SimpleNamespace(jump=SimpleNamespace(emit=lambda n: emitted.append(("jump", n))),
-                           openViz=SimpleNamespace(emit=lambda n: emitted.append(("viz", n))))
+    page = SimpleNamespace(**{
+        name: SimpleNamespace(emit=lambda n, name=name: emitted.append((name, n)))
+        for name in ("jump", "openViz", "edit", "regenerate")
+    })
     nav = tv._Page.acceptNavigationRequest
     Nav = QWebEnginePage.NavigationType
     clicked, scripted = Nav.NavigationTypeLinkClicked, Nav.NavigationTypeOther
 
     assert not nav(page, QUrl("jump://snippet/7"), clicked, True)
     assert not nav(page, QUrl("viz://open/2"), clicked, True)
-    assert emitted == [("jump", 7), ("viz", 2)]
+    assert not nav(page, QUrl("edit://message/3"), clicked, True)
+    assert not nav(page, QUrl("regen://message/4"), clicked, True)
+    assert emitted == [("jump", 7), ("openViz", 2), ("edit", 3), ("regenerate", 4)]
     # Inside a visualization's frame: its srcdoc loads, nothing else navigates or reaches the app.
     assert nav(page, QUrl("about:srcdoc"), scripted, False)
     assert not nav(page, QUrl("viz://open/0"), clicked, False)
     assert not nav(page, QUrl("https://example.com/leak"), scripted, False)
     assert not nav(page, QUrl("https://example.com/doc"), clicked, False)
-    assert emitted == [("jump", 7), ("viz", 2)] and opened == ["https://example.com/doc"]
+    assert len(emitted) == 4 and opened == ["https://example.com/doc"]
 
 
 def test_epub_document(epub_path):
@@ -241,20 +328,24 @@ class FakeClaude:
 
     def __init__(self, monkeypatch, fail_priming: str | None = None):
         self.calls, self.sessions, self.n, self.fail_priming = [], set(), 0, fail_priming
+        self.uuids = set()  # reply uuids that can be branched from
         monkeypatch.setattr(cc, "run_turn", self.run_turn)
         monkeypatch.setattr(cc, "session_exists", lambda sid, cwd: sid in self.sessions)
 
-    async def run_turn(self, blocks, *, cwd, model=None, resume=None, fork=False, on_delta=None):
+    async def run_turn(self, blocks, *, cwd, model=None, resume=None, fork=False, resume_at=None, on_delta=None):
         text = "\n".join(b.get("text", "") for b in blocks if b.get("text") != cc.READER_INSTRUCTIONS)
-        self.calls.append({"text": text, "resume": resume, "fork": fork})
+        self.calls.append({"text": text, "resume": resume, "fork": fork, "resume_at": resume_at})
         if "<book>" in text and self.fail_priming:
             raise cc.ClaudeError(self.fail_priming)
+        if resume_at and resume_at not in self.uuids:
+            raise cc.ClaudeError(f"Message {resume_at} not found")
         self.n += 1
         sid = resume if resume and not fork else f"s{self.n}"
         self.sessions.add(sid)
+        self.uuids.add(f"u{self.n}")
         if on_delta:
             on_delta("ans")
-        return cc.TurnResult(sid, "answer")
+        return cc.TurnResult(sid, "answer", message_uuid=f"u{self.n}")
 
 
 def run_job(service, events, **kw):
@@ -278,7 +369,7 @@ def test_first_chat_primes_then_forks(monkeypatch, service, pdf_path):
     run_job(svc, events, chat_id=1, book=book(pdf_path), chat_session_id=None)
     assert "<book>" in fake.calls[0]["text"] and "41 seconds" in fake.calls[0]["text"]
     assert fake.calls[1]["resume"] == "s1" and fake.calls[1]["fork"] is True
-    assert ("base", 1, "s1", "full") in events and ("done", 1, "s2", "answer") in events
+    assert ("base", 1, "s1", "full") in events and ("done", 1, "s2", "answer", "u2") in events
     assert ("delta", 1, "ans") in events
 
     # A second chat reuses the base session without priming again, even with stale book data.
@@ -292,7 +383,28 @@ def test_follow_up_resumes_own_session(monkeypatch, service, pdf_path):
     svc, events = service
     run_job(svc, events, chat_id=1, book=book(pdf_path, "base", "full"), chat_session_id="chat",
             history=[("user", "old q"), ("assistant", "old a")])
-    assert fake.calls == [{"text": "Q?", "resume": "chat", "fork": False}]
+    assert fake.calls == [{"text": "Q?", "resume": "chat", "fork": False, "resume_at": None}]
+
+
+def test_branching_forks_at_an_earlier_reply(monkeypatch, service, pdf_path):
+    fake = FakeClaude(monkeypatch)
+    fake.sessions |= {"base", "chat"}
+    fake.uuids.add("reply-1")
+    svc, events = service
+    run_job(svc, events, chat_id=1, book=book(pdf_path, "base", "full"), chat_session_id="chat",
+            resume_at="reply-1", history=[("user", "old q"), ("assistant", "old a")])
+    assert fake.calls == [{"text": "Q?", "resume": "chat", "fork": True, "resume_at": "reply-1"}]
+    assert events[-1] == ("done", 1, "s1", "answer", "u1")
+
+
+def test_unloadable_branch_point_replays_history(monkeypatch, service, pdf_path):
+    fake = FakeClaude(monkeypatch)
+    fake.sessions |= {"base", "chat"}
+    svc, events = service
+    run_job(svc, events, chat_id=1, book=book(pdf_path, "base", "full"), chat_session_id="chat",
+            resume_at="pruned", history=[("user", "old q"), ("assistant", "old a")])
+    assert [(c["resume"], c["fork"], c["resume_at"]) for c in fake.calls] == [("chat", True, "pruned"), ("base", True, None)]
+    assert "Me: old q" in fake.calls[1]["text"] and events[-1][0] == "done"
 
 
 def test_lost_chat_session_replays_history(monkeypatch, service, pdf_path):

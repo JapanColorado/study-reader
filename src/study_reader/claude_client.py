@@ -98,6 +98,8 @@ class TurnResult:
     session_id: str
     text: str
     usage: dict[str, Any] = field(default_factory=dict)
+    # Last transcript entry of the reply: resuming here (resume_at) drops anything after it.
+    message_uuid: str | None = None
 
 
 class ClaudeError(RuntimeError):
@@ -156,7 +158,9 @@ def _prefer_subscription_login() -> None:
         os.environ.pop(var, None)
 
 
-def _options(cwd: str | Path, model: str | None, resume: str | None, fork: bool) -> ClaudeAgentOptions:
+def _options(
+    cwd: str | Path, model: str | None, resume: str | None, fork: bool, resume_at: str | None = None
+) -> ClaudeAgentOptions:
     _prefer_subscription_login()
     Path(cwd).mkdir(parents=True, exist_ok=True)
     return ClaudeAgentOptions(
@@ -174,6 +178,7 @@ def _options(cwd: str | Path, model: str | None, resume: str | None, fork: bool)
         model=model or None,
         resume=resume,
         fork_session=fork,
+        resume_session_at=resume_at,
         include_partial_messages=True,
         max_turns=1,
     )
@@ -186,9 +191,13 @@ async def run_turn(
     model: str | None = None,
     resume: str | None = None,
     fork: bool = False,
+    resume_at: str | None = None,
     on_delta: Callable[[str], None] | None = None,
 ) -> TurnResult:
-    """Send one user message and return the reply, streaming text through on_delta."""
+    """Send one user message and return the reply, streaming text through on_delta.
+
+    resume_at: a TurnResult.message_uuid of the resumed session; only the conversation
+    up to it is loaded (use with fork, so the original session stays intact)."""
 
     async def prompt():
         yield {
@@ -200,8 +209,9 @@ async def run_turn(
     streamed: list[str] = []
     final_text: list[str] = []
     result: ResultMessage | None = None
+    last_uuid: str | None = None
     try:
-        async for msg in query(prompt=prompt(), options=_options(cwd, model, resume, fork)):
+        async for msg in query(prompt=prompt(), options=_options(cwd, model, resume, fork, resume_at)):
             if isinstance(msg, StreamEvent):
                 ev = msg.event
                 if ev.get("type") == "content_block_delta" and ev.get("delta", {}).get("type") == "text_delta":
@@ -211,6 +221,7 @@ async def run_turn(
                         on_delta(piece)
             elif isinstance(msg, AssistantMessage):
                 final_text.extend(b.text for b in msg.content if isinstance(b, TextBlock))
+                last_uuid = msg.uuid or last_uuid
             elif isinstance(msg, ResultMessage):
                 result = msg
     except ClaudeError:
@@ -223,7 +234,7 @@ async def run_turn(
     text = "".join(final_text) or "".join(streamed) or (result.result or "")
     if result.is_error:
         raise ClaudeError(text or result.subtype or "Claude reported an error")
-    return TurnResult(session_id=result.session_id, text=text, usage=result.usage or {})
+    return TurnResult(session_id=result.session_id, text=text, usage=result.usage or {}, message_uuid=last_uuid)
 
 
 async def prime_book(title: str, book_text: str, *, cwd: str | Path, model: str | None = None) -> str:
