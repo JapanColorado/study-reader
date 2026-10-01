@@ -32,6 +32,8 @@ Requires the `claude` CLI to be logged in (`claude` → `/login`). The app talks
 | Model | The chat header's dropdown sets the open chat's model. **Settings** (toolbar, right) → **Default model for new chats** sets what new chats start with |
 | Theme | **Settings** → **Theme**: match the system, light, or dark. **Dark pages** recolors the book itself in dark mode |
 
+Claude can answer with interactive visualizations (plots, diagrams, simulations with sliders). They render inline in the chat. **Open ↗** on a visualization's header shows it in a larger window. Asking for one ("visualize this", "plot it so I can vary k") helps.
+
 Every passage and screenshot region you ask about stays highlighted in the book. Right-click a chat or a library entry to delete it; deleting a chat removes its highlights.
 
 ## How the shared context works
@@ -47,5 +49,6 @@ The first question for a book sends its full text to Claude once, in a "base" se
 - Data lives in `~/.local/share/study-reader/` (database, screenshots, session working directories). Set `STUDY_READER_DATA` to move it.
 - An exported `ANTHROPIC_API_KEY` is ignored so requests use the Claude login rather than per-token API billing. Set `STUDY_READER_USE_API_KEY=1` to use the key instead.
 - Chats run with no tools and no MCP servers, including claude.ai connectors.
+- Visualizations run in a sandboxed frame with no network access. Bundled d3 v7 and Chart.js v4 (in `assets/viz/`) are inlined when a visualization uses them.
 - The chat view uses software rendering because GPU compositing in QtWebEngine leaves it blank on some Wayland compositors (seen on COSMIC). Set `STUDY_READER_WEB_GPU=1` to re-enable GPU rendering.
 - EPUBs are rendered by MuPDF as fixed pages, with limited CSS support.

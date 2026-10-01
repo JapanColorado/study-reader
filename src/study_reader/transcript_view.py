@@ -1,29 +1,51 @@
-"""Chat transcript rendered in a web view (Markdown + KaTeX, bundled offline)."""
+"""Chat transcript rendered in a web view (Markdown + KaTeX, bundled offline), plus the
+window that shows one of its visualizations at full size."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, QUrl, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from .theme import theme
 
 ASSETS = Path(__file__).parent / "assets"
+# Libraries a visualization may use. Sandboxed frames can't load file:// URLs, so
+# transcript.html inlines the ones a visualization's code refers to.
+VIZ_LIBS = {"d3": "viz/d3.min.js", "chart": "viz/chart.umd.min.js"}
+
+
+def _url_id(url: QUrl) -> int | None:
+    try:
+        return int(url.path().strip("/"))
+    except ValueError:
+        return None
+
+
+def _open_external(url: QUrl, nav_type) -> None:
+    """Links clicked inside a visualization open in the browser; scripted navigation doesn't."""
+    if url.scheme() in ("http", "https", "mailto") and nav_type == QWebEnginePage.NavigationType.NavigationTypeLinkClicked:
+        QDesktopServices.openUrl(url)
 
 
 class _Page(QWebEnginePage):
     jump = Signal(int)
+    openViz = Signal(int)
 
     def acceptNavigationRequest(self, url: QUrl, nav_type, is_main_frame: bool) -> bool:
-        if url.scheme() == "jump":
-            try:
-                self.jump.emit(int(url.path().strip("/")))
-            except ValueError:
-                pass
+        if not is_main_frame:  # a visualization's iframe: only its own srcdoc
+            if url.scheme() in ("about", "data"):
+                return True
+            _open_external(url, nav_type)
+            return False
+        if url.scheme() in ("jump", "viz"):
+            if (n := _url_id(url)) is not None:
+                (self.jump if url.scheme() == "jump" else self.openViz).emit(n)
             return False
         if url.scheme() in ("http", "https", "mailto"):
             QDesktopServices.openUrl(url)
@@ -38,6 +60,7 @@ class TranscriptView(QWebEngineView):
         super().__init__(parent)
         page = _Page(self)
         page.jump.connect(self.jumpRequested)
+        page.openViz.connect(self._open_viz)
         self.setPage(page)
         page.setBackgroundColor(QColor(theme().colors["surface"]))
         self._ready = False
@@ -73,6 +96,15 @@ class TranscriptView(QWebEngineView):
     def _flush_stream(self) -> None:
         self._run(f"setStreaming({json.dumps(self._stream_text)})", queue=False)
 
+    def _open_viz(self, viz_id: int) -> None:
+        def show(result) -> None:
+            viz = json.loads(result) if isinstance(result, str) and result else None
+            if viz:
+                VisualizationWindow(viz["title"] or "Visualization", viz["doc"], self.window()).show()
+
+        # As JSON: large objects don't survive the conversion to Python.
+        self.page().runJavaScript(f"JSON.stringify(VIZ[{viz_id}] ? vizDoc({viz_id}) : null)", 0, show)
+
     def _run(self, js: str, queue: bool = True) -> None:
         if self._ready:
             self.page().runJavaScript(js)
@@ -81,6 +113,36 @@ class TranscriptView(QWebEngineView):
 
     def _on_loaded(self, ok: bool) -> None:
         self._ready = True
+        libs = {name: (ASSETS / rel).read_text(encoding="utf-8") for name, rel in VIZ_LIBS.items()}
+        self.page().runJavaScript(f"setVizLibs({json.dumps(libs)})")
         if self._pending:
             self.page().runJavaScript(self._pending)
             self._pending = None
+
+
+class _VizPage(QWebEnginePage):
+    def acceptNavigationRequest(self, url: QUrl, nav_type, is_main_frame: bool) -> bool:
+        if url.scheme() in ("about", "data"):
+            return True
+        _open_external(url, nav_type)
+        return False
+
+
+class VisualizationWindow(QWidget):
+    """A visualization from the transcript in its own resizable window."""
+
+    def __init__(self, title: str, doc: str, parent: QWidget | None = None):
+        super().__init__(parent, Qt.WindowType.Window)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setWindowTitle(title)
+        self.resize(900, 700)
+        self.view = QWebEngineView(self)
+        page = _VizPage(self.view)
+        page.setBackgroundColor(QColor(theme().colors["surface"]))
+        self.view.setPage(page)
+        # setHtml goes through a data: URL capped at 2 MB; a document with both
+        # libraries inlined is about 0.5 MB.
+        self.view.setHtml(doc)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.view)
