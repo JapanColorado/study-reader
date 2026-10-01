@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 
 from PySide6.QtCore import QEvent, QSize, Qt, Signal
-from PySide6.QtGui import QFontMetrics
+from PySide6.QtGui import QFontMetrics, QTextCursor
 from PySide6.QtWidgets import (
     QComboBox, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMenu, QPlainTextEdit,
     QSplitter, QToolButton, QVBoxLayout, QWidget,
@@ -29,12 +29,15 @@ INPUT_LINES = (2, 10)  # composer height range, in lines
 
 class _Composer(QPlainTextEdit):
     submitted = Signal()
+    cancelled = Signal()
 
     def keyPressEvent(self, event) -> None:
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (
             event.modifiers() & Qt.KeyboardModifier.ShiftModifier
         ):
             self.submitted.emit()
+        elif event.key() == Qt.Key.Key_Escape:
+            self.cancelled.emit()
         else:
             super().keyPressEvent(event)
 
@@ -53,6 +56,8 @@ class ChatPanel(QWidget):
         self._pending: list[dict] = []
         self._streams: dict[int, str] = {}  # chat id -> reply text so far
         self._status = ""
+        self._editing: int | None = None  # id of the message being rewritten in the composer
+        self._draft: tuple[str, list[dict]] | None = None  # composer contents set aside while editing
         self._draft_model = self.default_model()  # for the chat the next send creates
 
         self.model = QComboBox()
@@ -91,6 +96,8 @@ class ChatPanel(QWidget):
 
         self.transcript = TranscriptView()
         self.transcript.jumpRequested.connect(self._on_jump)
+        self.transcript.editRequested.connect(self.edit_message)
+        self.transcript.regenerateRequested.connect(self.regenerate)
         self.status = QLabel()
         self.status.setWordWrap(True)
         self.status.setProperty("role", "hint")
@@ -101,6 +108,7 @@ class ChatPanel(QWidget):
         self.input = _Composer(objectName="composerInput")
         self.input.setPlaceholderText("Ask about the book…")
         self.input.submitted.connect(self.send)
+        self.input.cancelled.connect(self.cancel_edit)
         self.input.document().documentLayout().documentSizeChanged.connect(self._fit_input)
         self.input.installEventFilter(self)
         self.send_btn = QToolButton(objectName="send")
@@ -117,10 +125,27 @@ class ChatPanel(QWidget):
         actions.addStretch()
         actions.addWidget(self.send_btn)
 
+        edit_label = QLabel("Editing message · later replies will be replaced")
+        edit_label.setProperty("role", "hint")
+        edit_label.setMinimumWidth(1)
+        cancel_edit = QToolButton()
+        cancel_edit.setIcon(icon("x", "muted"))
+        cancel_edit.setIconSize(QSize(12, 12))
+        cancel_edit.setFixedSize(20, 20)
+        cancel_edit.setToolTip("Cancel editing (Esc)")
+        cancel_edit.clicked.connect(self.cancel_edit)
+        self.edit_bar = QWidget()
+        edit_row = QHBoxLayout(self.edit_bar)
+        edit_row.setContentsMargins(4, 0, 0, 0)
+        edit_row.addWidget(edit_label, 1)
+        edit_row.addWidget(cancel_edit)
+        self.edit_bar.hide()
+
         self.composer = QFrame(objectName="composer")
         box = QVBoxLayout(self.composer)
         box.setContentsMargins(8, 8, 8, 8)
         box.setSpacing(4)
+        box.addWidget(self.edit_bar)
         box.addLayout(self.chips)
         box.addWidget(self.input)
         box.addLayout(actions)
@@ -203,6 +228,7 @@ class ChatPanel(QWidget):
 
     # -- book / chat selection ---------------------------------------------------
     def set_book(self, book_id: int | None) -> None:
+        self.cancel_edit()
         self.book_id = book_id
         self.chat_id = None
         self._draft_model = self.default_model()
@@ -216,6 +242,7 @@ class ChatPanel(QWidget):
         self._refresh_status()
 
     def new_chat(self) -> None:
+        self.cancel_edit()
         self.chat_id = None
         self.chat_list.blockSignals(True)
         self.chat_list.setCurrentItem(None)
@@ -226,6 +253,8 @@ class ChatPanel(QWidget):
         self.input.setFocus()
 
     def open_chat(self, chat_id: int) -> None:
+        if chat_id != self.chat_id:
+            self.cancel_edit()
         self.chat_id = chat_id
         self._refresh_list()
         self._sync_model()
@@ -236,8 +265,8 @@ class ChatPanel(QWidget):
         if self.book_id is None:
             return
         if new_chat:
+            self.new_chat()  # first: leaving an edit puts the set-aside draft back
             self._pending.clear()
-            self.new_chat()
         if snippet.get("png"):
             folder = data_dir() / "snippets"
             folder.mkdir(exist_ok=True)
@@ -252,10 +281,11 @@ class ChatPanel(QWidget):
 
     def pending_snippets(self) -> list[dict]:
         """Snippets waiting in the composer, not yet saved with a message."""
-        return list(self._pending)
+        return [s for s in self._pending if "id" not in s]  # an edited message's are saved already
 
     def _on_chat_selected(self, item: QListWidgetItem | None, _prev=None) -> None:
         if item is not None:
+            self.cancel_edit()
             self.chat_id = item.data(Qt.ItemDataRole.UserRole)
             self._sync_model()
             self._refresh_transcript()
@@ -273,6 +303,8 @@ class ChatPanel(QWidget):
             self.chat_list.editItem(item)
         elif chosen is delete:
             chat_id = item.data(Qt.ItemDataRole.UserRole)
+            if chat_id == self.chat_id:
+                self.cancel_edit()
             self.db.delete_chat(chat_id)
             if chat_id == self.chat_id:
                 self.chat_id = None
@@ -305,7 +337,6 @@ class ChatPanel(QWidget):
         if not question and not snippets:
             return
         question = question or DEFAULT_QUESTION
-        book = self.db.book(self.book_id)
 
         if self.chat_id is None:
             first = snippets[0] if snippets else None
@@ -313,28 +344,103 @@ class ChatPanel(QWidget):
                 first["text"] or f"Screenshot, p. {first['page'] + 1}"
             )
             self.chat_id = self.db.create_chat(self.book_id, " ".join(title.split())[:70], self._draft_model)
-        chat = self.db.chat(self.chat_id)
-        history = [(m["role"], m["text"]) for m in self.db.messages(self.chat_id) if m["role"] != "error"]
+        prior = self.db.messages(self.chat_id)
+        editing = self._editing
+        if editing is not None:
+            prior = [m for m in prior if m["id"] < editing]
+            self.db.delete_messages_from(self.chat_id, editing)
         self.db.add_message(self.chat_id, "user", question, snippets)
+        self._ask(question, snippets, prior, branch=editing is not None)
 
+        if editing is not None:
+            self._end_edit()
+        else:
+            self._pending.clear()
+            self.input.clear()
+            self._refresh_chips()
+        self._refresh_list()
+        self._refresh_transcript()
+        if snippets or editing is not None:
+            self.highlightsChanged.emit()
+
+    def regenerate(self, message_id: int) -> None:
+        """Ask the question before this reply again, replacing the reply."""
+        if self.chat_id is None or self.chat_id in self._streams or self._editing is not None:
+            return
+        messages = self.db.messages(self.chat_id)
+        at = next((i for i, m in enumerate(messages) if m["id"] == message_id), None)
+        asked = next((i for i in range(at, -1, -1) if messages[i]["role"] == "user"), None) if at is not None else None
+        if asked is None or asked + 1 >= len(messages):
+            return
+        question = messages[asked]
+        self.db.delete_messages_from(self.chat_id, messages[asked + 1]["id"])
+        self._ask(question["text"], question["snippets"], messages[:asked], branch=True)
+        self._refresh_transcript()
+
+    def _ask(self, question: str, snippets: list[dict], prior: list[dict], branch: bool) -> None:
+        """Send a question that follows `prior`, the chat's saved messages before it.
+
+        branch: later turns were dropped, so rather than continuing the chat's session, fork
+        from the last reply in `prior` at that reply (or, with no reply or one saved before
+        branch points were kept, start over from the book and replay `prior`)."""
+        book = self.db.book(self.book_id)
+        chat = self.db.chat(self.chat_id)
+        session_id, resume_at = chat["session_id"], None
+        if branch:
+            # Until the new reply lands, nothing may continue the old conversation.
+            self.db.update_chat(self.chat_id, session_id=None)
+            session_id = None
+            reply = next((m for m in reversed(prior) if m["role"] == "assistant"), None)
+            if reply and reply["session_uuid"]:
+                session_id, resume_at = reply["session_id"], reply["session_uuid"]
         self.worker.submit(Job(
             chat_id=self.chat_id,
             book=BookRef(book["id"], book["path"], book["title"], book["base_session_id"], book["context_mode"]),
-            chat_session_id=chat["session_id"],
+            chat_session_id=session_id,
             question=question,
             snippets=[cc.Snippet(s["kind"], s["page"], s.get("text", ""), s.get("image_path", "")) for s in snippets],
-            history=history,
+            history=[(m["role"], m["text"]) for m in prior if m["role"] != "error"],
             page=snippets[0]["page"] if snippets else self.current_page(),
             model=chat["model"] or None,
+            resume_at=resume_at,
         ))
         self._streams[self.chat_id] = ""
-        self._pending.clear()
-        self.input.clear()
+
+    # -- editing -------------------------------------------------------------------
+    def edit_message(self, message_id: int) -> None:
+        """Load one of the chat's questions into the composer; sending replaces it and what follows."""
+        if self.chat_id is None or self.chat_id in self._streams:
+            return
+        message = next((m for m in self.db.messages(self.chat_id) if m["id"] == message_id), None)
+        if message is None or message["role"] != "user":
+            return
+        if self._editing is None:
+            self._draft = (self.input.toPlainText(), self._pending)
+        self._editing = message_id
+        self._pending = [dict(s) for s in message["snippets"]]
+        self.input.setPlainText(message["text"])
+        self.input.moveCursor(QTextCursor.MoveOperation.End)
+        self.edit_bar.show()
         self._refresh_chips()
-        self._refresh_list()
         self._refresh_transcript()
-        if snippets:
+        self.input.setFocus()
+        self.highlightsChanged.emit()
+
+    def cancel_edit(self) -> None:
+        if self._editing is not None:
+            self._end_edit()
+            self._refresh_transcript()
             self.highlightsChanged.emit()
+
+    def _end_edit(self) -> None:
+        """Leave editing, giving the composer back what it held before."""
+        text, pending = self._draft or ("", [])
+        self._editing, self._draft = None, None
+        self._pending = pending
+        self.input.setPlainText(text)
+        self.input.moveCursor(QTextCursor.MoveOperation.End)
+        self.edit_bar.hide()
+        self._refresh_chips()
 
     # -- worker events -------------------------------------------------------------
     def _on_delta(self, chat_id: int, text: str) -> None:
@@ -344,18 +450,20 @@ class ChatPanel(QWidget):
         if chat_id == self.chat_id:
             self.transcript.set_streaming(self._streams[chat_id])
 
-    def _finish(self, chat_id: int, role: str, text: str) -> None:
+    def _finish(
+        self, chat_id: int, role: str, text: str, session_id: str | None = None, session_uuid: str | None = None
+    ) -> None:
         self._streams.pop(chat_id, None)
         if self.db.chat(chat_id) is None:  # deleted while waiting
             return
-        self.db.add_message(chat_id, role, text)
+        self.db.add_message(chat_id, role, text, session_id=session_id, session_uuid=session_uuid)
         if chat_id == self.chat_id:
             self._refresh_transcript()
 
-    def _on_done(self, chat_id: int, session_id: str, text: str) -> None:
+    def _on_done(self, chat_id: int, session_id: str, text: str, message_uuid: str) -> None:
         if self.db.chat(chat_id) is not None:
             self.db.update_chat(chat_id, session_id=session_id)
-        self._finish(chat_id, "assistant", text)
+        self._finish(chat_id, "assistant", text, session_id, message_uuid or None)
 
     def _on_failed(self, chat_id: int, message: str) -> None:
         self._finish(chat_id, "error", f"Claude request failed: {message}")
@@ -400,7 +508,7 @@ class ChatPanel(QWidget):
             "Select text or capture a region in the book to ask about it." if self.book_id is not None
             else "Open a book to start."
         )
-        self.transcript.show_messages(messages, self._streams.get(self.chat_id), placeholder)
+        self.transcript.show_messages(messages, self._streams.get(self.chat_id), placeholder, self._editing)
         self.send_btn.setEnabled(self.chat_id not in self._streams)
 
     def _refresh_chips(self) -> None:
