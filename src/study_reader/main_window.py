@@ -183,7 +183,7 @@ class MainWindow(QMainWindow):
 
         self.calc_action = action("Calculator", "F11", self._toggle_calc, "calculator", checkable=True)
         bar.addAction(self.calc_action)
-        self.chat_action = action("Chats", "F10", self._toggle_chat, "panel-right", checkable=True)
+        self.chat_action = action("Chats", "F10", self._toggle_chat, "message", checkable=True)
         self.chat_action.setChecked(True)
         bar.addAction(self.chat_action)
 
