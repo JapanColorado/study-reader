@@ -219,9 +219,10 @@ def test_build_blocks(tmp_path):
     blocks = cc.build_blocks(
         "Why?", [cc.Snippet("text", 4, "a passage"), cc.Snippet("image", 0, image_path=str(img))], "ctx"
     )
-    assert [b["type"] for b in blocks] == ["text", "text", "text", "image", "text"]
-    assert blocks[0]["text"] == "ctx" and "page 5" in blocks[1]["text"] and blocks[-1]["text"] == "Why?"
-    assert blocks[3]["source"]["media_type"] == "image/png"
+    assert [b["type"] for b in blocks] == ["text", "text", "text", "text", "image", "text"]
+    assert blocks[0]["text"] == cc.READER_INSTRUCTIONS  # every turn: resumed sessions keep their system prompt
+    assert blocks[1]["text"] == "ctx" and "page 5" in blocks[2]["text"] and blocks[-1]["text"] == "Why?"
+    assert blocks[4]["source"]["media_type"] == "image/png"
 
 
 def test_api_key_is_dropped_by_default(monkeypatch):
@@ -244,7 +245,7 @@ class FakeClaude:
         monkeypatch.setattr(cc, "session_exists", lambda sid, cwd: sid in self.sessions)
 
     async def run_turn(self, blocks, *, cwd, model=None, resume=None, fork=False, on_delta=None):
-        text = "\n".join(b.get("text", "") for b in blocks)
+        text = "\n".join(b.get("text", "") for b in blocks if b.get("text") != cc.READER_INSTRUCTIONS)
         self.calls.append({"text": text, "resume": resume, "fork": fork})
         if "<book>" in text and self.fail_priming:
             raise cc.ClaudeError(self.fail_priming)

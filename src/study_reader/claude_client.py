@@ -29,7 +29,15 @@ SYSTEM_PROMPT = (
     "select from it. Answer directly and concisely, grounded in the book where it "
     "is relevant, and mention page numbers when you refer to other parts of it. "
     "Use Markdown, and LaTeX ($...$ or $$...$$) for math. You have no tools."
-    "\n\n"
+)
+
+# Sent with every question rather than in SYSTEM_PROMPT: a resumed or forked session
+# keeps the system prompt it was created with, so edits there never reach books
+# primed (or chats started) before the change.
+READER_INSTRUCTIONS = (
+    "<reader_instructions>\n"
+    "These describe what the reader app can display. They apply to every reply and "
+    "replace any earlier statement about what you can or can't show.\n\n"
     "When a picture would genuinely help (a plot, a diagram, a simulation, something "
     "to explore with sliders), you can include an interactive visualization: a fenced "
     "code block whose info string is `visualization` followed by a short title, e.g. "
@@ -48,7 +56,9 @@ SYSTEM_PROMPT = (
     "(array of colors), plus `vizTheme.dark`.\n"
     "- Label axes and units, keep the code self-contained and correct, and still "
     "explain the idea in prose; KaTeX is not available inside the frame.\n"
-    "Only add a visualization when it adds real understanding, not for every answer."
+    "Only add a visualization when it adds real understanding, not for every answer, "
+    "but always make one when asked to.\n"
+    "</reader_instructions>"
 )
 
 # Rough budget for the book text inside the priming session, leaving room for chats.
@@ -88,7 +98,7 @@ class ClaudeError(RuntimeError):
 
 def build_blocks(question: str, snippets: list[Snippet], extra_context: str = "") -> list[dict]:
     """Turn a question plus its snippets into Messages-API content blocks."""
-    blocks: list[dict] = []
+    blocks: list[dict] = [{"type": "text", "text": READER_INSTRUCTIONS}]
     if extra_context:
         blocks.append({"type": "text", "text": extra_context})
     for s in snippets:
