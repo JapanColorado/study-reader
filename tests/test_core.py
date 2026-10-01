@@ -140,6 +140,33 @@ def test_asking_highlights_and_shows_chats(pdf_path, tmp_path, monkeypatch):
     assert not win.reader._marks
 
 
+def test_transcript_navigation_routes_links_and_confines_visualizations(monkeypatch):
+    from types import SimpleNamespace
+
+    from PySide6.QtCore import QUrl
+    from PySide6.QtWebEngineCore import QWebEnginePage
+    from study_reader import transcript_view as tv
+
+    opened = []
+    monkeypatch.setattr(tv.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
+    emitted = []
+    page = SimpleNamespace(jump=SimpleNamespace(emit=lambda n: emitted.append(("jump", n))),
+                           openViz=SimpleNamespace(emit=lambda n: emitted.append(("viz", n))))
+    nav = tv._Page.acceptNavigationRequest
+    Nav = QWebEnginePage.NavigationType
+    clicked, scripted = Nav.NavigationTypeLinkClicked, Nav.NavigationTypeOther
+
+    assert not nav(page, QUrl("jump://snippet/7"), clicked, True)
+    assert not nav(page, QUrl("viz://open/2"), clicked, True)
+    assert emitted == [("jump", 7), ("viz", 2)]
+    # Inside a visualization's frame: its srcdoc loads, nothing else navigates or reaches the app.
+    assert nav(page, QUrl("about:srcdoc"), scripted, False)
+    assert not nav(page, QUrl("viz://open/0"), clicked, False)
+    assert not nav(page, QUrl("https://example.com/leak"), scripted, False)
+    assert not nav(page, QUrl("https://example.com/doc"), clicked, False)
+    assert emitted == [("jump", 7), ("viz", 2)] and opened == ["https://example.com/doc"]
+
+
 def test_epub_document(epub_path):
     doc = Document(epub_path)
     assert doc.page_count >= 1 and doc.title == "Zorblatt EPUB"
