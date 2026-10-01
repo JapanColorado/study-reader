@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS books (
     last_page INTEGER NOT NULL DEFAULT 0,
     zoom REAL NOT NULL DEFAULT 0,   -- 0 = fit width
     crop_margins INTEGER NOT NULL DEFAULT 0,
+    show_toc INTEGER NOT NULL DEFAULT 1,
+    right_panel TEXT NOT NULL DEFAULT 'chat', -- 'chat' | 'calc' | '' (collapsed)
     base_session_id TEXT,
     context_mode TEXT,              -- NULL (not prepared) | 'full' | 'partial'
     opened_at REAL NOT NULL
@@ -82,6 +84,10 @@ class Database:
         book_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(books)")}
         if "crop_margins" not in book_cols:
             self.conn.execute("ALTER TABLE books ADD COLUMN crop_margins INTEGER NOT NULL DEFAULT 0")
+        if "show_toc" not in book_cols:
+            self.conn.execute("ALTER TABLE books ADD COLUMN show_toc INTEGER NOT NULL DEFAULT 1")
+        if "right_panel" not in book_cols:
+            self.conn.execute("ALTER TABLE books ADD COLUMN right_panel TEXT NOT NULL DEFAULT 'chat'")
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(chats)")}
         if "model" not in cols:
             # Existing chats keep the model that was selected globally before chats had their own.

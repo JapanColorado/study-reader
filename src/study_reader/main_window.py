@@ -199,18 +199,28 @@ class MainWindow(QMainWindow):
 
     def _toggle_toc(self, on: bool) -> None:
         self.sidebar.setVisible(on and self.toc.topLevelItemCount() > 0)
+        self._save_panels()
 
     def _toggle_chat(self, on: bool) -> None:
         if on:
             self.calc_action.setChecked(False)
         self._sync_right()
+        self._save_panels()
 
     def _toggle_calc(self, on: bool) -> None:
         if on:
             self.chat_action.setChecked(False)
         self._sync_right()
+        self._save_panels()
         if on and self.right.isVisible():
             self.calc.focus_input()
+
+    def _save_panels(self) -> None:
+        """Remember per book which sidebars are open, so reopening it restores them."""
+        if self.book_id is None:
+            return
+        right = "chat" if self.chat_action.isChecked() else "calc" if self.calc_action.isChecked() else ""
+        self.db.update_book(self.book_id, show_toc=int(self.toc_action.isChecked()), right_panel=right)
 
     def _sync_right(self) -> None:
         """Show whichever of chats / calculator is toggled on, or neither."""
@@ -274,6 +284,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{book['title']} — Study Reader")
 
         self._fill_toc()
+        self.toc_action.setChecked(bool(book["show_toc"]))
+        self.chat_action.setChecked(book["right_panel"] == "chat")
+        self.calc_action.setChecked(book["right_panel"] == "calc")
         self.page_spin.blockSignals(True)
         self.page_spin.setRange(1, doc.page_count)
         self.page_spin.blockSignals(False)

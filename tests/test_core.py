@@ -72,6 +72,7 @@ def test_old_database_gets_chat_model_column(tmp_path):
     db = Database(path)
     assert db.chat(1)["model"] == "sonnet"  # keeps the model it was used with
     assert db.book(1)["crop_margins"] == 0
+    assert (db.book(1)["show_toc"], db.book(1)["right_panel"]) == (1, "chat")
 
 
 # -- document ---------------------------------------------------------------------
@@ -138,6 +139,33 @@ def test_asking_highlights_and_shows_chats(pdf_path, tmp_path, monkeypatch):
 
     win.chat._remove_pending(win.chat.pending_snippets()[0])
     assert not win.reader._marks
+
+
+def test_sidebars_stay_collapsed_when_book_is_reopened(pdf_path, tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    from PySide6.QtWidgets import QApplication
+    from study_reader.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    win = MainWindow(Database(tmp_path / "t.db"))
+    win.show()
+    win.open_book(pdf_path)
+    assert win.chat_action.isChecked() and win.right.isVisible()  # new books open with chats
+    win.toc_action.setEnabled(True)  # the test PDF may have no contents to show
+    win.toc_action.trigger()
+    win.chat_action.trigger()
+    assert not win.right.isVisible()
+
+    win.show_library()
+    win.open_book(pdf_path)
+    assert not win.toc_action.isChecked() and not win.sidebar.isVisible()
+    assert not win.chat_action.isChecked() and not win.calc_action.isChecked() and not win.right.isVisible()
+
+    win.calc_action.trigger()
+    win.show_library()
+    win.open_book(pdf_path)
+    assert win.calc_action.isChecked() and win.right.currentWidget() is win.calc and win.right.isVisible()
 
 
 def test_transcript_navigation_routes_links_and_confines_visualizations(monkeypatch):
