@@ -117,6 +117,29 @@ def test_reader_crop_maps_page_points(pdf_path, monkeypatch):
     assert view._clips[1] == (0.0, 0.0, 400.0, 300.0) and view.current_page() == 1
 
 
+def test_asking_highlights_and_shows_chats(pdf_path, tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    from PySide6.QtWidgets import QApplication
+    from study_reader.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    win = MainWindow(Database(tmp_path / "t.db"))
+    win.show()
+    win.open_book(pdf_path)
+    win.calc_action.trigger()  # the calculator has the right-hand slot
+    assert win.right.currentWidget() is win.calc
+
+    words = win.doc.words(0)
+    win.reader._selection = {0: words[:3]}
+    win.reader.choose(True)
+    assert win.chat_action.isChecked() and win.right.currentWidget() is win.chat
+    assert [m["kind"] for m in win.reader._marks[0]] == ["text"]  # marked before anything is sent
+
+    win.chat._remove_pending(win.chat.pending_snippets()[0])
+    assert not win.reader._marks
+
+
 def test_epub_document(epub_path):
     doc = Document(epub_path)
     assert doc.page_count >= 1 and doc.title == "Zorblatt EPUB"

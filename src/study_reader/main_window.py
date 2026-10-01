@@ -65,7 +65,7 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self.library.openRequested.connect(self.open_book)
         self.library.browseRequested.connect(self.browse)
-        self.reader.snippetChosen.connect(self.chat.add_snippet)
+        self.reader.snippetChosen.connect(lambda sn, new: self._show_chat(lambda: self.chat.add_snippet(sn, new)))
         self.reader.highlightClicked.connect(self._highlight_menu)
         self.chat.highlightsChanged.connect(self._refresh_highlights)
         self.reader.pageChanged.connect(self._on_page_changed)
@@ -307,13 +307,15 @@ class MainWindow(QMainWindow):
     # -- highlights -----------------------------------------------------------------
     def _refresh_highlights(self) -> None:
         if self.book_id is not None:
-            self.reader.set_highlights(self.db.book_snippets(self.book_id))
+            # Pending snippets are marked too, so a passage stays highlighted while its question is drafted.
+            pending = [{**sn, "chat_id": None} for sn in self.chat.pending_snippets()]
+            self.reader.set_highlights(self.db.book_snippets(self.book_id) + pending)
 
     def _highlight_menu(self, snippets: list[dict], pos) -> None:
         """Clicked highlight: open one of the chats that asked about it, or start another."""
         menu = QMenu(self)
         metrics = menu.fontMetrics()
-        chat_ids = list(dict.fromkeys(sn["chat_id"] for sn in reversed(snippets)))
+        chat_ids = list(dict.fromkeys(sn["chat_id"] for sn in reversed(snippets) if sn["chat_id"] is not None))
         for chat_id in chat_ids:
             chat = self.db.chat(chat_id)
             if chat:

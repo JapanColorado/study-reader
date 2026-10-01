@@ -41,7 +41,7 @@ class _Composer(QPlainTextEdit):
 
 class ChatPanel(QWidget):
     jumpRequested = Signal(int, list)  # page, rects
-    highlightsChanged = Signal()  # a chat gained or lost snippets
+    highlightsChanged = Signal()  # a chat, or the composer, gained or lost snippets
 
     def __init__(self, db: Database, worker: ChatWorker, parent=None):
         super().__init__(parent)
@@ -248,6 +248,11 @@ class ChatPanel(QWidget):
         self._pending.append(snippet)
         self._refresh_chips()
         self.input.setFocus()
+        self.highlightsChanged.emit()
+
+    def pending_snippets(self) -> list[dict]:
+        """Snippets waiting in the composer, not yet saved with a message."""
+        return list(self._pending)
 
     def _on_chat_selected(self, item: QListWidgetItem | None, _prev=None) -> None:
         if item is not None:
@@ -431,3 +436,4 @@ class ChatPanel(QWidget):
     def _remove_pending(self, snippet: dict) -> None:
         self._pending = [s for s in self._pending if s is not snippet]
         self._refresh_chips()
+        self.highlightsChanged.emit()
