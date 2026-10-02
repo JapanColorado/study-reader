@@ -199,6 +199,10 @@ QComboBox::down-arrow { image: url($chevron_down); width: 11px; height: 11px; }
 QComboBox QAbstractItemView { background: $raised; color: $fg; border: 1px solid $border; outline: 0; padding: 4px;
                               selection-background-color: $hover; selection-color: $fg; }
 
+QLineEdit#urlInput { background: $surface; color: $fg; border: 1px solid $border; border-radius: 7px; padding: 6px 8px;
+                     selection-background-color: $accent_soft; selection-color: $fg; }
+QLineEdit#urlInput:focus { border-color: $accent; }
+
 QSpinBox { background: $surface; color: $fg; border: 1px solid $border; border-radius: 6px; padding: 3px 4px; }
 QSpinBox:focus { border-color: $accent; }
 QSpinBox:disabled { color: $faint; }

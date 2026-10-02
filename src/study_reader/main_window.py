@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
-    QApplication, QFileDialog, QInputDialog, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QProgressDialog,
-    QSizePolicy, QSpinBox, QSplitter, QStackedWidget, QToolBar, QToolButton, QTreeWidget, QTreeWidgetItem,
-    QVBoxLayout, QWidget,
+    QApplication, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
+    QProgressDialog, QPushButton, QSizePolicy, QSpinBox, QSplitter, QStackedWidget, QToolBar, QToolButton,
+    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .calculator import CalculatorPanel
@@ -281,21 +281,16 @@ class MainWindow(QMainWindow):
 
     # -- web pages ------------------------------------------------------------------
     def ask_url(self) -> None:
-        clip = QApplication.clipboard().text().strip()
-        guess = clip if clip.startswith(("http://", "https://")) and "\n" not in clip else ""
-        url, ok = QInputDialog.getText(
-            self, "Open web page", "Address (LessWrong posts, sequences and wiki pages, or any article):",
-            QLineEdit.EchoMode.Normal, guess,
-        )
-        if ok and url.strip():
-            self.open_url(url)
+        dialog = _UrlDialog(self)
+        if dialog.exec() and dialog.url():
+            self.open_url(dialog.url())
 
     def open_url(self, url: str, refetch: bool = False) -> None:
         """Open the saved snapshot of a page, or fetch one (always, with `refetch`)."""
         try:
             url = normalize_url(url)
         except WebImportError as e:
-            QMessageBox.warning(self, "Could not open web page", str(e))
+            self._warn("Could not open web page", str(e))
             return
         if not refetch:
             for book in self.db.books_from_url(url):
@@ -303,14 +298,20 @@ class MainWindow(QMainWindow):
                     self.open_book(book["path"])
                     return
         if self.web.busy:
-            QMessageBox.information(self, "Open web page", "Another page is still being fetched.")
+            self._warn("Open web page", "Another page is still being fetched.", QMessageBox.Icon.Information)
             return
         self._web_progress = QProgressDialog("Fetching…", "Hide", 0, 0, self)
         self._web_progress.setWindowTitle("Open web page")
         self._web_progress.setMinimumDuration(0)
-        self._web_progress.setMinimumWidth(380)
+        self._web_progress.setMinimumSize(self._web_progress.sizeHint().expandedTo(QSize(380, 0)))
+        keep_minimum_size(self._web_progress)
         self._web_progress.show()
         self.web.start(url)
+
+    def _warn(self, title: str, text: str, kind=QMessageBox.Icon.Warning) -> None:
+        box = QMessageBox(kind, title, text, QMessageBox.StandardButton.Ok, self)
+        keep_minimum_size(box)
+        box.exec()
 
     def _close_web_progress(self) -> None:
         if self._web_progress:
@@ -325,7 +326,7 @@ class MainWindow(QMainWindow):
 
     def _on_web_failed(self, message: str) -> None:
         self._close_web_progress()
-        QMessageBox.warning(self, "Could not open web page", message)
+        self._warn("Could not open web page", message)
 
     def open_book(self, path: str, remember_dir: bool = True) -> bool:
         self._save_position()
@@ -334,7 +335,7 @@ class MainWindow(QMainWindow):
             if doc.page_count == 0:
                 raise ValueError("the document has no pages")
         except Exception as e:
-            QMessageBox.warning(self, "Could not open book", f"{path}\n\n{e}")
+            self._warn("Could not open book", f"{path}\n\n{e}")
             return False
         if self.doc:
             self.doc.close()
@@ -437,6 +438,60 @@ class MainWindow(QMainWindow):
         self._save_position()
         self.worker.shutdown()
         super().closeEvent(event)
+
+
+class _MinimumSizeKeeper(QObject):
+    def eventFilter(self, dialog, event) -> bool:
+        if event.type() == QEvent.Type.Resize:
+            want = dialog.size().expandedTo(dialog.minimumSize()).expandedTo(dialog.minimumSizeHint())
+            if want != dialog.size():
+                QTimer.singleShot(0, dialog, lambda: dialog.resize(want))
+        return False
+
+
+def keep_minimum_size(dialog: QDialog) -> None:
+    """On Wayland (seen on COSMIC) a new dialog's first size loses the title bar's height,
+    squashing its contents until it is clicked. Once that size arrives, growing back sticks."""
+    dialog.installEventFilter(_MinimumSizeKeeper(dialog))
+
+
+class _UrlDialog(QDialog):
+    """Asks for a web address, filled in from the clipboard when it holds a link."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Open web page")
+        self.setMinimumWidth(560)
+        keep_minimum_size(self)
+        hint = _muted("LessWrong posts, sequences and wiki pages, or any article.")
+        self.edit = QLineEdit(objectName="urlInput", placeholderText="https://www.lesswrong.com/…")
+        self.edit.setClearButtonEnabled(True)
+        clip = QApplication.clipboard().text().strip()
+        if clip.startswith(("http://", "https://")) and "\n" not in clip:
+            self.edit.setText(clip)
+            self.edit.selectAll()
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        self.open_button = QPushButton("Open", default=True)
+        self.open_button.setProperty("primary", True)
+        self.open_button.clicked.connect(self.accept)
+        self.edit.textChanged.connect(lambda text: self.open_button.setEnabled(bool(text.strip())))
+        self.open_button.setEnabled(bool(self.edit.text().strip()))
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        buttons.addWidget(cancel)
+        buttons.addWidget(self.open_button)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(10)
+        layout.addWidget(_section("Web address"))
+        layout.addWidget(self.edit)
+        layout.addWidget(hint)
+        layout.addSpacing(6)
+        layout.addLayout(buttons)
+
+    def url(self) -> str:
+        return self.edit.text().strip()
 
 
 def _section(text: str) -> QLabel:
