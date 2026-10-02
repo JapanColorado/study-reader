@@ -1,6 +1,8 @@
 import os
 import sys
+from pathlib import Path
 
+import PySide6
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
@@ -23,9 +25,23 @@ def configure_decorations() -> None:
     os.environ.setdefault("QT_WAYLAND_DECORATION", "adwaita")
 
 
+def configure_platform_theme() -> None:
+    """Use the desktop's own file chooser (cosmic-files, Nautilus, ...) through the
+    xdg-desktop-portal. Without a platform theme PySide6 actually ships (e.g. the
+    common QT_QPA_PLATFORMTHEME=qt5ct), Qt falls back to its own widget dialog."""
+    if not sys.platform.startswith("linux"):
+        return
+    plugins = Path(PySide6.__file__).parent / "Qt" / "plugins" / "platformthemes"
+    requested = os.environ.get("QT_QPA_PLATFORMTHEME", "").split(":")[0]
+    if requested and any(plugins.glob(f"libq{requested}.so")):
+        return
+    os.environ["QT_QPA_PLATFORMTHEME"] = "xdgdesktopportal"
+
+
 def main() -> int:
     configure_webengine()
     configure_decorations()
+    configure_platform_theme()
     app = QApplication(sys.argv)
     app.setApplicationName("study-reader")
     app.setApplicationDisplayName("Study Reader")
