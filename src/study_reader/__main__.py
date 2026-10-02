@@ -34,7 +34,11 @@ def main() -> int:
     window = MainWindow()
     window.show()
     if len(sys.argv) > 1:
-        window.open_book(sys.argv[1])
+        arg = sys.argv[1]
+        if arg.startswith(("http://", "https://")):
+            window.open_url(arg)
+        else:
+            window.open_book(arg)
     return app.exec()
 
 

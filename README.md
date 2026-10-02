@@ -1,12 +1,13 @@
 # Study Reader
 
-A Linux PDF/EPUB reader where any selected passage or screenshot region can be sent to a Claude chat. Each question gets its own chat, and every chat shares the whole book as context.
+A Linux PDF/EPUB/web-page reader where any selected passage or screenshot region can be sent to a Claude chat. Each question gets its own chat, and every chat shares the whole book as context.
 
 ## Run
 
 ```sh
 pixi run app                  # library screen
 pixi run app path/to/book.pdf # open a book directly
+pixi run app https://www.lesswrong.com/posts/…  # open a web page
 pixi run install-desktop      # optional: add a launcher entry
 pixi run test
 ```
@@ -25,6 +26,7 @@ Requires the `claude` CLI to be logged in (`claude` → `/login`). The app talks
 | Zoom | `Ctrl+=` / `Ctrl+-` or `Ctrl`+wheel |
 | Crop the page margins so the text fills the view | **Crop margins** (`Ctrl+Shift+0`), remembered per book |
 | Library / open file / new chat | `Ctrl+L` / `Ctrl+O` / `Ctrl+N` |
+| Open a web page | **Open web page…** (`Ctrl+Shift+O`; a copied link is filled in). Opening the same address again opens the saved copy; right-click it in the library → **Fetch a fresh copy** to update |
 | Show or hide contents / chats | `F9` / `F10` |
 | Calculator (takes the chat panel's place) | `F11`. Type e.g. `v = 3.2`, `v * 12 / ans`, `sqrt(2)^3`, `sin(30)` in **DEG**; ↑ recalls earlier input; history is kept per book |
 | Revisit a passage you asked about | Click its highlight → pick one of its chats, or start a new one |
@@ -37,6 +39,17 @@ Requires the `claude` CLI to be logged in (`claude` → `/login`). The app talks
 Claude can answer with interactive visualizations (plots, diagrams, simulations with sliders). They render inline in the chat. **Open ↗** on a visualization's header shows it in a larger window. Asking for one ("visualize this", "plot it so I can vary k") helps.
 
 Every passage and screenshot region you ask about stays highlighted in the book. Right-click a chat or a library entry to delete it; deleting a chat removes its highlights.
+
+## Web pages
+
+A web page is saved as a PDF snapshot (in `web/` under the data directory) and then reads like any book, so its highlights and page numbers stay put. Images are fetched once, when the snapshot is made.
+
+- **LessWrong**, the **Alignment Forum** and the **EA Forum** (and GreaterWrong links) are read through the sites' API:
+  - a post comes with its 30 best comments, threaded, each with the comments it replies to;
+  - a sequence (`/s/…`) becomes one book with a chapter per post;
+  - a wiki page (`/w/…`, `/tag/…`) includes every tab, each starting a new page.
+- Other sites go through readability-style article extraction, which drops menus and sidebars. A link straight to a PDF or EPUB opens that file.
+- Math is re-typeset with MathJax, and each formula's TeX source is kept in the page's text, so selections and Claude see `$\frac{a}{b}$` rather than scattered glyphs.
 
 ## How the shared context works
 

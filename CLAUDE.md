@@ -2,14 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Study Reader is a PySide6 desktop PDF/EPUB reader (Linux only) where selected passages or screenshot regions are sent to per-snippet Claude chats that all share the whole book as context. See README.md for user-facing behavior and keyboard shortcuts.
+Study Reader is a PySide6 desktop PDF/EPUB/web-page reader (Linux only) where selected passages or screenshot regions are sent to per-snippet Claude chats that all share the whole book as context. See README.md for user-facing behavior and keyboard shortcuts.
 
 ## Commands
 
 Pixi manages the environment; `PYTHONPATH` is set to `src/` by pixi activation, so run everything through `pixi run`.
 
 ```sh
-pixi run app [path/to/book.pdf]    # launch (library screen, or open a book)
+pixi run app [book.pdf | URL]      # launch (library screen, or open a book or web page)
 pixi run test                      # pytest -q tests
 pixi run pytest -q tests/test_core.py::test_first_chat_primes_then_forks   # single test
 pixi run check-claude              # live priming+forking check; makes real Claude requests
@@ -40,6 +40,8 @@ Tests never hit Claude: `FakeClaude` in `tests/test_core.py` monkeypatches `clau
 - `theme.py` has a global `theme()` singleton (light/dark/system plus "dark pages" recoloring via `darken_page`) that emits `changed`, and draws line icons from inline SVG.
 
 **Documents:** `document.py` wraps PyMuPDF for both PDF and EPUB. EPUBs are laid out at a fixed size (`REFLOW_WIDTH/HEIGHT/FONT`) so page numbers stay stable across runs, which matters because snippet rects and page numbers are persisted. Books are identified by content hash (`file_hash`), so a moved file maps back to the same library entry.
+
+**Web pages:** `web_import.py` (Qt-free) turns a URL into an `Article` of `Section`s: LessWrong/Alignment Forum/EA Forum (`FORUMS`) through their GraphQL API (posts + top comments, sequences, wiki pages with their tabs, called "lenses" in the API), anything else through `readability`. `build_html` makes one printable document; math from any source is normalized to `<span class="math" data-tex>` and re-typeset by bundled MathJax SVG (`assets/mathjax/`), with the TeX also printed nearly invisibly in the flow (`.tex-src`) because that is the only math text that extracts cleanly and in reading order. `web_render.WebImporter` fetches in a thread, prints with `QWebEnginePage.printToPdf` at `REFLOW_WIDTH×HEIGHT`, then `finish_pdf` adds metadata and a TOC by searching for each heading. The snapshot then opens through `open_book`; `books.source_url` maps a URL back to its snapshots. Tests stub `web_import.http_get`.
 
 **Persistence:** `db.py` is plain `sqlite3` (books → chats → messages → snippets, plus a key/value `settings` table). The schema is `CREATE TABLE IF NOT EXISTS`. For new columns on existing tables, add an `ALTER TABLE` step in `Database._migrate` (see the `chats.model` migration and its test). Snippet `rects` are JSON in PDF page points. Data lives in `$STUDY_READER_DATA` or `$XDG_DATA_HOME/study-reader`.
 

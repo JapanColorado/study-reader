@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS books (
     right_panel TEXT NOT NULL DEFAULT 'chat', -- 'chat' | 'calc' | '' (collapsed)
     base_session_id TEXT,
     context_mode TEXT,              -- NULL (not prepared) | 'full' | 'partial'
+    source_url TEXT,                -- web snapshots: the page they were saved from
     opened_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS chats (
@@ -90,6 +91,8 @@ class Database:
             self.conn.execute("ALTER TABLE books ADD COLUMN show_toc INTEGER NOT NULL DEFAULT 1")
         if "right_panel" not in book_cols:
             self.conn.execute("ALTER TABLE books ADD COLUMN right_panel TEXT NOT NULL DEFAULT 'chat'")
+        if "source_url" not in book_cols:
+            self.conn.execute("ALTER TABLE books ADD COLUMN source_url TEXT")
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(chats)")}
         if "model" not in cols:
             # Existing chats keep the model that was selected globally before chats had their own.
@@ -116,6 +119,12 @@ class Database:
 
     def book(self, book_id: int) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM books WHERE id=?", (book_id,)).fetchone()
+
+    def books_from_url(self, url: str) -> list[sqlite3.Row]:
+        """Snapshots of a web page, newest first."""
+        return self.conn.execute(
+            "SELECT * FROM books WHERE source_url=? ORDER BY id DESC", (url,)
+        ).fetchall()
 
     def recent_books(self) -> list[sqlite3.Row]:
         return self.conn.execute("SELECT * FROM books ORDER BY opened_at DESC").fetchall()

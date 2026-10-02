@@ -86,6 +86,8 @@ class _BookCard(QStyledItemDelegate):
 class LibraryView(QWidget):
     openRequested = Signal(str)  # file path
     browseRequested = Signal()
+    webRequested = Signal()
+    refetchRequested = Signal(str)  # source URL of a web snapshot
 
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
@@ -105,7 +107,11 @@ class LibraryView(QWidget):
         top.addWidget(title)
         top.addSpacing(8)
         top.addWidget(self.count)
+        web = QPushButton("Open web page…")
+        web.setIcon(icon("globe"))
+        web.clicked.connect(self.webRequested)
         top.addStretch()
+        top.addWidget(web)
         top.addWidget(browse)
 
         self.list = QListWidget(objectName="library")
@@ -122,7 +128,7 @@ class LibraryView(QWidget):
         empty_title = QLabel("No books yet", alignment=Qt.AlignmentFlag.AlignCenter)
         empty_title.setProperty("role", "heading")
         empty_text = QLabel(
-            "Open a PDF or EPUB to start reading. Select any passage to ask Claude about it.",
+            "Open a PDF, EPUB or web page to start reading. Select any passage to ask Claude about it.",
             alignment=Qt.AlignmentFlag.AlignCenter, wordWrap=True,
         )
         empty_text.setProperty("role", "muted")
@@ -159,13 +165,14 @@ class LibraryView(QWidget):
             when = time.strftime("%d %b %Y", time.localtime(b["opened_at"])).lstrip("0")
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, b["id"])
+            ext = os.path.splitext(b["path"])[1].lstrip(".").upper()[:4] or "BOOK"
             item.setData(BOOK_ROLE, {
                 "title": b["title"], "path": b["path"], "exists": os.path.exists(b["path"]),
-                "format": os.path.splitext(b["path"])[1].lstrip(".").upper()[:4] or "BOOK",
+                "format": "WEB" if b["source_url"] else ext,
                 "last_page": b["last_page"], "page_count": b["page_count"],
                 "detail": f"{chats} chat{'s' * (chats != 1)} · opened {when}",
             })
-            item.setToolTip(b["path"])
+            item.setToolTip(b["source_url"] or b["path"])
             self.list.addItem(item)
         self.count.setText(f"{len(books)} book{'s' * (len(books) != 1)}" if books else "")
         self.list.setVisible(bool(books))
@@ -180,8 +187,13 @@ class LibraryView(QWidget):
         item = self.list.itemAt(pos)
         if item is None:
             return
+        book = self.db.book(item.data(Qt.ItemDataRole.UserRole))
         menu = QMenu(self)
+        refetch = menu.addAction(icon("globe"), "Fetch a fresh copy") if book["source_url"] else None
         remove = menu.addAction("Remove from library (deletes its chats)")
-        if menu.exec(self.list.mapToGlobal(pos)) is remove:
-            self.db.delete_book(item.data(Qt.ItemDataRole.UserRole))
+        chosen = menu.exec(self.list.mapToGlobal(pos))
+        if chosen is remove:
+            self.db.delete_book(book["id"])
             self.refresh()
+        elif refetch is not None and chosen is refetch:
+            self.refetchRequested.emit(book["source_url"])

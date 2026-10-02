@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import os
+
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
-    QApplication, QFileDialog, QLabel, QMainWindow, QMenu, QMessageBox, QSizePolicy, QSpinBox, QSplitter,
-    QStackedWidget, QToolBar, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QApplication, QFileDialog, QInputDialog, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QProgressDialog,
+    QSizePolicy, QSpinBox, QSplitter, QStackedWidget, QToolBar, QToolButton, QTreeWidget, QTreeWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from .calculator import CalculatorPanel
@@ -17,6 +20,8 @@ from .document import Document, file_hash
 from .library_view import LibraryView
 from .reader_view import ReaderView
 from .theme import MODES, icon, theme
+from .web_import import WebImportError, normalize_url
+from .web_render import WebImporter
 
 
 class MainWindow(QMainWindow):
@@ -65,6 +70,13 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self.library.openRequested.connect(self.open_book)
         self.library.browseRequested.connect(self.browse)
+        self.library.webRequested.connect(self.ask_url)
+        self.library.refetchRequested.connect(lambda url: self.open_url(url, refetch=True))
+        self.web = WebImporter(data_dir() / "web", self)
+        self.web.status.connect(lambda text: self._web_progress and self._web_progress.setLabelText(text))
+        self.web.finished.connect(self._on_web_done)
+        self.web.failed.connect(self._on_web_failed)
+        self._web_progress: QProgressDialog | None = None
         self.reader.snippetChosen.connect(lambda sn, new: self._show_chat(lambda: self.chat.add_snippet(sn, new)))
         self.reader.highlightClicked.connect(self._highlight_menu)
         self.chat.highlightsChanged.connect(self._refresh_highlights)
@@ -108,6 +120,7 @@ class MainWindow(QMainWindow):
         bar.addAction(library)
         labelled(library)
         bar.addAction(action("Open…", QKeySequence.StandardKey.Open, self.browse, "folder-open"))
+        bar.addAction(action("Open web page…", "Ctrl+Shift+O", self.ask_url, "globe"))
         # Toolbar entries that only make sense with a book open; hidden in the library.
         book_items = [bar.addSeparator()]
 
@@ -266,7 +279,55 @@ class MainWindow(QMainWindow):
         if path:
             self.open_book(path)
 
-    def open_book(self, path: str) -> None:
+    # -- web pages ------------------------------------------------------------------
+    def ask_url(self) -> None:
+        clip = QApplication.clipboard().text().strip()
+        guess = clip if clip.startswith(("http://", "https://")) and "\n" not in clip else ""
+        url, ok = QInputDialog.getText(
+            self, "Open web page", "Address (LessWrong posts, sequences and wiki pages, or any article):",
+            QLineEdit.EchoMode.Normal, guess,
+        )
+        if ok and url.strip():
+            self.open_url(url)
+
+    def open_url(self, url: str, refetch: bool = False) -> None:
+        """Open the saved snapshot of a page, or fetch one (always, with `refetch`)."""
+        try:
+            url = normalize_url(url)
+        except WebImportError as e:
+            QMessageBox.warning(self, "Could not open web page", str(e))
+            return
+        if not refetch:
+            for book in self.db.books_from_url(url):
+                if os.path.exists(book["path"]):
+                    self.open_book(book["path"])
+                    return
+        if self.web.busy:
+            QMessageBox.information(self, "Open web page", "Another page is still being fetched.")
+            return
+        self._web_progress = QProgressDialog("Fetching…", "Hide", 0, 0, self)
+        self._web_progress.setWindowTitle("Open web page")
+        self._web_progress.setMinimumDuration(0)
+        self._web_progress.setMinimumWidth(380)
+        self._web_progress.show()
+        self.web.start(url)
+
+    def _close_web_progress(self) -> None:
+        if self._web_progress:
+            self._web_progress.close()
+            self._web_progress.deleteLater()
+            self._web_progress = None
+
+    def _on_web_done(self, path: str, url: str) -> None:
+        self._close_web_progress()
+        if self.open_book(path, remember_dir=False):
+            self.db.update_book(self.book_id, source_url=url)
+
+    def _on_web_failed(self, message: str) -> None:
+        self._close_web_progress()
+        QMessageBox.warning(self, "Could not open web page", message)
+
+    def open_book(self, path: str, remember_dir: bool = True) -> bool:
         self._save_position()
         try:
             doc = Document(path)
@@ -274,13 +335,14 @@ class MainWindow(QMainWindow):
                 raise ValueError("the document has no pages")
         except Exception as e:
             QMessageBox.warning(self, "Could not open book", f"{path}\n\n{e}")
-            return
+            return False
         if self.doc:
             self.doc.close()
         self.doc = doc
         book = self.db.upsert_book(file_hash(path), path, doc.title, doc.page_count)
         self.book_id = book["id"]
-        self.db.set_setting("last_dir", str(path).rsplit("/", 1)[0])
+        if remember_dir:
+            self.db.set_setting("last_dir", str(path).rsplit("/", 1)[0])
         self.setWindowTitle(f"{book['title']} — Study Reader")
 
         self._fill_toc()
@@ -303,6 +365,7 @@ class MainWindow(QMainWindow):
         self.chat.set_book(self.book_id)
         self.calc.set_book(self.book_id)
         self._refresh_highlights()
+        return True
 
     def _fill_toc(self) -> None:
         self.toc.clear()
