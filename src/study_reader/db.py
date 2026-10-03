@@ -55,9 +55,10 @@ CREATE TABLE IF NOT EXISTS snippets (
 CREATE TABLE IF NOT EXISTS calculations (
     id INTEGER PRIMARY KEY,
     book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
-    expr TEXT NOT NULL,
+    expr TEXT NOT NULL,             -- plain expression, as the calculator evaluates it
+    latex TEXT NOT NULL DEFAULT '', -- as typed in the math field ('' for rows from before it)
     result TEXT NOT NULL,           -- as displayed
-    value TEXT NOT NULL,            -- repr() of the int/float, to restore `ans` and variables
+    value TEXT NOT NULL,            -- int, float or "num/den" fraction, to restore `ans` and variables
     created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -104,6 +105,9 @@ class Database:
         for col in ("session_id", "session_uuid"):
             if col not in msg_cols:
                 self.conn.execute(f"ALTER TABLE messages ADD COLUMN {col} TEXT")
+        calc_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(calculations)")}
+        if "latex" not in calc_cols:
+            self.conn.execute("ALTER TABLE calculations ADD COLUMN latex TEXT NOT NULL DEFAULT ''")
 
     # -- books ---------------------------------------------------------------
     def upsert_book(self, hash: str, path: str, title: str, page_count: int) -> sqlite3.Row:
@@ -212,11 +216,11 @@ class Database:
         return [{**dict(s), "rects": json.loads(s["rects"])} for s in rows]
 
     # -- calculator -----------------------------------------------------------
-    def add_calculation(self, book_id: int, expr: str, result: str, value: str) -> int:
+    def add_calculation(self, book_id: int, expr: str, result: str, value: str, latex: str = "") -> int:
         with self.conn:
             cur = self.conn.execute(
-                "INSERT INTO calculations (book_id, expr, result, value, created_at) VALUES (?,?,?,?,?)",
-                (book_id, expr, result, value, time.time()),
+                "INSERT INTO calculations (book_id, expr, latex, result, value, created_at) VALUES (?,?,?,?,?,?)",
+                (book_id, expr, latex, result, value, time.time()),
             )
         return cur.lastrowid
 

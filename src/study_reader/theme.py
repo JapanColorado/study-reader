@@ -254,12 +254,7 @@ QFrame#composer[focused="true"] { border-color: $accent; }
 QPlainTextEdit#composerInput { background: transparent; color: $fg; border: none; }
 QFrame#chip { background: $accent_soft; border-radius: 8px; }
 QFrame#chip QLabel { font-size: 9pt; }
-QLineEdit#calcInput { background: transparent; color: $fg; border: none; font-size: 12pt; padding: 2px 0; }
-QLabel#calcResult { font-size: 13pt; font-weight: 600; }
-QLabel[role="error"] { color: $error; }
 QToolButton#angle { color: $muted; font-size: 8pt; font-weight: 600; padding: 4px 6px; }
-QListView#calcHistory::item, QListView#calcHistory::item:selected { background: transparent; padding: 0; }
-QListView#calcHistory::item:hover { background: $hover; }
 QFrame#popup { background: $raised; border: 1px solid $border; border-radius: 10px; }
 """)
 

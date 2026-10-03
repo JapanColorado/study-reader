@@ -1,0 +1,238 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="mathlive/mathlive-static.css">
+<script src="mathlive/mathlive.min.js"></script>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<style>
+  /* Fallbacks; the app sets these from theme.py. */
+  :root { --surface:#fbfaf8; --raised:#ffffff; --fg:#1f1e1c; --muted:#6b6862; --faint:#a19d95; --border:#dedad2;
+          --hover:#ebe8e1; --accent:#b8562f; --accent-soft:#f4e2d8; --error:#c0392b; --scroll:#cfcac1; }
+  html, body { margin:0; height:100%; background:var(--surface); color:var(--fg); font:14px/1.5 system-ui, sans-serif; }
+  body { display:flex; flex-direction:column; overflow:hidden; user-select:none; }
+  ::selection { background:var(--accent-soft); }
+  ::-webkit-scrollbar { width:11px; height:8px; }
+  ::-webkit-scrollbar-thumb { background:var(--scroll); border-radius:3px; border:3px solid transparent; background-clip:padding-box; }
+  ::-webkit-scrollbar-thumb:hover { background-color:var(--faint); }
+  #history { flex:1; overflow-y:auto; padding:0 0 4px; }
+  #empty { flex:1; display:none; align-items:center; justify-content:center; text-align:center; color:var(--muted);
+           line-height:1.7; padding:0 16px; }
+  #empty .math { color:var(--fg); }
+  body.empty #history { display:none; } body.empty #empty { display:flex; }
+  .row { padding:6px 8px; border-radius:6px; cursor:pointer; }
+  .row:hover { background:var(--hover); }
+  .expr { color:var(--muted); overflow-x:auto; overflow-y:hidden; white-space:nowrap; font-size:1.05em; padding:2px 0; }
+  .result { display:flex; justify-content:flex-end; align-items:center; gap:6px; }
+  .value { font-size:1.3em; overflow-x:auto; overflow-y:hidden; white-space:nowrap; padding:2px 0; }
+  .toggle { flex:none; display:inline-flex; align-items:center; justify-content:center; min-width:30px; height:26px;
+            padding:0 5px; border:1px solid var(--border); border-radius:6px; background:var(--raised); color:var(--muted);
+            cursor:pointer; font:inherit; font-size:11px; }
+  .toggle:hover { color:var(--fg); border-color:var(--faint); }
+  .toggle .ML__latex { font-size:13px; }
+  /* Inset: at fractional display scales the page can be a fraction of a pixel wider than the view,
+     which cut off a border drawn right at the edge. */
+  #composer { flex:none; margin:0 2px 2px; background:var(--raised); border:1px solid var(--border); border-radius:12px;
+              padding:6px 10px 4px; }
+  #composer:focus-within { border-color:var(--accent); }
+  math-field { display:block; width:100%; box-sizing:border-box; background:transparent; color:var(--fg); border:none;
+               outline:none; font-size:1.3em; padding:2px 0;
+               --caret-color:var(--accent); --selection-background-color:var(--accent-soft); --selection-color:var(--fg);
+               --contains-highlight-background-color:transparent; --placeholder-color:var(--faint); --primary:var(--accent);
+               --highlight-text:transparent; --text-highlight-background-color:var(--accent-soft);
+               --smart-fence-color:var(--faint); }
+  #field { position:relative; }
+  #placeholder { position:absolute; left:2px; top:50%; transform:translateY(-50%); color:var(--faint);
+                 font-size:1.05em; pointer-events:none; }
+  #field.filled #placeholder { display:none; }
+  math-field::part(virtual-keyboard-toggle), math-field::part(menu-toggle) { display:none; }
+  math-field::part(container) { min-height:30px; }
+  #preview { color:var(--muted); text-align:right; font-size:1.05em; white-space:nowrap; overflow-x:auto; overflow-y:hidden; }
+  #preview:empty { display:none; }
+  #preview.error { color:var(--error); white-space:normal; font-size:0.95em; }
+  #preview .alt { color:var(--faint); margin-left:10px; }
+</style>
+</head>
+<body class="empty">
+<div id="history"></div>
+<div id="empty"><div>Type an expression below, e.g.<br><span class="math" data-latex="\frac{\sqrt{2}}{3}\sin\left(\frac{\pi}{4}\right)+3^2"></span><br>
+  Type <b>/</b> for a fraction, <b>^</b> for a power, <b>sqrt</b> for a root;<br>→ steps out of them.</div></div>
+<div id="composer">
+  <div id="field"><math-field id="mf" math-virtual-keyboard-policy="manual"></math-field><div id="placeholder">Calculate…</div></div>
+  <div id="preview"></div>
+</div>
+<script>
+MathfieldElement.soundsDirectory = null;
+MathfieldElement.plonkSound = null;
+const mf = document.getElementById("mf");
+const historyEl = document.getElementById("history");
+const preview = document.getElementById("preview");
+
+// Desmos-like typing: names turn into functions and symbols, and nothing exotic (\in, \times for xx, …).
+const op = name => `\\operatorname{${name}}`;
+const SHORTCUTS = {
+  pi: "\\pi", tau: "\\tau", inf: "\\infty", infty: "\\infty", infinity: "\\infty",
+  sqrt: "\\sqrt{#?}", cbrt: "\\sqrt[3]{#?}", nthroot: "\\sqrt[#?]{#?}", frac: "\\frac{#?}{#?}",
+  abs: "\\left|#?\\right|", floor: "\\left\\lfloor#?\\right\\rfloor", ceil: "\\left\\lceil#?\\right\\rceil",
+  sin: "\\sin", cos: "\\cos", tan: "\\tan", sinh: "\\sinh", cosh: "\\cosh", tanh: "\\tanh",
+  asin: "\\arcsin", acos: "\\arccos", atan: "\\arctan", arcsin: "\\arcsin", arccos: "\\arccos", arctan: "\\arctan",
+  asinh: op("asinh"), acosh: op("acosh"), atanh: op("atanh"), atan2: op("atan2"),
+  ln: "\\ln", log: "\\log", log10: op("log10"), log2: op("log2"), exp: "\\exp", deg: "\\deg", rad: op("rad"),
+  min: "\\min", max: "\\max", gcd: "\\gcd", lcm: op("lcm"), comb: op("comb"), perm: op("perm"),
+  hypot: op("hypot"), round: op("round"), trunc: op("trunc"), factorial: op("factorial"), mod: "\\bmod",
+  "*": "\\cdot",
+};
+mf.inlineShortcuts = SHORTCUTS;
+mf.smartSuperscript = false;  // stay in the exponent until → (2^10, not 2^1 then 0)
+mf.mathModeSpace = "\\,";
+mf.menuItems = [];
+
+let bridge = null;
+new QWebChannel(qt.webChannelTransport, channel => { bridge = channel.objects.calc; });
+const call = (name, ...args) => bridge && bridge[name](...args);
+
+// -- history -------------------------------------------------------------------------
+let entries = [];     // {key, latex, result, fraction}, oldest first
+const showFraction = new Set();
+let recall = 0;       // index into entries while walking back with ↑, entries.length = the draft
+let draft = "";
+
+function markup(latex) {
+  return MathLive.convertLatexToMarkup(latex);
+}
+
+function rowHtml(e) {
+  const frac = showFraction.has(e.key);
+  const value = "=" + (frac ? e.fraction : e.result);
+  const toggle = e.fraction
+    ? `<button class="toggle" title="${frac ? "Show as a decimal" : "Show as a fraction"}">${
+        frac ? e.decimal_label : markup(e.fraction_label)}</button>` : "";
+  return `<div class="expr">${markup(e.latex)}</div><div class="result"><span class="value">${markup(value)}</span>${toggle}</div>`;
+}
+
+function rowEl(e) {
+  const row = document.createElement("div");
+  row.className = "row";
+  row.dataset.key = e.key;
+  row.innerHTML = rowHtml(e);
+  return row;
+}
+
+function entryOf(el) {
+  const row = el.closest(".row");
+  return row ? entries.find(e => e.key === Number(row.dataset.key)) : null;
+}
+
+function syncEmpty() {
+  document.body.classList.toggle("empty", entries.length === 0);
+}
+
+function setEntries(list) {
+  entries = list;
+  showFraction.clear();
+  historyEl.replaceChildren(...entries.map(rowEl));
+  recall = entries.length;
+  syncEmpty();
+  historyEl.scrollTop = historyEl.scrollHeight;
+}
+
+function addEntry(e) {
+  entries.push(e);
+  historyEl.appendChild(rowEl(e));
+  recall = entries.length;
+  syncEmpty();
+  historyEl.scrollTop = historyEl.scrollHeight;
+}
+
+function removeEntry(key) {
+  entries = entries.filter(e => e.key !== key);
+  historyEl.querySelector(`.row[data-key="${key}"]`)?.remove();
+  recall = entries.length;
+  syncEmpty();
+}
+
+function toggleFraction(e) {
+  showFraction.has(e.key) ? showFraction.delete(e.key) : showFraction.add(e.key);
+  historyEl.querySelector(`.row[data-key="${e.key}"]`).innerHTML = rowHtml(e);
+}
+
+historyEl.addEventListener("click", ev => {
+  const e = entryOf(ev.target);
+  if (!e) return;
+  if (ev.target.closest(".toggle")) { toggleFraction(e); return; }
+  if (ev.detail > 1) return;  // part of a double-click
+  mf.focus();
+  mf.insert(showFraction.has(e.key) ? e.fraction : e.result, { insertionMode: "replaceSelection", selectionMode: "after" });
+});
+historyEl.addEventListener("dblclick", ev => {
+  const e = entryOf(ev.target);
+  if (e && !ev.target.closest(".toggle")) setInput(e.latex);
+});
+historyEl.addEventListener("contextmenu", ev => {
+  const e = entryOf(ev.target);
+  ev.preventDefault();
+  if (e) call("menu", e.key, showFraction.has(e.key));
+});
+
+// -- input ---------------------------------------------------------------------------
+function setValue(latex) {
+  mf.value = latex;
+  syncPlaceholder();
+}
+
+function setInput(latex) {
+  setValue(latex);
+  focusInput(false);
+}
+
+function syncPlaceholder() {
+  document.getElementById("field").classList.toggle("filled", mf.value !== "");
+}
+
+function refreshPreview() {
+  call("changed", mf.value);
+}
+
+function focusInput(selectAll) {
+  mf.focus();
+  mf.executeCommand(selectAll && mf.value ? "selectAll" : "moveToMathfieldEnd");
+}
+
+function setPreview(p) {
+  preview.className = p.error ? "error" : "";
+  if (p.error) preview.textContent = p.error;
+  else if (!p.result) preview.textContent = "";
+  else preview.innerHTML = markup("=" + p.result) + (p.fraction ? `<span class="alt">${markup("=" + p.fraction)}</span>` : "");
+}
+
+mf.addEventListener("input", () => { syncPlaceholder(); call("changed", mf.value); });
+mf.addEventListener("keydown", ev => {
+  if (ev.key === "Enter") {
+    ev.preventDefault(); ev.stopPropagation();
+    if (mf.value.trim()) call("submit", mf.value);
+  } else if (ev.key === "Escape") {
+    ev.preventDefault(); ev.stopPropagation();
+    mf.mode = "math";  // also leaves LaTeX mode, entered with \
+    setValue("");
+    call("changed", "");
+  }
+}, { capture: true });
+mf.addEventListener("move-out", ev => {
+  const dir = ev.detail.direction;
+  if ((dir !== "upward" && dir !== "downward") || !entries.length) return;
+  ev.preventDefault();
+  if (recall === entries.length) draft = mf.value;
+  recall = Math.max(0, Math.min(entries.length, recall + (dir === "upward" ? -1 : 1)));
+  setValue(recall < entries.length ? entries[recall].latex : draft);
+  mf.executeCommand("moveToMathfieldEnd");
+  call("changed", mf.value);
+});
+
+function setTheme(colors) {
+  for (const [k, v] of Object.entries(colors)) document.documentElement.style.setProperty("--" + k.replace(/_/g, "-"), v);
+}
+
+for (const el of document.querySelectorAll(".math[data-latex]")) el.innerHTML = markup(el.dataset.latex);
+</script>
+</body>
+</html>

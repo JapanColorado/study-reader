@@ -1,22 +1,27 @@
-"""Right-hand calculator panel: typed expressions with a per-book history."""
+"""Right-hand calculator panel: Desmos-style math input with a per-book history."""
 
 from __future__ import annotations
 
 import ast
+import json
 import math
 import operator
 import re
 from decimal import Decimal
+from fractions import Fraction
+from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QSize, Qt
-from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QToolButton, QToolTip,
-    QVBoxLayout, QWidget,
-)
+from PySide6.QtCore import QObject, QPoint, QSize, Qt, QUrl, Slot
+from PySide6.QtGui import QColor, QCursor, QGuiApplication
+from PySide6.QtWebChannel import QWebChannel
+from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QToolButton, QToolTip, QVBoxLayout, QWidget
 
+from .calc_latex import LatexError, expr_to_latex, fraction_latex, fraction_of, latex_to_expr, number_latex
 from .db import Database
-from .theme import icon
+from .theme import icon, theme
+
+ASSETS = Path(__file__).parent / "assets"
 
 # Integers stay below Python's 4300-digit int<->str limit so results can be shown and saved.
 MAX_INT_BITS = 14_000
@@ -27,10 +32,31 @@ class CalcError(Exception):
     pass
 
 
+def _exact(value):
+    """Fractions that are whole numbers become ints, so int-only functions (gcd, comb) accept them."""
+    if isinstance(value, Fraction) and value.denominator == 1:
+        return int(value)
+    return value
+
+
+def _bits(value) -> int:
+    if isinstance(value, Fraction):
+        return max(value.numerator.bit_length(), value.denominator.bit_length())
+    return value.bit_length() if isinstance(value, int) else 0
+
+
+def _div(a, b):
+    """Exact for ints and fractions: 1/3 stays one third."""
+    if isinstance(a, (int, Fraction)) and isinstance(b, (int, Fraction)):
+        return Fraction(a) / Fraction(b)
+    return a / b
+
+
 def _pow(a, b):
-    if isinstance(a, int) and isinstance(b, int) and b > 0 and abs(a) > 1:
-        if a.bit_length() * b > MAX_INT_BITS:
+    if isinstance(a, (int, Fraction)) and isinstance(b, int):
+        if abs(b) > 1 and abs(a) not in (0, 1) and _bits(a) * abs(b) > MAX_INT_BITS:
             raise CalcError("Result is too large")
+        return Fraction(a) ** b  # exact, negative powers included
     value = a ** b
     if isinstance(value, complex):
         raise CalcError("Result is not a real number")
@@ -38,7 +64,7 @@ def _pow(a, b):
 
 
 def _factorial(n):
-    if isinstance(n, float) and n.is_integer():
+    if isinstance(n, (float, Fraction)) and n == int(n):
         n = int(n)
     if not isinstance(n, int) or n < 0:
         raise CalcError("factorial needs a non-negative whole number")
@@ -48,7 +74,7 @@ def _factorial(n):
 
 
 BINARY = {
-    ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv,
+    ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: _div,
     ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod, ast.Pow: _pow,
 }
 UNARY = {ast.UAdd: operator.pos, ast.USub: operator.neg}
@@ -68,15 +94,21 @@ RESERVED = {*CONSTANTS, *FUNCTIONS, *TRIG, *INVERSE_TRIG, "ans"}
 ASSIGNMENT = re.compile(r"^\s*([A-Za-z_]\w*)\s*=(?!=)(.*)$")
 
 
+Number = int | Fraction | float
+
+
 class Calculator:
-    """Evaluates arithmetic safely (no Python eval) and remembers `ans` and assigned variables."""
+    """Evaluates arithmetic safely (no Python eval) and remembers `ans` and assigned variables.
+
+    Arithmetic on whole numbers and decimals is exact (`Fraction`s), as in 0.1 + 0.2 = 3/10;
+    functions like sqrt and sin, and the constants, give floats."""
 
     def __init__(self, degrees: bool = False):
         self.degrees = degrees
-        self.variables: dict[str, int | float] = {}
-        self.ans: int | float | None = None
+        self.variables: dict[str, Number] = {}
+        self.ans: Number | None = None
 
-    def evaluate(self, text: str) -> tuple[str | None, int | float]:
+    def evaluate(self, text: str) -> tuple[str | None, Number]:
         """Returns (assigned variable name or None, value). Raises CalcError."""
         name, expr = None, text
         if m := ASSIGNMENT.match(text):
@@ -89,7 +121,7 @@ class Calculator:
         self.ans = value
         return name, value
 
-    def compute(self, expr: str) -> int | float:
+    def compute(self, expr: str) -> Number:
         """Value of an expression, without updating `ans` or variables."""
         expr = expr.strip().replace("^", "**").replace("×", "*").replace("÷", "/").replace("−", "-")
         if not expr.strip():
@@ -110,12 +142,17 @@ class Calculator:
             raise CalcError(_friendly(e)) from None
         if isinstance(value, float) and math.isnan(value):
             raise CalcError("Result is not a number")
-        if isinstance(value, int) and value.bit_length() > MAX_INT_BITS:
+        if _bits(value) > MAX_INT_BITS:
             raise CalcError("Result is too large")
         return value
 
     def _eval(self, node: ast.AST):
+        return _exact(self._eval_node(node))
+
+    def _eval_node(self, node: ast.AST):
         match node:
+            case ast.Constant(value=float(v)) if math.isfinite(v):
+                return Fraction(repr(v))  # the decimal as written: 0.1 is exactly 1/10
             case ast.Constant(value=v) if isinstance(v, (int, float)) and not isinstance(v, bool):
                 return v
             case ast.BinOp(op=op) if type(op) in BINARY:
@@ -137,6 +174,8 @@ class Calculator:
             return self.variables[name]
         if name in CONSTANTS:
             return CONSTANTS[name]
+        if len(name) > 1 and all(c in self.variables or c in CONSTANTS for c in name):
+            return math.prod(self._lookup(c) for c in name)  # xy is x times y, as written in math
         if name in FUNCTIONS or name in TRIG or name in INVERSE_TRIG:
             raise CalcError(f"'{name}' is a function — try {name}(…)")
         raise CalcError(f"Unknown name '{name}'")
@@ -165,7 +204,15 @@ def _friendly(e: Exception) -> str:
     return text[:1].upper() + text[1:]
 
 
-def format_value(value: int | float) -> str:
+def format_value(value: Number) -> str:
+    if isinstance(value, Fraction):
+        if value.denominator == 1:
+            value = value.numerator
+        else:
+            try:
+                value = float(value)
+            except OverflowError:
+                return format(Decimal(value.numerator) / Decimal(value.denominator), ".10e")
     if isinstance(value, int):
         return str(value) if abs(value) < 10**15 else format(Decimal(value), ".10e")
     if math.isinf(value):
@@ -175,8 +222,16 @@ def format_value(value: int | float) -> str:
     return f"{value:.12g}"
 
 
-def parse_value(text: str) -> int | float:
-    """Inverse of `repr` for stored values."""
+def store_value(value: Number) -> str:
+    if isinstance(value, Fraction):
+        return f"{value.numerator}/{value.denominator}"
+    return repr(value)
+
+
+def parse_value(text: str) -> Number:
+    """Inverse of `store_value`."""
+    if "/" in text:
+        return Fraction(text)
     try:
         return int(text)
     except ValueError:
@@ -184,49 +239,50 @@ def parse_value(text: str) -> int | float:
 
 
 HELP = (
-    "Operators: + − * / // % ^ (or **) and parentheses\n"
+    "Type / for a fraction, ^ for a power, sqrt, cbrt or nthroot for a root,\n"
+    "  abs, floor and ceil for brackets; → steps out of them. 2x means 2 × x\n"
+    "Operators: + − * / % (mod) and ! (factorial)\n"
     "Constants: pi, e, tau, inf · ans = the last result\n"
     "Variables: x = 2.5, then use x\n"
     "Functions: sqrt cbrt exp ln log(x[, base]) log10 log2 abs floor ceil round trunc\n"
     "  sin cos tan asin acos atan atan2 sinh cosh tanh asinh acosh atanh\n"
-    "  factorial gcd lcm comb perm hypot min max deg rad"
+    "  factorial gcd lcm comb perm hypot min max deg rad\n"
+    "Whole numbers and decimals stay exact: click a result's ½ button to see it as a fraction"
 )
 
 
-class _Input(QLineEdit):
-    """Line edit that walks back through earlier expressions with Up/Down."""
+class _Bridge(QObject):
+    """What calculator.html calls through the web channel."""
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.previous: list[str] = []
-        self._index = 0
-        self._draft = ""
+    def __init__(self, panel: CalculatorPanel):
+        super().__init__(panel)
+        self.panel = panel
 
-    def reset_history(self, expressions: list[str]) -> None:
-        self.previous = expressions
-        self._index = len(expressions)
+    @Slot(str)
+    def changed(self, latex: str) -> None:
+        self.panel.preview(latex)
 
-    def keyPressEvent(self, event) -> None:
-        key = event.key()
-        if key in (Qt.Key.Key_Up, Qt.Key.Key_Down) and self.previous:
-            if self._index == len(self.previous):
-                self._draft = self.text()
-            step = -1 if key == Qt.Key.Key_Up else 1
-            self._index = max(0, min(len(self.previous), self._index + step))
-            self.setText(self.previous[self._index] if self._index < len(self.previous) else self._draft)
-            return
-        if key == Qt.Key.Key_Escape and self.text():
-            self.clear()
-            return
-        super().keyPressEvent(event)
+    @Slot(str)
+    def submit(self, latex: str) -> None:
+        self.panel.submit(latex)
+
+    @Slot(int, bool)
+    def menu(self, key: int, fraction: bool) -> None:
+        self.panel.history_menu(key, fraction)
 
 
 class CalculatorPanel(QWidget):
+    """Header and hint in Qt; history and the math-field input in calculator.html."""
+
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
         self.db = db
         self.book_id: int | None = None
         self.calc = Calculator(degrees=db.get_setting("calc_angle") == "deg")
+        self.entries: list[dict] = []  # {key, id?, expr, latex, result, value}, oldest first
+        self._next_key = 0
+        self.preview_text = ""
+        self.preview_error = False
 
         title = QLabel("Calculator")
         title.setProperty("role", "section")
@@ -253,34 +309,18 @@ class CalculatorPanel(QWidget):
         header.addWidget(help_btn)
         header.addWidget(self.clear_btn)
 
-        self.history = QListWidget(objectName="calcHistory")
-        self.history.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.history.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
-        self.history.setSelectionMode(QListWidget.SelectionMode.NoSelection)
-        self.history.setToolTip("Click to insert the result · double-click to edit the expression")
-        self.history.itemClicked.connect(self._insert_result)
-        self.history.itemDoubleClicked.connect(self._edit_item)
-        self.history.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.history.customContextMenuRequested.connect(self._history_menu)
-        self.empty = QLabel("Type an expression below, e.g.\nsqrt(2) * sin(pi/4) + 3^2", alignment=Qt.AlignmentFlag.AlignCenter)
-        self.empty.setProperty("role", "hint")
-
-        self.input = _Input(objectName="calcInput")
-        self.input.setPlaceholderText("Calculate…")
-        self.input.returnPressed.connect(self.submit)
-        self.input.textChanged.connect(self._preview)
-        self.input.installEventFilter(self)
-        self.preview = QLabel()
-        self.preview.setProperty("role", "muted")
-        self.preview.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.box = QFrame(objectName="composer")
-        box = QVBoxLayout(self.box)
-        box.setContentsMargins(10, 8, 10, 8)
-        box.setSpacing(2)
-        box.addWidget(self.input)
-        box.addWidget(self.preview)
-        hint = QLabel("Enter to calculate · ↑ for earlier · x = … to store")
+        self.view = QWebEngineView()
+        self.view.page().setBackgroundColor(QColor(theme().colors["surface"]))
+        self.channel = QWebChannel(self.view.page())
+        self.channel.registerObject("calc", _Bridge(self))
+        self.view.page().setWebChannel(self.channel)
+        self._ready = False
+        self._pending: list[str] = []
+        self.view.loadFinished.connect(self._on_loaded)
+        self.view.load(QUrl.fromLocalFile(str(ASSETS / "calculator.html")))
+        hint = QLabel("Enter to calculate · / for a fraction · ↑ for earlier · x = … to store")
         hint.setProperty("role", "hint")
+        hint.setWordWrap(True)  # unwrapped, it holds the panel wider than its slot and the right edge is cut off
         hint.setContentsMargins(6, 0, 6, 0)
 
         self.setObjectName("chatPanel")  # same surface as the chat panel it swaps with
@@ -289,27 +329,61 @@ class CalculatorPanel(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
         layout.addLayout(header)
-        layout.addWidget(self.history, 1)
-        layout.addWidget(self.empty, 1)
-        layout.addWidget(self.box)
+        layout.addWidget(self.view, 1)
         layout.addWidget(hint)
+        theme().changed.connect(self._apply_theme)
+        self._apply_theme()
         self._sync_angle()
         self.set_book(None)
+
+    # -- page ----------------------------------------------------------------------------
+    def _js(self, function: str, *args) -> None:
+        js = f"{function}({', '.join(json.dumps(a) for a in args)})"
+        if self._ready:
+            self.view.page().runJavaScript(js)
+        else:
+            self._pending.append(js)
+
+    def _on_loaded(self, ok: bool) -> None:
+        self._ready = True
+        for js in self._pending:
+            self.view.page().runJavaScript(js)
+        self._pending.clear()
+
+    def _apply_theme(self) -> None:
+        self.view.page().setBackgroundColor(QColor(theme().colors["surface"]))
+        self._js("setTheme", theme().colors)
+
+    def _page_entry(self, entry: dict) -> dict:
+        value = parse_value(entry["value"])
+        fraction = fraction_of(value)
+        return {
+            "key": entry["key"], "latex": entry["latex"] or expr_to_latex(entry["expr"]),
+            "result": number_latex(entry["result"]), "fraction": fraction_latex(fraction) if fraction else None,
+            # Labels for the decimal/fraction switch: a preview of the form it switches to
+            "decimal_label": f"{float(fraction):.1f}".replace("-0.0", "0.0") if fraction else None,
+            "fraction_label": fraction_latex(fraction)
+            if fraction and abs(fraction.numerator) < 10 and fraction.denominator < 10 else "\\frac{a}{b}",
+        }
 
     # -- book / history --------------------------------------------------------------
     def set_book(self, book_id: int | None) -> None:
         self.book_id = book_id
         self.calc.variables.clear()
         self.calc.ans = None
-        self.history.clear()
-        self.input.clear()
+        self.entries = []
         rows = self.db.calculations(book_id) if book_id is not None else []
         for row in rows:
             self._restore(row)
-            self._add_item(dict(row))
-        self.input.reset_history([r["expr"] for r in rows])
+            self.entries.append(self._keyed(dict(row)))
+        self._js("setEntries", [self._page_entry(e) for e in self.entries])
+        self._set_input("")
         self._sync_empty()
-        self.history.scrollToBottom()
+
+    def _keyed(self, entry: dict) -> dict:
+        entry["key"] = self._next_key
+        self._next_key += 1
+        return entry
 
     def _restore(self, row) -> None:
         """Rebuild `ans` and variables from saved values, not by re-evaluating (the angle unit may differ now)."""
@@ -323,113 +397,92 @@ class CalculatorPanel(QWidget):
             self.db.clear_calculations(self.book_id)
         self.set_book(self.book_id)
 
-    def submit(self) -> None:
-        text = self.input.text().strip()
-        if not text:
-            return
+    def submit(self, latex: str) -> bool:
+        """Evaluates the math field's LaTeX; on success it joins the history and the field clears."""
+        if not latex.strip():
+            return False
         try:
-            _, value = self.calc.evaluate(text)
-        except CalcError as e:
-            self._show_preview(str(e), error=True)
-            return
-        entry = {"expr": text, "result": format_value(value), "value": repr(value)}
+            expr = latex_to_expr(latex)
+            _, value = self.calc.evaluate(expr)
+        except (LatexError, CalcError) as e:
+            self._show_preview(error=str(e))
+            return False
+        entry = {"expr": expr, "latex": latex, "result": format_value(value), "value": store_value(value)}
         if self.book_id is not None:
-            entry["id"] = self.db.add_calculation(self.book_id, text, entry["result"], entry["value"])
-        self._add_item(entry)
-        self.input.reset_history(self.input.previous + [text])
-        self.input.clear()
+            entry["id"] = self.db.add_calculation(
+                self.book_id, expr, entry["result"], entry["value"], latex,
+            )
+        self.entries.append(self._keyed(entry))
+        self._js("addEntry", self._page_entry(entry))
+        self._set_input("")
         self._sync_empty()
-        self.history.scrollToBottom()
-
-    def _add_item(self, entry: dict) -> None:
-        row = QWidget()
-        row.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        lay = QVBoxLayout(row)
-        lay.setContentsMargins(8, 6, 8, 6)
-        lay.setSpacing(0)
-        expr = QLabel(entry["expr"])
-        expr.setToolTip(entry["expr"])
-        expr.setProperty("role", "muted")
-        result = QLabel(f"= {entry['result']}", objectName="calcResult")
-        result.setAlignment(Qt.AlignmentFlag.AlignRight)
-        lay.addWidget(expr)
-        lay.addWidget(result)
-        item = QListWidgetItem()
-        item.setData(Qt.ItemDataRole.UserRole, entry)
-        item.setSizeHint(row.sizeHint())
-        self.history.addItem(item)
-        self.history.setItemWidget(item, row)
+        return True
 
     def _sync_empty(self) -> None:
-        has = self.history.count() > 0
-        self.history.setVisible(has)
-        self.empty.setVisible(not has)
-        self.clear_btn.setEnabled(has)
+        self.clear_btn.setEnabled(bool(self.entries))
 
-    def _history_menu(self, pos) -> None:
-        item = self.history.itemAt(pos)
-        if not item:
+    def _entry(self, key: int) -> dict | None:
+        return next((e for e in self.entries if e["key"] == key), None)
+
+    def history_menu(self, key: int, fraction_shown: bool) -> None:
+        entry = self._entry(key)
+        if not entry:
             return
-        entry = item.data(Qt.ItemDataRole.UserRole)
+        page = self._page_entry(entry)
+        fraction = fraction_of(parse_value(entry["value"]))
         clipboard = QGuiApplication.clipboard()
         menu = QMenu(self)
         menu.addAction("Copy result").triggered.connect(lambda: clipboard.setText(entry["result"]))
+        if fraction:
+            menu.addAction("Copy as fraction").triggered.connect(lambda: clipboard.setText(str(fraction)))
         menu.addAction("Copy expression").triggered.connect(lambda: clipboard.setText(entry["expr"]))
-        menu.addAction("Edit expression").triggered.connect(lambda: self._edit_item(item))
+        menu.addAction("Copy LaTeX").triggered.connect(lambda: clipboard.setText(page["latex"]))
+        menu.addAction("Edit expression").triggered.connect(lambda: self._set_input(page["latex"], focus=True))
         menu.addSeparator()
-        menu.addAction("Delete").triggered.connect(lambda: self._delete_item(item))
-        menu.exec(self.history.viewport().mapToGlobal(pos))
+        menu.addAction("Delete").triggered.connect(lambda: self._delete(entry))
+        menu.exec(QCursor.pos())
 
-    def _delete_item(self, item: QListWidgetItem) -> None:
-        entry = item.data(Qt.ItemDataRole.UserRole)
+    def _delete(self, entry: dict) -> None:
         if "id" in entry:
             self.db.delete_calculation(entry["id"])
-        self.history.takeItem(self.history.row(item))
+        self.entries.remove(entry)
+        self._js("removeEntry", entry["key"])
         self._sync_empty()
 
-    def _edit_item(self, item: QListWidgetItem) -> None:
-        self.input.setText(item.data(Qt.ItemDataRole.UserRole)["expr"])
-        self.input.setFocus()
-
-    def _insert_result(self, item: QListWidgetItem) -> None:
-        result = item.data(Qt.ItemDataRole.UserRole)["result"]
-        self.input.insert(result.replace("∞", "inf"))
-        self.input.setFocus()
-
     # -- input -------------------------------------------------------------------------
-    def eventFilter(self, obj, event) -> bool:
-        if obj is self.input and event.type() in (QEvent.Type.FocusIn, QEvent.Type.FocusOut):
-            self.box.setProperty("focused", event.type() == QEvent.Type.FocusIn)
-            self.box.style().polish(self.box)
-        return super().eventFilter(obj, event)
+    def _set_input(self, latex: str, focus: bool = False) -> None:
+        self._js("setInput" if focus else "setValue", latex)
+        self._show_preview()
 
     def focus_input(self) -> None:
-        self.input.setFocus()
-        self.input.selectAll()
+        self.view.setFocus()
+        self._js("focusInput", True)
 
-    def _preview(self) -> None:
-        text = self.input.text()
-        m = ASSIGNMENT.match(text)
-        expr = m.group(2) if m else text
-        if not expr.strip():
-            self._show_preview("")
-            return
+    def preview(self, latex: str) -> None:
+        """Live result while typing; unfinished input shows nothing (errors show on Enter)."""
         try:
-            self._show_preview(f"= {format_value(self.calc.compute(expr))}")
-        except CalcError:
-            self._show_preview("")  # still typing; errors show on Enter
+            expr = latex_to_expr(latex)
+            if m := ASSIGNMENT.match(expr):
+                expr = m.group(2)
+            value = self.calc.compute(expr) if expr.strip() else None
+        except (LatexError, CalcError):
+            value = None
+        if value is None:
+            self._show_preview()
+            return
+        fraction = fraction_of(value)
+        self._show_preview(number_latex(format_value(value)), fraction_latex(fraction) if fraction else None)
 
-    def _show_preview(self, text: str, error: bool = False) -> None:
-        self.preview.setText(text)
-        self.preview.setProperty("role", "error" if error else "muted")
-        self.preview.style().polish(self.preview)
-        self.preview.setVisible(bool(text))
+    def _show_preview(self, result: str = "", fraction: str | None = None, error: str = "") -> None:
+        self.preview_text = error or result
+        self.preview_error = bool(error)
+        self._js("setPreview", {"result": result, "fraction": fraction, "error": error})
 
     def _set_degrees(self, on: bool) -> None:
         self.calc.degrees = on
         self.db.set_setting("calc_angle", "deg" if on else "rad")
         self._sync_angle()
-        self._preview()
+        self._js("refreshPreview")
 
     def _sync_angle(self) -> None:
         self.angle.setText("DEG" if self.calc.degrees else "RAD")
