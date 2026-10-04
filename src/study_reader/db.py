@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS books (
     crop_margins INTEGER NOT NULL DEFAULT 0,
     show_toc INTEGER NOT NULL DEFAULT 1,
     right_panel TEXT NOT NULL DEFAULT 'chat', -- 'chat' | 'calc' | '' (collapsed)
+    show_chat_list INTEGER NOT NULL DEFAULT 1,
     base_session_id TEXT,
     context_mode TEXT,              -- NULL (not prepared) | 'full' | 'partial'
     source_url TEXT,                -- web snapshots: the page they were saved from
@@ -103,6 +104,8 @@ class Database:
             self.conn.execute("ALTER TABLE books ADD COLUMN show_toc INTEGER NOT NULL DEFAULT 1")
         if "right_panel" not in book_cols:
             self.conn.execute("ALTER TABLE books ADD COLUMN right_panel TEXT NOT NULL DEFAULT 'chat'")
+        if "show_chat_list" not in book_cols:
+            self.conn.execute("ALTER TABLE books ADD COLUMN show_chat_list INTEGER NOT NULL DEFAULT 1")
         if "source_url" not in book_cols:
             self.conn.execute("ALTER TABLE books ADD COLUMN source_url TEXT")
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(chats)")}

@@ -73,7 +73,7 @@ class ChatPanel(QWidget):
         self.list_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.list_toggle.setIconSize(QSize(14, 14))
         self.list_toggle.setToolTip("Show or hide the chat list")
-        self.list_toggle.clicked.connect(lambda: self._show_list(not self.chat_list.isVisible()))
+        self.list_toggle.clicked.connect(self._toggle_list)
         new_btn = QToolButton()
         new_btn.setIcon(icon("message-plus"))
         new_btn.setIconSize(QSize(18, 18))
@@ -210,6 +210,13 @@ class ChatPanel(QWidget):
         self.chat_list.setVisible(on)
         self.list_toggle.setIcon(icon("chevron-down" if on else "chevron-right", "muted"))
 
+    def _toggle_list(self) -> None:
+        """Collapse or expand the chat list, remembering it per book like the other panels."""
+        on = not self.chat_list.isVisible()
+        self._show_list(on)
+        if self.book_id is not None:
+            self.db.update_book(self.book_id, show_chat_list=int(on))
+
     def _on_theme_changed(self) -> None:
         self._refresh_chips()
         self._refresh_transcript()
@@ -246,6 +253,7 @@ class ChatPanel(QWidget):
         self._pending.clear()
         self._refresh_chips()
         self.setEnabled(book_id is not None)
+        self._show_list(book_id is None or bool(self.db.book(book_id)["show_chat_list"]))
         self._refresh_list()
         self._sync_model()
         self._refresh_transcript()

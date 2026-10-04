@@ -89,7 +89,7 @@ def test_old_database_gets_chat_model_column(tmp_path):
     assert db.chat(1)["model"] == "sonnet"  # keeps the model it was used with
     db.add_message(1, "assistant", "a", session_id="s", session_uuid="u")  # messages gained branch points
     assert db.book(1)["crop_margins"] == 0
-    assert (db.book(1)["show_toc"], db.book(1)["right_panel"]) == (1, "chat")
+    assert (db.book(1)["show_toc"], db.book(1)["right_panel"], db.book(1)["show_chat_list"]) == (1, "chat", 1)
 
 
 # -- document ---------------------------------------------------------------------
