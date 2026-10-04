@@ -68,6 +68,7 @@ ICONS = {
                   '<path d="M8 14h.01"/><path d="M12 18h.01"/><path d="M8 18h.01"/>',
     "trash": '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>',
     "quiz": '<path d="M9 11l2 2 4-4"/><rect width="16" height="18" x="4" y="3" rx="2"/><path d="M9 17h6"/>',
+    "check-circle": '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
     "help": '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
 }
 

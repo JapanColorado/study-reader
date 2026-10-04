@@ -26,6 +26,7 @@ Requires the `claude` CLI to be logged in (`claude` → `/login`). The app talks
 | Zoom | `Ctrl+=` / `Ctrl+-` or `Ctrl`+wheel |
 | Crop the page margins so the text fills the view | **Crop margins** (`Ctrl+Shift+0`), remembered per book |
 | Library / open file / new chat | `Ctrl+L` / `Ctrl+O` / `Ctrl+N` |
+| Mark a book finished | **Finished** in the toolbar, or right-click it in the library. Finished books move to a collapsible **Finished** section; toggle it off or choose **Move back to reading** to undo |
 | Open a web page | **Open web page…** (`Ctrl+Shift+O`; a copied link is filled in). Opening the same address again opens the saved copy; right-click it in the library → **Fetch a fresh copy** to update |
 | Show or hide contents / chats | `F9` / `F10` |
 | Calculator (takes the chat panel's place) | `F11`. Desmos-style math input: `/` makes a stacked fraction, `^` an exponent, `sqrt` a root, and → steps out of them. Type e.g. `v = 3.2`, `12v / ans`, `sin(30)` in **DEG**. Arithmetic is exact, and the button beside a result switches between decimal and fraction (`0.1 + 0.2` = 3/10). ↑ recalls earlier input; history is kept per book |

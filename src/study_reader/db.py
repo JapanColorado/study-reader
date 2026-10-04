@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS books (
     base_session_id TEXT,
     context_mode TEXT,              -- NULL (not prepared) | 'full' | 'partial'
     source_url TEXT,                -- web snapshots: the page they were saved from
+    finished_at REAL,               -- NULL while still being read
     opened_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS chats (
@@ -108,6 +109,8 @@ class Database:
             self.conn.execute("ALTER TABLE books ADD COLUMN show_chat_list INTEGER NOT NULL DEFAULT 1")
         if "source_url" not in book_cols:
             self.conn.execute("ALTER TABLE books ADD COLUMN source_url TEXT")
+        if "finished_at" not in book_cols:
+            self.conn.execute("ALTER TABLE books ADD COLUMN finished_at REAL")
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(chats)")}
         if "model" not in cols:
             # Existing chats keep the model that was selected globally before chats had their own.
@@ -146,6 +149,9 @@ class Database:
 
     def recent_books(self) -> list[sqlite3.Row]:
         return self.conn.execute("SELECT * FROM books ORDER BY opened_at DESC").fetchall()
+
+    def set_finished(self, book_id: int, finished: bool) -> None:
+        self.update_book(book_id, finished_at=time.time() if finished else None)
 
     def update_book(self, book_id: int, **fields) -> None:
         self._update("books", book_id, fields)

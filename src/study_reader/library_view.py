@@ -16,17 +16,23 @@ from .db import Database
 from .theme import icon, rounded, theme
 
 BOOK_ROLE = Qt.ItemDataRole.UserRole + 1
+HEADER_ROLE = Qt.ItemDataRole.UserRole + 2  # section headers carry (label, expanded)
 CARD_HEIGHT = 92
+HEADER_HEIGHT = 44
 MAX_WIDTH = 900
+FINISHED_COLLAPSED = "library_finished_collapsed"
 
 
 class _BookCard(QStyledItemDelegate):
-    """Title, chats and last-opened date, and a reading-progress bar."""
+    """Title, chats and last-opened date, and a reading-progress bar; or a section header."""
 
     def sizeHint(self, option, index) -> QSize:
-        return QSize(option.rect.width(), CARD_HEIGHT)
+        return QSize(option.rect.width(), HEADER_HEIGHT if index.data(HEADER_ROLE) else CARD_HEIGHT)
 
     def paint(self, p: QPainter, option, index) -> None:
+        if header := index.data(HEADER_ROLE):
+            self._paint_header(p, option, *header)
+            return
         b = index.data(BOOK_ROLE)
         c = theme().colors
         hover = bool(option.state & QStyle.StateFlag.State_MouseOver) and b["exists"]
@@ -66,8 +72,11 @@ class _BookCard(QStyledItemDelegate):
         if b["exists"]:
             p.setPen(QColor(c["muted"]))
             p.drawText(line, Qt.AlignmentFlag.AlignVCenter, b["detail"])
-            progress = (b["last_page"] + 1) / max(b["page_count"], 1)
-            label = f"p. {b['last_page'] + 1} of {b['page_count']}"
+            if b["finished"]:
+                progress, label = 1.0, "Finished"
+            else:
+                progress = (b["last_page"] + 1) / max(b["page_count"], 1)
+                label = f"p. {b['last_page'] + 1} of {b['page_count']}"
             bar = QRectF(x, card.bottom() - 21, min(width - 120, 320), 4)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(c["hover"]))
@@ -80,6 +89,20 @@ class _BookCard(QStyledItemDelegate):
             p.setPen(QColor(c["error"]))
             missing = QFontMetrics(meta).elidedText(f"File not found: {b['path']}", Qt.TextElideMode.ElideMiddle, int(width))
             p.drawText(line, Qt.AlignmentFlag.AlignVCenter, missing)
+        p.restore()
+
+    def _paint_header(self, p: QPainter, option, label: str, expanded: bool) -> None:
+        c = theme().colors
+        hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        r = QRectF(option.rect)
+        p.save()
+        chevron = icon("chevron-down" if expanded else "chevron-right", "fg" if hover else "muted")
+        chevron.paint(p, int(r.left() + 2), int(r.center().y() - 8 + 4), 16, 16)
+        font = QFont(option.font)
+        font.setWeight(QFont.Weight.DemiBold)
+        p.setFont(font)
+        p.setPen(QColor(c["fg"] if hover else c["muted"]))
+        p.drawText(QRectF(r.left() + 24, r.top() + 4, r.width() - 24, r.height() - 4), Qt.AlignmentFlag.AlignVCenter, label)
         p.restore()
 
 
@@ -118,6 +141,8 @@ class LibraryView(QWidget):
         self.list.setItemDelegate(_BookCard(self.list))
         self.list.setMouseTracking(True)
         self.list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
+        # Cards size to the viewport, so there is never anything to scroll sideways.
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.list.setCursor(Qt.CursorShape.PointingHandCursor)
         self.list.itemClicked.connect(self._activate)
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -160,39 +185,66 @@ class LibraryView(QWidget):
     def refresh(self) -> None:
         self.list.clear()
         books = self.db.recent_books()
-        for b in books:
-            chats = len(self.db.chats(b["id"]))
-            when = time.strftime("%d %b %Y", time.localtime(b["opened_at"])).lstrip("0")
-            item = QListWidgetItem()
-            item.setData(Qt.ItemDataRole.UserRole, b["id"])
-            ext = os.path.splitext(b["path"])[1].lstrip(".").upper()[:4] or "BOOK"
-            item.setData(BOOK_ROLE, {
-                "title": b["title"], "path": b["path"], "exists": os.path.exists(b["path"]),
-                "format": "WEB" if b["source_url"] else ext,
-                "last_page": b["last_page"], "page_count": b["page_count"],
-                "detail": f"{chats} chat{'s' * (chats != 1)} · opened {when}",
-            })
-            item.setToolTip(b["source_url"] or b["path"])
-            self.list.addItem(item)
+        reading = [b for b in books if b["finished_at"] is None]
+        finished = sorted((b for b in books if b["finished_at"] is not None), key=lambda b: -b["finished_at"])
+        for b in reading:
+            self._add_book(b)
+        if finished:
+            expanded = self.db.get_setting(FINISHED_COLLAPSED) != "1"
+            header = QListWidgetItem()
+            header.setData(HEADER_ROLE, (f"Finished · {len(finished)}", expanded))
+            header.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            header.setToolTip("Hide finished books" if expanded else "Show finished books")
+            self.list.addItem(header)
+            if expanded:
+                for b in finished:
+                    self._add_book(b)
         self.count.setText(f"{len(books)} book{'s' * (len(books) != 1)}" if books else "")
         self.list.setVisible(bool(books))
         self.empty.setVisible(not books)
 
+    def _add_book(self, b) -> None:
+        chats = len(self.db.chats(b["id"]))
+        day = lambda t: time.strftime("%d %b %Y", time.localtime(t)).lstrip("0")
+        when = f"finished {day(b['finished_at'])}" if b["finished_at"] else f"opened {day(b['opened_at'])}"
+        item = QListWidgetItem()
+        item.setData(Qt.ItemDataRole.UserRole, b["id"])
+        ext = os.path.splitext(b["path"])[1].lstrip(".").upper()[:4] or "BOOK"
+        item.setData(BOOK_ROLE, {
+            "title": b["title"], "path": b["path"], "exists": os.path.exists(b["path"]),
+            "format": "WEB" if b["source_url"] else ext,
+            "last_page": b["last_page"], "page_count": b["page_count"],
+            "finished": b["finished_at"] is not None,
+            "detail": f"{chats} chat{'s' * (chats != 1)} · {when}",
+        })
+        item.setToolTip(b["source_url"] or b["path"])
+        self.list.addItem(item)
+
     def _activate(self, item: QListWidgetItem) -> None:
+        if header := item.data(HEADER_ROLE):
+            self.db.set_setting(FINISHED_COLLAPSED, "1" if header[1] else "0")
+            self.refresh()
+            return
         book = self.db.book(item.data(Qt.ItemDataRole.UserRole))
         if book and os.path.exists(book["path"]):
             self.openRequested.emit(book["path"])
 
     def _menu(self, pos) -> None:
         item = self.list.itemAt(pos)
-        if item is None:
+        if item is None or item.data(HEADER_ROLE):
             return
         book = self.db.book(item.data(Qt.ItemDataRole.UserRole))
         menu = QMenu(self)
+        finished = book["finished_at"] is not None
+        finish = menu.addAction(icon("check-circle"), "Move back to reading" if finished else "Mark as finished")
         refetch = menu.addAction(icon("globe"), "Fetch a fresh copy") if book["source_url"] else None
+        menu.addSeparator()
         remove = menu.addAction("Remove from library (deletes its chats)")
         chosen = menu.exec(self.list.mapToGlobal(pos))
-        if chosen is remove:
+        if chosen is finish:
+            self.db.set_finished(book["id"], not finished)
+            self.refresh()
+        elif chosen is remove:
             self.db.delete_book(book["id"])
             self.refresh()
         elif refetch is not None and chosen is refetch:

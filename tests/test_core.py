@@ -90,6 +90,7 @@ def test_old_database_gets_chat_model_column(tmp_path):
     db.add_message(1, "assistant", "a", session_id="s", session_uuid="u")  # messages gained branch points
     assert db.book(1)["crop_margins"] == 0
     assert (db.book(1)["show_toc"], db.book(1)["right_panel"], db.book(1)["show_chat_list"]) == (1, "chat", 1)
+    assert db.book(1)["finished_at"] is None
 
 
 # -- document ---------------------------------------------------------------------
@@ -183,6 +184,36 @@ def test_sidebars_stay_collapsed_when_book_is_reopened(pdf_path, tmp_path, monke
     win.show_library()
     win.open_book(pdf_path)
     assert win.calc_action.isChecked() and win.right.currentWidget() is win.calc and win.right.isVisible()
+
+
+def test_mark_book_finished(pdf_path, tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    from PySide6.QtWidgets import QApplication
+    from study_reader.library_view import BOOK_ROLE, FINISHED_COLLAPSED, HEADER_ROLE
+    from study_reader.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "t.db")
+    win = MainWindow(db)
+    win.open_book(pdf_path)
+    assert not win.finished_action.isChecked()
+    win.finished_action.trigger()
+    assert db.book(win.book_id)["finished_at"] is not None
+
+    win.show_library()
+    rows = [win.library.list.item(i) for i in range(win.library.list.count())]
+    assert rows[0].data(HEADER_ROLE) == ("Finished · 1", True)
+    assert rows[1].data(BOOK_ROLE)["finished"]
+
+    win.library._activate(rows[0])  # collapse the section
+    assert db.get_setting(FINISHED_COLLAPSED) == "1" and win.library.list.count() == 1
+
+    win.open_book(pdf_path)  # reopening keeps it finished
+    assert win.finished_action.isChecked()
+    win.finished_action.trigger()
+    win.show_library()
+    assert win.library.list.item(0).data(HEADER_ROLE) is None and win.library.list.count() == 1
 
 
 def test_edit_and_regenerate_branch_the_chat(chat_panel):

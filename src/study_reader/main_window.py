@@ -124,6 +124,9 @@ class MainWindow(QMainWindow):
         labelled(library)
         bar.addAction(action("Open…", QKeySequence.StandardKey.Open, self.browse, "folder-open"))
         bar.addAction(action("Open web page…", "Ctrl+Shift+O", self.ask_url, "globe"))
+        self.finished_action = action("Finished", "", self._set_finished, "check-circle", checkable=True)
+        self.finished_action.setToolTip("Mark this book as finished (moves it to the library's Finished section)")
+        bar.addAction(self.finished_action)
         # Toolbar entries that only make sense with a book open; hidden in the library.
         book_items = [bar.addSeparator()]
 
@@ -166,8 +169,12 @@ class MainWindow(QMainWindow):
         # Act on the current selection without reaching for the popup.
         action("Ask in new chat", "Ctrl+Return", lambda: self.reader.choose(True))
         action("Add to current chat", "Ctrl+Shift+Return", lambda: self.reader.choose(False))
-        self.book_actions = [zoom_out, zoom_in, fit, self.crop_action, self.region_action, self.quiz_action, new_chat]
-        self.book_items = book_items + [zoom_out, zoom_in, fit, self.crop_action, self.region_action, self.quiz_action]
+        self.book_actions = [
+            zoom_out, zoom_in, fit, self.crop_action, self.region_action, self.quiz_action, self.finished_action, new_chat,
+        ]
+        self.book_items = book_items + [
+            zoom_out, zoom_in, fit, self.crop_action, self.region_action, self.quiz_action, self.finished_action,
+        ]
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -236,6 +243,10 @@ class MainWindow(QMainWindow):
         self._save_panels()
         if on and self.right.isVisible():
             self.calc.focus_input()
+
+    def _set_finished(self, on: bool) -> None:
+        if self.book_id is not None:
+            self.db.set_finished(self.book_id, on)
 
     def _save_panels(self) -> None:
         """Remember per book which sidebars are open, so reopening it restores them."""
@@ -366,6 +377,7 @@ class MainWindow(QMainWindow):
         self.center.setCurrentWidget(self.reader)
         self._set_book_ui(True)
         self.crop_action.setChecked(bool(book["crop_margins"]))
+        self.finished_action.setChecked(book["finished_at"] is not None)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             self.reader.set_document(doc, book["last_page"], book["zoom"], crop=bool(book["crop_margins"]))
