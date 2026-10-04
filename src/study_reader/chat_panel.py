@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 
 from PySide6.QtCore import QEvent, QSize, Qt, Signal
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import claude_client as cc
+from . import quiz
 from .chat_service import BookRef, ChatWorker, Job
 from .db import Database, data_dir
 from .theme import icon, theme
@@ -44,6 +46,7 @@ class _Composer(QPlainTextEdit):
 
 class ChatPanel(QWidget):
     jumpRequested = Signal(int, list)  # page, rects
+    pageRequested = Signal(int)
     highlightsChanged = Signal()  # a chat, or the composer, gained or lost snippets
 
     def __init__(self, db: Database, worker: ChatWorker, parent=None):
@@ -59,6 +62,7 @@ class ChatPanel(QWidget):
         self._editing: int | None = None  # id of the message being rewritten in the composer
         self._draft: tuple[str, list[dict]] | None = None  # composer contents set aside while editing
         self._draft_model = self.default_model()  # for the chat the next send creates
+        self._grading: dict[int, int] = {}  # quiz answer id -> its message id, while Claude grades it
 
         self.model = QComboBox()
         for label, value in MODELS:
@@ -98,6 +102,10 @@ class ChatPanel(QWidget):
         self.transcript.jumpRequested.connect(self._on_jump)
         self.transcript.editRequested.connect(self.edit_message)
         self.transcript.regenerateRequested.connect(self.regenerate)
+        self.transcript.pageRequested.connect(self.pageRequested)
+        self.transcript.quizAnswered.connect(self._on_quiz_answer)
+        self.transcript.quizRetake.connect(self._on_quiz_retake)
+        self.transcript.quizRegrade.connect(self._on_quiz_regrade)
         self.status = QLabel()
         self.status.setWordWrap(True)
         self.status.setProperty("role", "hint")
@@ -181,6 +189,8 @@ class ChatPanel(QWidget):
         worker.failed.connect(self._on_failed)
         worker.base.connect(self._on_base)
         worker.status.connect(self._on_status)
+        worker.graded.connect(self._on_graded)
+        worker.gradeFailed.connect(self._on_grade_failed)
         self.set_book(None)
 
     # -- layout --------------------------------------------------------------------
@@ -267,17 +277,25 @@ class ChatPanel(QWidget):
         if new_chat:
             self.new_chat()  # first: leaving an edit puts the set-aside draft back
             self._pending.clear()
-        if snippet.get("png"):
-            folder = data_dir() / "snippets"
-            folder.mkdir(exist_ok=True)
-            path = folder / f"{uuid.uuid4().hex}.png"
-            path.write_bytes(snippet["png"])
-            snippet = {**snippet, "image_path": str(path)}
-        snippet.pop("png", None)
-        self._pending.append(snippet)
+        self._pending.append(_stored(snippet))
         self._refresh_chips()
         self.input.setFocus()
         self.highlightsChanged.emit()
+
+    def start_quiz(self, request: str, title: str, page: int, snippet: dict | None = None) -> None:
+        """Open a new chat asking Claude for a quiz; the composer's draft is left as it was.
+        snippet: a passage to quiz on, as the reader emits it."""
+        if self.book_id is None:
+            return
+        self.new_chat()
+        snippets = [_stored(snippet)] if snippet else []
+        self.chat_id = self.db.create_chat(self.book_id, " ".join(title.split())[:70], self._draft_model)
+        self.db.add_message(self.chat_id, "user", request, snippets)
+        self._ask(request, snippets, [], branch=False, page=page)
+        self._refresh_list()
+        self._refresh_transcript()
+        if snippets:
+            self.highlightsChanged.emit()
 
     def pending_snippets(self) -> list[dict]:
         """Snippets waiting in the composer, not yet saved with a message."""
@@ -377,13 +395,14 @@ class ChatPanel(QWidget):
         self._ask(question["text"], question["snippets"], messages[:asked], branch=True)
         self._refresh_transcript()
 
-    def _ask(self, question: str, snippets: list[dict], prior: list[dict], branch: bool) -> None:
+    def _ask(
+        self, question: str, snippets: list[dict], prior: list[dict], branch: bool, page: int | None = None
+    ) -> None:
         """Send a question that follows `prior`, the chat's saved messages before it.
 
         branch: later turns were dropped, so rather than continuing the chat's session, fork
         from the last reply in `prior` at that reply (or, with no reply or one saved before
         branch points were kept, start over from the book and replay `prior`)."""
-        book = self.db.book(self.book_id)
         chat = self.db.chat(self.chat_id)
         session_id, resume_at = chat["session_id"], None
         if branch:
@@ -393,18 +412,129 @@ class ChatPanel(QWidget):
             reply = next((m for m in reversed(prior) if m["role"] == "assistant"), None)
             if reply and reply["session_uuid"]:
                 session_id, resume_at = reply["session_id"], reply["session_uuid"]
+        if page is None:
+            page = snippets[0]["page"] if snippets else self.current_page()
         self.worker.submit(Job(
             chat_id=self.chat_id,
-            book=BookRef(book["id"], book["path"], book["title"], book["base_session_id"], book["context_mode"]),
+            book=self._book_ref(),
             chat_session_id=session_id,
             question=question,
             snippets=[cc.Snippet(s["kind"], s["page"], s.get("text", ""), s.get("image_path", "")) for s in snippets],
             history=[(m["role"], m["text"]) for m in prior if m["role"] != "error"],
-            page=snippets[0]["page"] if snippets else self.current_page(),
+            page=page,
             model=chat["model"] or None,
             resume_at=resume_at,
+            context=quiz.answers_context(prior, self.db.quiz_answers(self.chat_id)),
         ))
         self._streams[self.chat_id] = ""
+
+    def _book_ref(self) -> BookRef:
+        book = self.db.book(self.book_id)
+        return BookRef(book["id"], book["path"], book["title"], book["base_session_id"], book["context_mode"])
+
+    # -- quizzes -------------------------------------------------------------------
+    def _quiz_of(self, message_id: int, index: int) -> tuple[dict, dict] | None:
+        """(message, quiz) for a quiz in one of the open chat's replies."""
+        message = self.db.message(message_id)
+        if message is None or message["chat_id"] != self.chat_id:
+            return None
+        quizzes = quiz.quizzes(message["text"])
+        if not 0 <= index < len(quizzes) or "questions" not in quizzes[index]:
+            return None
+        return dict(message), quizzes[index]
+
+    def _on_quiz_answer(self, message_id: int, index: int, question: int, response_json: str) -> None:
+        found = self._quiz_of(message_id, index)
+        if found is None:
+            return
+        message, q = found
+        try:
+            spec = q["questions"][question]
+            response = json.loads(response_json)
+        except (IndexError, ValueError):
+            return
+        if spec["type"] == "free":
+            answer_id = self.db.save_quiz_answer(message_id, index, question, response_json, "pending")
+            self._grade(message, q, question, answer_id, response.get("text", ""))
+        else:
+            try:
+                verdict = quiz.grade(spec, response)
+            except quiz.AnswerError as e:
+                self.transcript.quiz_input_error(message_id, index, question, str(e))
+                return
+            self.db.save_quiz_answer(message_id, index, question, response_json, "done", verdict)
+        self._update_quiz(message_id, index)
+
+    def _on_quiz_retake(self, message_id: int, index: int) -> None:
+        if self._quiz_of(message_id, index) is not None:
+            self.db.clear_quiz_answers(message_id, index)
+            self._update_quiz(message_id, index)
+
+    def _on_quiz_regrade(self, message_id: int, index: int, question: int) -> None:
+        found = self._quiz_of(message_id, index)
+        if found is None:
+            return
+        row = next((r for r in self.db.quiz_answers(self.chat_id).get(message_id, [])
+                    if r["quiz"] == index and r["question"] == question), None)
+        if row is None or row["id"] in self._grading:
+            return
+        self.db.update_quiz_answer(row["id"], status="pending", feedback="")
+        self._grade(*found, question, row["id"], json.loads(row["response"]).get("text", ""))
+        self._update_quiz(message_id, index)
+
+    def _grade(self, message: dict, q: dict, question: int, answer_id: int, text: str) -> None:
+        """Have Claude grade a free response, in a detached fork of the chat at the quiz's reply."""
+        chat = self.db.chat(message["chat_id"])
+        page = q["questions"][question]["page"]
+        prior = [m for m in self.db.messages(message["chat_id"]) if m["id"] <= message["id"] and m["role"] != "error"]
+        self._grading[answer_id] = message["id"]
+        self.worker.submit_grade(Job(
+            chat_id=message["chat_id"],
+            book=self._book_ref(),
+            chat_session_id=message["session_id"],
+            question=quiz.grading_prompt(q, question, text),
+            history=[(m["role"], m["text"]) for m in prior],
+            page=page - 1 if page else self.current_page(),
+            model=chat["model"] or None,
+            resume_at=message["session_uuid"],
+            detached=True,
+        ), answer_id)
+
+    def _on_graded(self, answer_id: int, text: str) -> None:
+        verdict, feedback = quiz.parse_grade(text)
+        self._graded(answer_id, status="done", verdict=verdict, feedback=feedback)
+
+    def _on_grade_failed(self, answer_id: int, message: str) -> None:
+        self._graded(answer_id, status="error", feedback=message)
+
+    def _graded(self, answer_id: int, **fields) -> None:
+        message_id = self._grading.pop(answer_id, None)
+        row = self.db.quiz_answer(answer_id)
+        if message_id is None or row is None:  # retaken or deleted meanwhile
+            return
+        self.db.update_quiz_answer(answer_id, **fields)
+        message = self.db.message(message_id)
+        if message is not None and message["chat_id"] == self.chat_id:
+            self._update_quiz(message_id, row["quiz"])
+
+    def _update_quiz(self, message_id: int, index: int) -> None:
+        message = self.db.message(message_id)
+        rows = self.db.quiz_answers(message["chat_id"]).get(message_id, [])
+        self.transcript.update_quiz(message_id, index, self._quiz_view(quiz.quizzes(message["text"])[index], index, rows))
+
+    def _quiz_view(self, q: dict, index: int, rows) -> dict:
+        """A quiz as transcript.html draws it: with the answers given so far."""
+        answers = {}
+        for r in rows:
+            if r["quiz"] != index:
+                continue
+            status, feedback = r["status"], r["feedback"]
+            if status == "pending" and r["id"] not in self._grading:  # the app closed mid-grading
+                status, feedback = "error", "grading was interrupted"
+            answers[r["question"]] = {
+                "response": json.loads(r["response"]), "status": status, "verdict": r["verdict"], "feedback": feedback,
+            }
+        return {**q, "answers": answers}
 
     # -- editing -------------------------------------------------------------------
     def edit_message(self, message_id: int) -> None:
@@ -504,6 +634,11 @@ class ChatPanel(QWidget):
 
     def _refresh_transcript(self) -> None:
         messages = self.db.messages(self.chat_id) if self.chat_id is not None else []
+        answers = self.db.quiz_answers(self.chat_id) if messages else {}
+        for m in messages:
+            if m["role"] == "assistant":
+                m["text"], quizzes = quiz.split(m["text"])
+                m["quizzes"] = [self._quiz_view(q, i, answers.get(m["id"], [])) for i, q in enumerate(quizzes)]
         placeholder = (
             "Select text or capture a region in the book to ask about it." if self.book_id is not None
             else "Open a book to start."
@@ -545,3 +680,15 @@ class ChatPanel(QWidget):
         self._pending = [s for s in self._pending if s is not snippet]
         self._refresh_chips()
         self.highlightsChanged.emit()
+
+
+def _stored(snippet: dict) -> dict:
+    """A snippet from the reader, with its screenshot (if any) saved to a file."""
+    snippet = dict(snippet)
+    if png := snippet.pop("png", None):
+        folder = data_dir() / "snippets"
+        folder.mkdir(exist_ok=True)
+        path = folder / f"{uuid.uuid4().hex}.png"
+        path.write_bytes(png)
+        snippet["image_path"] = str(path)
+    return snippet

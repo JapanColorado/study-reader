@@ -47,3 +47,37 @@ def epub_path(tmp_path):
             f'<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>Z</title></head><body>{chapters}</body></html>',
         )
     return str(path)
+
+
+@pytest.fixture
+def chat_panel(tmp_path, monkeypatch):
+    """A ChatPanel on a book, with a stand-in worker that records jobs: (panel, worker, db, book id)."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    from PySide6.QtCore import QObject, Signal
+    from PySide6.QtWidgets import QApplication
+    from study_reader.chat_panel import ChatPanel
+    from study_reader.db import Database
+
+    class Worker(QObject):
+        status, base, delta = Signal(int, str), Signal(int, str, str), Signal(int, str)
+        done, failed = Signal(int, str, str, str), Signal(int, str)
+        graded, gradeFailed = Signal(int, str), Signal(int, str)
+
+        def __init__(self):
+            super().__init__()
+            self.jobs, self.gradings = [], []
+
+        def submit(self, job):
+            self.jobs.append(job)
+
+        def submit_grade(self, job, answer_id):
+            self.gradings.append((job, answer_id))
+
+    QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "t.db")
+    book_id = db.upsert_book("h", "/a.pdf", "A", 3)["id"]
+    worker = Worker()
+    panel = ChatPanel(db, worker)
+    panel.set_book(book_id)
+    return panel, worker, db, book_id

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+from . import quiz
 from .calculator import CalculatorPanel
 from .chat_panel import MODELS, ChatPanel
 from .chat_service import ChatWorker
@@ -78,11 +79,13 @@ class MainWindow(QMainWindow):
         self.web.failed.connect(self._on_web_failed)
         self._web_progress: QProgressDialog | None = None
         self.reader.snippetChosen.connect(lambda sn, new: self._show_chat(lambda: self.chat.add_snippet(sn, new)))
+        self.reader.quizChosen.connect(self._quiz_on)
         self.reader.highlightClicked.connect(self._highlight_menu)
         self.chat.highlightsChanged.connect(self._refresh_highlights)
         self.reader.pageChanged.connect(self._on_page_changed)
         self.reader.zoomChanged.connect(lambda z: self.zoom_label.setText(f"{round(z * 100)}%"))
         self.chat.jumpRequested.connect(self.reader.flash)
+        self.chat.pageRequested.connect(self.reader.go_to)
         theme().changed.connect(self._on_theme_changed)
         self._on_theme_changed()
 
@@ -153,12 +156,18 @@ class MainWindow(QMainWindow):
         )
         bar.addAction(self.region_action)
         labelled(self.region_action)
+        self.quiz_action = action("Quiz me", "Ctrl+Shift+Q", self.quiz, "quiz")
+        self.quiz_action.setToolTip(
+            "Quiz me on the selection, or else the section being read (Ctrl+Shift+Q)"
+        )
+        bar.addAction(self.quiz_action)
+        labelled(self.quiz_action)
         new_chat = action("New chat", "Ctrl+N", self.chat.new_chat, "message-plus")
         # Act on the current selection without reaching for the popup.
         action("Ask in new chat", "Ctrl+Return", lambda: self.reader.choose(True))
         action("Add to current chat", "Ctrl+Shift+Return", lambda: self.reader.choose(False))
-        self.book_actions = [zoom_out, zoom_in, fit, self.crop_action, self.region_action, new_chat]
-        self.book_items = book_items + [zoom_out, zoom_in, fit, self.crop_action, self.region_action]
+        self.book_actions = [zoom_out, zoom_in, fit, self.crop_action, self.region_action, self.quiz_action, new_chat]
+        self.book_items = book_items + [zoom_out, zoom_in, fit, self.crop_action, self.region_action, self.quiz_action]
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -409,6 +418,20 @@ class MainWindow(QMainWindow):
             lambda: self._show_chat(lambda: self.chat.add_snippet(self.reader.snippet_from(latest), False))
         )
         menu.exec(pos)
+
+    # -- quizzes --------------------------------------------------------------------
+    def quiz(self) -> None:
+        """Quiz on the selection if there is one, else on the section being read."""
+        if self.doc is None or self.reader.choose_quiz():
+            return
+        page = self.reader.current_page()
+        first, last, title = quiz.section_around(self.doc.toc(), page, self.doc.page_count)
+        question, chat_title = quiz.request(first, last, title)
+        self._show_chat(lambda: self.chat.start_quiz(question, chat_title, first))
+
+    def _quiz_on(self, snippet: dict) -> None:
+        question, title = quiz.snippet_request(snippet)
+        self._show_chat(lambda: self.chat.start_quiz(question, title, snippet["page"], snippet))
 
     def _show_chat(self, then) -> None:
         if not self.chat_action.isChecked():

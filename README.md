@@ -29,6 +29,7 @@ Requires the `claude` CLI to be logged in (`claude` → `/login`). The app talks
 | Open a web page | **Open web page…** (`Ctrl+Shift+O`; a copied link is filled in). Opening the same address again opens the saved copy; right-click it in the library → **Fetch a fresh copy** to update |
 | Show or hide contents / chats | `F9` / `F10` |
 | Calculator (takes the chat panel's place) | `F11`. Desmos-style math input: `/` makes a stacked fraction, `^` an exponent, `sqrt` a root, and → steps out of them. Type e.g. `v = 3.2`, `12v / ans`, `sin(30)` in **DEG**. Arithmetic is exact, and the button beside a result switches between decimal and fraction (`0.1 + 0.2` = 3/10). ↑ recalls earlier input; history is kept per book |
+| Quiz yourself | **Quiz me** (`Ctrl+Shift+Q`, or in the selection popup): on the selection, else on the section you're reading. Opens a quiz chat with multiple-choice, true/false, numeric (typed like the calculator) and free-response questions. Answers are checked as you go, free responses are graded by Claude, and the score and answers are kept; **Retake** starts over. Asking "quiz me on…" in any chat works too, and follow-up questions see your answers |
 | Revisit a passage you asked about | Click its highlight → pick one of its chats, or start a new one |
 | Redo a reply | **Regenerate** under the chat's last reply (**Retry** after an error) |
 | Edit a question | Hover it → **Edit**: it loads into the box below, where you can change the text or its passages; sending replaces it and every reply after it. `Esc` cancels |

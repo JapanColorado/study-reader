@@ -39,6 +39,10 @@ class Job:
     # Branch from an earlier reply (regenerate / edit): chat_session_id is that reply's
     # session and this its message uuid; the turn forks from there.
     resume_at: str | None = None
+    # Sent with the question but not part of it (e.g. the user's quiz answers).
+    context: str = ""
+    # A side question (grading a quiz answer): always fork, so the chat's session doesn't continue it.
+    detached: bool = False
 
 
 def _extract_text(path: str) -> str:
@@ -70,7 +74,8 @@ def _replay(history: list[tuple[str, str]]) -> str:
 class ChatService:
     """Events are reported through emit(name, *args):
     status(book_id, text), base(book_id, session_id, mode), delta(chat_id, text),
-    done(chat_id, session_id, text, message_uuid), failed(chat_id, message)."""
+    done(chat_id, session_id, text, message_uuid), failed(chat_id, message),
+    and for quiz grading graded(answer_id, text), gradeFailed(answer_id, message)."""
 
     def __init__(self, emit: Callable[..., None], sessions_dir: str | Path):
         self.emit = emit
@@ -129,13 +134,26 @@ class ChatService:
         except Exception as e:
             self.emit("failed", job.chat_id, str(e) or type(e).__name__)
 
+    async def grade(self, job: Job, answer_id: int) -> None:
+        """Ask Claude to grade a quiz answer, as a detached turn from the quiz's reply."""
+        try:
+            try:
+                res = await self._turn(job, job.chat_session_id, None)
+            except cc.ClaudeError:
+                if not job.chat_session_id:
+                    raise
+                res = await self._turn(job, None, None)
+            self.emit("graded", answer_id, res.text)
+        except Exception as e:
+            self.emit("gradeFailed", answer_id, str(e) or type(e).__name__)
+
     async def _turn(self, job: Job, chat_session_id: str | None, on_delta) -> cc.TurnResult:
         cwd = self.cwd(job.book.id)
         extra: list[str] = []
         resume_at = None
         if cc.session_exists(chat_session_id, cwd):
             resume, resume_at = chat_session_id, job.resume_at
-            fork = bool(resume_at)
+            fork = bool(resume_at) or job.detached
         else:
             base, mode = await self.ensure_base(job)
             resume, fork = base, bool(base)
@@ -147,6 +165,8 @@ class ChatService:
                 )
             if job.history:
                 extra.append(_replay(job.history))
+        if job.context:
+            extra.append(job.context)
         blocks = cc.build_blocks(job.question, job.snippets, "\n\n".join(extra))
         return await cc.run_turn(
             blocks, cwd=cwd, model=job.model, resume=resume, fork=fork, resume_at=resume_at, on_delta=on_delta,
@@ -161,6 +181,8 @@ class ChatWorker(QObject):
     delta = Signal(int, str)
     done = Signal(int, str, str, str)
     failed = Signal(int, str)
+    graded = Signal(int, str)
+    gradeFailed = Signal(int, str)
 
     def __init__(self, sessions_dir: str | Path, parent: QObject | None = None):
         super().__init__(parent)
@@ -174,6 +196,9 @@ class ChatWorker(QObject):
 
     def submit(self, job: Job) -> None:
         asyncio.run_coroutine_threadsafe(self.service.ask(job), self.loop)
+
+    def submit_grade(self, job: Job, answer_id: int) -> None:
+        asyncio.run_coroutine_threadsafe(self.service.grade(job, answer_id), self.loop)
 
     def shutdown(self) -> None:
         self.loop.call_soon_threadsafe(self.loop.stop)

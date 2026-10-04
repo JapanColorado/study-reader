@@ -33,6 +33,7 @@ CLICK_SLOP = 4  # px a press may move and still count as a click
 class ReaderView(QAbstractScrollArea):
     # dict(kind, page, text, rects, png) and whether it should start a new chat
     snippetChosen = Signal(dict, bool)
+    quizChosen = Signal(dict)  # a snippet to be quizzed on
     pageChanged = Signal(int)
     zoomChanged = Signal(float)
     highlightClicked = Signal(list, QPoint)  # snippets under the click, global position
@@ -81,9 +82,11 @@ class ReaderView(QAbstractScrollArea):
         ask.clicked.connect(lambda: self.choose(True))
         add = QPushButton("Add to current chat")
         add.clicked.connect(lambda: self.choose(False))
+        quiz = QPushButton("Quiz me")
+        quiz.clicked.connect(self.choose_quiz)
         self._copy_btn = QPushButton("Copy")
         self._copy_btn.clicked.connect(self.copy_selection)
-        for b in (ask, add, self._copy_btn):
+        for b in (ask, add, quiz, self._copy_btn):
             row.addWidget(b)
         self._popup.hide()
 
@@ -493,6 +496,17 @@ class ReaderView(QAbstractScrollArea):
 
     def choose(self, new_chat: bool) -> None:
         """Hand the current selection or region to the chat panel."""
+        if snippet := self.take_selection():
+            self.snippetChosen.emit(snippet, new_chat)
+
+    def choose_quiz(self) -> bool:
+        """Ask for a quiz on the current selection or region; False if there is none."""
+        if snippet := self.take_selection():
+            self.quizChosen.emit(snippet)
+        return snippet is not None
+
+    def take_selection(self) -> dict | None:
+        """The current selection or region as a snippet, clearing it."""
         if self._region:
             page, r = self._region
             png = self.doc.render(page, CAPTURE_SCALE, clip=r).tobytes("png")
@@ -504,9 +518,9 @@ class ReaderView(QAbstractScrollArea):
                 "rects": [list(r) for r in line_rects(self._selection[page])], "png": None,
             }
         else:
-            return
+            return None
         self.clear_selection()
-        self.snippetChosen.emit(snippet, new_chat)
+        return snippet
 
     def keyPressEvent(self, event) -> None:
         if event.matches(QKeySequence.StandardKey.Copy):

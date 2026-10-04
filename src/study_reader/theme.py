@@ -21,6 +21,7 @@ LIGHT = {
     "muted": "#6b6862", "faint": "#a19d95", "border": "#dedad2", "hover": "#ebe8e1",
     "accent": "#b8562f", "accent_hover": "#a24a27", "accent_fg": "#ffffff", "accent_soft": "#f4e2d8",
     "canvas": "#e3e0d9", "user": "#efece6", "code": "#f1eee8", "error": "#c0392b", "scroll": "#cfcac1",
+    "success": "#3a8f5c", "warning": "#b8860b",
     "page_bg": "#ffffff", "page_fg": "#000000",
 }
 DARK = {
@@ -28,6 +29,7 @@ DARK = {
     "muted": "#a09c94", "faint": "#6c6862", "border": "#363330", "hover": "#2e2c2a",
     "accent": "#e08a63", "accent_hover": "#eb9c78", "accent_fg": "#1c1410", "accent_soft": "#3d2b22",
     "canvas": "#131211", "user": "#2d2b29", "code": "#2a2826", "error": "#ec7063", "scroll": "#45413d",
+    "success": "#6cc28e", "warning": "#e2bd52",
     "page_bg": "#201e1c", "page_fg": "#dcd7ce",
 }
 
@@ -65,6 +67,7 @@ ICONS = {
                   '<path d="M16 10h.01"/><path d="M12 10h.01"/><path d="M8 10h.01"/><path d="M12 14h.01"/>'
                   '<path d="M8 14h.01"/><path d="M12 18h.01"/><path d="M8 18h.01"/>',
     "trash": '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>',
+    "quiz": '<path d="M9 11l2 2 4-4"/><rect width="16" height="18" x="4" y="3" rx="2"/><path d="M9 17h6"/>',
     "help": '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
 }
 

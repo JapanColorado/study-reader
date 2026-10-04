@@ -1,13 +1,14 @@
-"""Chat transcript rendered in a web view (Markdown + KaTeX, bundled offline), plus the
-window that shows one of its visualizations at full size."""
+"""Chat transcript rendered in a web view (Markdown + KaTeX, bundled offline) with its
+interactive quizzes, plus the window that shows one of its visualizations at full size."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QColor, QDesktopServices
+from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QVBoxLayout, QWidget
@@ -38,6 +39,7 @@ class _Page(QWebEnginePage):
     openViz = Signal(int)
     edit = Signal(int)
     regenerate = Signal(int)
+    page = Signal(int)
 
     def acceptNavigationRequest(self, url: QUrl, nav_type, is_main_frame: bool) -> bool:
         if not is_main_frame:  # a visualization's iframe: only its own srcdoc
@@ -45,7 +47,9 @@ class _Page(QWebEnginePage):
                 return True
             _open_external(url, nav_type)
             return False
-        actions = {"jump": self.jump, "viz": self.openViz, "edit": self.edit, "regen": self.regenerate}
+        actions = {
+            "jump": self.jump, "viz": self.openViz, "edit": self.edit, "regen": self.regenerate, "page": self.page,
+        }
         if url.scheme() in actions:
             if (n := _url_id(url)) is not None:
                 actions[url.scheme()].emit(n)
@@ -56,19 +60,47 @@ class _Page(QWebEnginePage):
         return True
 
 
+class _QuizBridge(QObject):
+    """What transcript.html's quizzes call through the web channel."""
+
+    def __init__(self, view: TranscriptView):
+        super().__init__(view)
+        self.view = view
+
+    @Slot(int, int, int, str)
+    def answer(self, message_id: int, quiz: int, question: int, response: str) -> None:
+        self.view.quizAnswered.emit(message_id, quiz, question, response)
+
+    @Slot(int, int)
+    def retake(self, message_id: int, quiz: int) -> None:
+        self.view.quizRetake.emit(message_id, quiz)
+
+    @Slot(int, int, int)
+    def regrade(self, message_id: int, quiz: int, question: int) -> None:
+        self.view.quizRegrade.emit(message_id, quiz, question)
+
+
 class TranscriptView(QWebEngineView):
     jumpRequested = Signal(int)  # snippet id
+    pageRequested = Signal(int)  # 0-based page, from a quiz question's page link
     editRequested = Signal(int)  # message id
     regenerateRequested = Signal(int)  # message id
+    quizAnswered = Signal(int, int, int, str)  # message id, quiz, question, response JSON
+    quizRetake = Signal(int, int)  # message id, quiz
+    quizRegrade = Signal(int, int, int)  # message id, quiz, question (its grading failed)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         page = _Page(self)
         page.jump.connect(self.jumpRequested)
+        page.page.connect(self.pageRequested)
         page.edit.connect(self.editRequested)
         page.regenerate.connect(self.regenerateRequested)
         page.openViz.connect(self._open_viz)
         self.setPage(page)
+        self.channel = QWebChannel(page)
+        self.channel.registerObject("quiz", _QuizBridge(self))
+        page.setWebChannel(self.channel)
         page.setBackgroundColor(QColor(theme().colors["surface"]))
         self._ready = False
         self._pending: str | None = None
@@ -82,7 +114,9 @@ class TranscriptView(QWebEngineView):
         self, messages: list[dict], streaming: str | None = None, placeholder: str = "", editing: int | None = None
     ) -> None:
         """streaming: None when idle, else the reply text received so far.
-        editing: id of the message being rewritten in the composer, if any."""
+        editing: id of the message being rewritten in the composer, if any.
+        An assistant message's quizzes come in its "quizzes", from quiz_view(), with its "text"
+        holding the placeholders quiz.split() leaves."""
         self.page().setBackgroundColor(QColor(theme().colors["surface"]))
         out = []
         for m in messages:
@@ -93,10 +127,20 @@ class TranscriptView(QWebEngineView):
                 }
                 for s in m.get("snippets", [])
             ]
-            out.append({"id": m["id"], "role": m["role"], "text": m["text"], "snippets": snippets})
+            out.append({
+                "id": m["id"], "role": m["role"], "text": m["text"], "snippets": snippets,
+                "quizzes": m.get("quizzes", []),
+            })
         data = {"messages": out, "streaming": streaming, "placeholder": placeholder, "editing": editing,
                 "dark": theme().dark, "colors": theme().colors}
         self._run(f"render({json.dumps(data)})")
+
+    def update_quiz(self, message_id: int, index: int, quiz: dict) -> None:
+        """Redraw one quiz in place (after an answer), keeping the scroll position."""
+        self._run(f"updateQuiz({message_id}, {index}, {json.dumps(quiz)})", queue=False)
+
+    def quiz_input_error(self, message_id: int, index: int, question: int, error: str) -> None:
+        self._run(f"quizInputError({message_id}, {index}, {question}, {json.dumps(error)})", queue=False)
 
     def set_streaming(self, text: str) -> None:
         self._stream_text = text

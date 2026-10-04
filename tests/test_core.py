@@ -185,30 +185,8 @@ def test_sidebars_stay_collapsed_when_book_is_reopened(pdf_path, tmp_path, monke
     assert win.calc_action.isChecked() and win.right.currentWidget() is win.calc and win.right.isVisible()
 
 
-def test_edit_and_regenerate_branch_the_chat(tmp_path, monkeypatch):
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
-    from PySide6.QtCore import QObject, Signal
-    from PySide6.QtWidgets import QApplication
-    from study_reader.chat_panel import ChatPanel
-
-    class Worker(QObject):
-        status, base, delta = Signal(int, str), Signal(int, str, str), Signal(int, str)
-        done, failed = Signal(int, str, str, str), Signal(int, str)
-
-        def __init__(self):
-            super().__init__()
-            self.jobs = []
-
-        def submit(self, job):
-            self.jobs.append(job)
-
-    app = QApplication.instance() or QApplication([])
-    db = Database(tmp_path / "t.db")
-    book_id = db.upsert_book("h", "/a.pdf", "A", 3)["id"]
-    worker = Worker()
-    panel = ChatPanel(db, worker)
-    panel.set_book(book_id)
+def test_edit_and_regenerate_branch_the_chat(chat_panel):
+    panel, worker, db, book_id = chat_panel
 
     def ask(text):
         panel.input.setPlainText(text)
@@ -263,7 +241,7 @@ def test_transcript_navigation_routes_links_and_confines_visualizations(monkeypa
     emitted = []
     page = SimpleNamespace(**{
         name: SimpleNamespace(emit=lambda n, name=name: emitted.append((name, n)))
-        for name in ("jump", "openViz", "edit", "regenerate")
+        for name in ("jump", "openViz", "edit", "regenerate", "page")
     })
     nav = tv._Page.acceptNavigationRequest
     Nav = QWebEnginePage.NavigationType
@@ -273,13 +251,14 @@ def test_transcript_navigation_routes_links_and_confines_visualizations(monkeypa
     assert not nav(page, QUrl("viz://open/2"), clicked, True)
     assert not nav(page, QUrl("edit://message/3"), clicked, True)
     assert not nav(page, QUrl("regen://message/4"), clicked, True)
-    assert emitted == [("jump", 7), ("openViz", 2), ("edit", 3), ("regenerate", 4)]
+    assert not nav(page, QUrl("page://go/41"), clicked, True)
+    assert emitted == [("jump", 7), ("openViz", 2), ("edit", 3), ("regenerate", 4), ("page", 41)]
     # Inside a visualization's frame: its srcdoc loads, nothing else navigates or reaches the app.
     assert nav(page, QUrl("about:srcdoc"), scripted, False)
     assert not nav(page, QUrl("viz://open/0"), clicked, False)
     assert not nav(page, QUrl("https://example.com/leak"), scripted, False)
     assert not nav(page, QUrl("https://example.com/doc"), clicked, False)
-    assert len(emitted) == 4 and opened == ["https://example.com/doc"]
+    assert len(emitted) == 5 and opened == ["https://example.com/doc"]
 
 
 def test_epub_document(epub_path):

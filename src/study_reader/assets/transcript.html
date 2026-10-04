@@ -5,10 +5,14 @@
 <link rel="stylesheet" href="katex/katex.min.css">
 <script src="katex/katex.min.js"></script>
 <script src="markdown-it.min.js"></script>
+<script src="mathlive/mathlive.min.js"></script>
+<script src="mathfield.js"></script>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 <style>
   /* Fallbacks; the app sets these from theme.py on every render. */
   :root { --surface:#fbfaf8; --fg:#1f1e1c; --muted:#6b6862; --faint:#a19d95; --user:#efece6; --border:#dedad2;
-          --accent:#b8562f; --accent-soft:#f4e2d8; --code:#f1eee8; --error:#c0392b; --scroll:#cfcac1; }
+          --accent:#b8562f; --accent-soft:#f4e2d8; --code:#f1eee8; --error:#c0392b; --scroll:#cfcac1;
+          --raised:#ffffff; --success:#3a8f5c; --warning:#b8860b; }
   html, body { margin:0; background:var(--surface); color:var(--fg); font:14.5px/1.6 system-ui, sans-serif; }
   ::selection { background:var(--accent-soft); }
   ::-webkit-scrollbar { width:11px; height:11px; }
@@ -59,6 +63,74 @@
   .actions svg { width:13px; height:13px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
   .msg.user.editing { outline:2px solid var(--accent); outline-offset:1px; }
   .turn.stale { opacity:0.4; }
+  .quiz { margin:0.7em 0; border:1px solid var(--border); border-radius:10px; overflow:hidden; }
+  .quiz.pending { padding:14px 12px; color:var(--muted); font-size:13px; }
+  .quiz-head { display:flex; align-items:center; gap:8px; padding:6px 11px; border-bottom:1px solid var(--border);
+               background:var(--code); font-size:12px; color:var(--muted); }
+  .quiz-head .title { flex:1; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .quiz-broken { padding:10px 12px; color:var(--muted); font-size:13px; }
+  .q { padding:10px 12px 12px; border-bottom:1px solid var(--border); }
+  .q-meta { display:flex; gap:8px; font-size:11px; font-weight:600; color:var(--muted); margin-bottom:4px; }
+  .q-meta a { color:var(--accent); text-decoration:none; font-weight:600; }
+  .q-meta a:hover { text-decoration:underline; }
+  .q-text > :first-child { margin-top:0; } .q-text > :last-child { margin-bottom:0; }
+  .choices { display:flex; flex-direction:column; gap:5px; margin-top:8px; }
+  .choices.tf { flex-direction:row; }
+  .choice { display:flex; align-items:baseline; gap:9px; text-align:left; padding:6px 10px; font:inherit; color:var(--fg);
+            background:var(--raised); border:1px solid var(--border); border-radius:8px; cursor:pointer; }
+  .choices.tf .choice { flex:1; justify-content:center; }
+  .choices.tf .c-text { flex:none; }
+  .choice:hover:not(:disabled) { border-color:var(--accent); background:var(--accent-soft); }
+  .choice:disabled { cursor:default; }
+  .choice .letter { flex:none; font-size:12px; font-weight:700; color:var(--muted); }
+  .choice .c-text { flex:1; min-width:0; }
+  .choice.right { border-color:var(--success); box-shadow:inset 0 0 0 1px var(--success); }
+  .choice.right .letter { color:var(--success); }
+  .choice.wrong { border-color:var(--error); box-shadow:inset 0 0 0 1px var(--error); }
+  .choice.wrong .letter { color:var(--error); }
+  .choice.dim { opacity:0.55; }
+  .answer-row { display:flex; align-items:center; gap:8px; margin-top:8px; }
+  .answer-row math-field { flex:1; min-width:0; font-size:1.1em; padding:3px 8px; background:var(--raised); color:var(--fg);
+               border:1px solid var(--border); border-radius:8px; outline:none;
+               --caret-color:var(--accent); --selection-background-color:var(--accent-soft); --selection-color:var(--fg);
+               --contains-highlight-background-color:transparent; --primary:var(--accent);
+               --highlight-text:transparent; --text-highlight-background-color:var(--accent-soft); --smart-fence-color:var(--faint); }
+  .answer-row math-field:focus-within { border-color:var(--accent); }
+  math-field::part(virtual-keyboard-toggle), math-field::part(menu-toggle) { display:none; }
+  .unit { color:var(--muted); }
+  textarea.free { display:block; width:100%; box-sizing:border-box; margin-top:8px; padding:7px 9px; resize:vertical;
+                  font:inherit; color:var(--fg); background:var(--raised); border:1px solid var(--border); border-radius:8px; outline:none; }
+  textarea.free:focus { border-color:var(--accent); }
+  .submit-row { display:flex; align-items:center; gap:8px; margin-top:6px; font-size:12px; color:var(--faint); }
+  .submit-row .grow { flex:1; }
+  .qbtn { font:inherit; font-size:12.5px; padding:4px 12px; border-radius:7px; cursor:pointer; border:1px solid var(--accent);
+          background:var(--accent); color:var(--accent-fg); }
+  .qbtn:hover { filter:brightness(1.08); }
+  .qbtn.quiet { background:transparent; color:var(--accent); border-color:var(--border); }
+  .qbtn.quiet:hover { background:var(--accent-soft); filter:none; }
+  .q.busy .qbtn, .q.busy .choice { pointer-events:none; opacity:0.6; }
+  .q-error { color:var(--error); font-size:12.5px; margin-top:4px; }
+  .q-error:empty { display:none; }
+  .given { margin-top:8px; padding:6px 10px; background:var(--user); border-radius:8px; white-space:pre-wrap; }
+  .given .label, .expected .label { font-size:11px; font-weight:600; color:var(--muted); margin-right:6px; }
+  .expected { margin-top:6px; }
+  .verdict { display:inline-flex; align-items:center; gap:6px; margin-top:8px; font-size:12.5px; font-weight:600; }
+  .verdict.correct { color:var(--success); } .verdict.partial { color:var(--warning); }
+  .verdict.incorrect, .verdict.error { color:var(--error); }
+  .verdict.pending, .verdict.none { color:var(--muted); }
+  .verdict.error { font-weight:400; }
+  .verdict .qbtn { font-weight:400; }
+  .feedback, .explain { margin-top:4px; font-size:13.5px; }
+  .explain { color:var(--muted); }
+  .feedback > :first-child, .explain > :first-child { margin-top:0; }
+  .feedback > :last-child, .explain > :last-child { margin-bottom:0; }
+  .q details { margin-top:6px; font-size:13px; color:var(--muted); }
+  .q summary { cursor:pointer; }
+  .quiz-foot { display:flex; align-items:center; gap:8px; padding:8px 12px; background:var(--code); font-size:13px; }
+  .quiz-foot .score { flex:1; font-weight:600; }
+  .spinner { width:11px; height:11px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%;
+             animation:spin .8s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
   .cursor::after { content:"▍"; color:var(--accent); animation:blink 1s steps(2) infinite; }
   @keyframes blink { 50% { opacity:0; } }
 </style>
@@ -123,7 +195,9 @@ function vizHtml(title, code) {
 
 const defaultFence = md.renderer.rules.fence;
 md.renderer.rules.fence = (tokens, idx, options, env, self) => {
-  const m = tokens[idx].info.trim().match(VIZ_LANG);
+  const info = tokens[idx].info.trim();
+  if (QUIZ_LANG.test(info)) return quizFence(tokens[idx].content) ?? defaultFence(tokens, idx, options, env, self);
+  const m = info.match(VIZ_LANG);
   return m ? vizHtml(m[2].trim(), tokens[idx].content) : defaultFence(tokens, idx, options, env, self);
 };
 
@@ -143,7 +217,7 @@ const CODE = /(```[\s\S]*?(?:```|$)|`[^`\n]*`)/;
 function esc(s) { return s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
 // Math is lifted out before Markdown runs so underscores and backslashes survive.
-function renderMarkdown(src) {
+function renderMarkdown(src, inline = false) {
   const store = [];
   const parts = src.split(CODE).map((part, i) => {
     if (i % 2) return part;
@@ -153,11 +227,188 @@ function renderMarkdown(src) {
       return `@@MATH${store.length - 1}@@`;
     });
   });
-  return md.render(parts.join("")).replace(/@@MATH(\d+)@@/g, (m, n) => {
+  return (inline ? md.renderInline : md.render).call(md, parts.join("")).replace(/@@MATH(\d+)@@/g, (m, n) => {
     const { tex, display } = store[+n];
     try { return katex.renderToString(tex, { displayMode: display, throwOnError: false }); }
     catch (e) { return esc(tex); }
   });
+}
+
+// ```quiz fences: the app parses them (quiz.py) and replaces each with `#<index>` into
+// the message's `quizzes`; answers go back through the web channel and come back graded.
+const QUIZ_LANG = /^quiz\b/;
+const LETTERS = "ABCDEFGHIJ";
+const VERDICT_LABELS = { correct: "✓ Correct", partial: "◐ Partly right", incorrect: "✗ Not quite" };
+let MSG_QUIZZES = {};  // message id -> its quizzes, for the current render
+let CURRENT_MSG = null;  // message being rendered, which its quiz fences resolve against
+const QUIZ_DRAFTS = {};  // "msg:quiz:question" -> typed answer not yet submitted, kept across renders
+
+let bridge = null;
+new QWebChannel(qt.webChannelTransport, channel => { bridge = channel.objects.quiz; });
+
+function tex(latex) {
+  try { return katex.renderToString(latex, { throwOnError: false }); } catch (e) { return esc(latex); }
+}
+
+function quizFence(content) {
+  if (LIVE) return `<div class="quiz pending">Writing quiz…</div>`;
+  const m = content.trim().match(/^#(\d+)$/);
+  const quiz = m && CURRENT_MSG !== null ? (MSG_QUIZZES[CURRENT_MSG] || [])[+m[1]] : null;
+  if (!quiz) return null;
+  return `<div class="quiz" data-msg="${CURRENT_MSG}" data-quiz="${m[1]}">${quizInner(CURRENT_MSG, +m[1], quiz)}</div>`;
+}
+
+function points(a) {
+  return a && a.status === "done" ? { correct: 1, partial: 0.5 }[a.verdict] || 0 : 0;
+}
+
+function quizInner(msg, qi, quiz) {
+  const head = title => `<div class="quiz-head"><span class="title">Quiz · ${esc(quiz.title)}</span>${title}</div>`;
+  if (quiz.error)
+    return head("") + `<div class="quiz-broken">This quiz couldn't be read (${esc(quiz.error)}). Regenerate the reply for a new one.`
+      + `<details><summary>Show its source</summary><pre><code>${esc(quiz.raw)}</code></pre></details></div>`;
+  const qs = quiz.questions, answers = quiz.answers || {};
+  const answered = qs.filter((_, i) => answers[i]).length;
+  const graded = qs.filter((_, i) => answers[i] && answers[i].status === "done").length;
+  let foot = "";
+  if (answered) {
+    const score = qs.reduce((sum, _, i) => sum + points(answers[i]), 0);
+    const shown = Number.isInteger(score) ? score : score.toFixed(1);
+    const text = graded === qs.length ? `Score: ${shown} / ${qs.length}` : `${answered} of ${qs.length} answered`;
+    foot = `<div class="quiz-foot"><span class="score">${text}</span>`
+      + `<button class="qbtn quiet" data-act="retake" title="Clear your answers and start again">Retake</button></div>`;
+  }
+  return head(`<span>${answered} / ${qs.length}</span>`)
+    + qs.map((q, i) => questionHtml(msg, qi, q, i, qs.length, answers[i])).join("") + foot;
+}
+
+function questionHtml(msg, qi, q, i, count, a) {
+  const key = `${msg}:${qi}:${i}`;
+  const draft = QUIZ_DRAFTS[key] || "";
+  const page = q.page ? `<a href="page://go/${q.page - 1}" title="Go to page ${q.page}">p. ${q.page}</a>` : "";
+  let html = `<div class="q-meta"><span>Question ${i + 1} of ${count}</span>${page}</div>`
+    + `<div class="q-text">${renderMarkdown(q.question)}</div>`;
+  const r = a ? a.response : {};
+  const option = (label, k, value, chosen) => {
+    let cls = "choice";
+    if (a) cls += value === q.answer ? " right" : chosen ? " wrong" : " dim";
+    return `<button class="${cls}" data-act="choose" data-k="${k}"${a ? " disabled" : ""}>`
+      + (label ? `<span class="letter">${label}</span>` : "") + `<span class="c-text">${value === true ? "True" : value === false ? "False" : renderMarkdown(q.choices[k], true)}</span></button>`;
+  };
+  if (q.type === "choice") {
+    html += `<div class="choices">${q.choices.map((_, k) => option(LETTERS[k], k, k, r.choice === k)).join("")}</div>`;
+  } else if (q.type === "truefalse") {
+    html += `<div class="choices tf">${[true, false].map((v, k) => option("", k, v, r.value === v)).join("")}</div>`;
+  } else if (q.type === "numeric") {
+    const unit = q.unit ? ` <span class="unit">${renderMarkdown(q.unit, true)}</span>` : "";
+    if (a) {
+      html += `<div class="given"><span class="label">Your answer</span>${tex(r.latex || "")}${unit}</div>`;
+      if (a.verdict !== "correct") html += `<div class="expected"><span class="label">Answer</span>${tex(q.answer_latex)}${unit}</div>`;
+    } else {
+      html += `<div class="answer-row"><math-field math-virtual-keyboard-policy="manual">${esc(draft)}</math-field>${unit}`
+        + `<button class="qbtn" data-act="numeric">Check</button></div>`
+        + `<div class="submit-row">Enter to check · / for a fraction, ^ for a power</div><div class="q-error"></div>`;
+    }
+  } else if (a) {
+    html += `<div class="given">${esc(r.text || "")}</div>`;
+  } else {
+    html += `<textarea class="free" rows="3" placeholder="Your answer…">${esc(draft)}</textarea>`
+      + `<div class="submit-row"><span class="grow">Ctrl+Enter to submit · Claude grades it</span>`
+      + `<button class="qbtn" data-act="free">Submit</button></div>`;
+  }
+  if (a) html += resultHtml(q, a);
+  return `<div class="q${a ? " answered" : ""}" data-q="${i}">${html}</div>`;
+}
+
+function resultHtml(q, a) {
+  if (a.status === "pending") return `<div class="verdict pending"><span class="spinner"></span>Claude is grading…</div>`;
+  if (a.status === "error")
+    return `<div class="verdict error">Grading failed: ${esc(a.feedback || "unknown error")}`
+      + ` <button class="qbtn quiet" data-act="regrade">Try again</button></div>`;
+  let html = `<div class="verdict ${a.verdict || "none"}">${VERDICT_LABELS[a.verdict] || "Feedback"}</div>`;
+  if (a.feedback) html += `<div class="feedback">${renderMarkdown(a.feedback)}</div>`;
+  if (q.explanation) html += `<div class="explain">${renderMarkdown(q.explanation)}</div>`;
+  if (q.type === "free" && q.answer)
+    html += `<details><summary>Model answer</summary>${renderMarkdown(q.answer)}</details>`;
+  return html;
+}
+
+// Math fields in freshly rendered quizzes: the calculator's typing, Enter to check, drafts kept.
+function setupQuizFields(root) {
+  for (const mf of root.querySelectorAll(".quiz math-field")) {
+    configureMathField(mf);
+    mf.addEventListener("keydown", ev => {
+      if (ev.key !== "Enter") return;
+      ev.preventDefault(); ev.stopPropagation();
+      submitQuiz(mf.closest(".q"), "numeric");
+    }, { capture: true });
+    mf.addEventListener("input", () => { QUIZ_DRAFTS[quizKey(mf)] = mf.value; });
+  }
+}
+
+function quizKey(el) {
+  const quiz = el.closest(".quiz"), q = el.closest(".q");
+  return `${quiz.dataset.msg}:${quiz.dataset.quiz}:${q.dataset.q}`;
+}
+
+function submitQuiz(qEl, act, button) {
+  const quiz = qEl.closest(".quiz");
+  const msg = +quiz.dataset.msg, qi = +quiz.dataset.quiz, i = +qEl.dataset.q;
+  const q = MSG_QUIZZES[msg][qi].questions[i];
+  let response;
+  if (act === "choose") {
+    const k = +button.dataset.k;
+    response = q.type === "truefalse" ? { value: k === 0 } : { choice: k };
+  } else if (act === "numeric") {
+    const latex = qEl.querySelector("math-field").value.trim();
+    if (!latex) return;
+    response = { latex };
+  } else {
+    const text = qEl.querySelector("textarea").value.trim();
+    if (!text) return;
+    response = { text };
+  }
+  if (!bridge || qEl.classList.contains("busy")) return;
+  qEl.classList.add("busy");
+  bridge.answer(msg, qi, i, JSON.stringify(response));
+}
+
+document.addEventListener("click", ev => {
+  const button = ev.target.closest("button[data-act]");
+  const quiz = button && button.closest(".quiz");
+  if (!quiz || button.disabled || !bridge) return;
+  const act = button.dataset.act, qEl = button.closest(".q");
+  if (act === "retake") bridge.retake(+quiz.dataset.msg, +quiz.dataset.quiz);
+  else if (act === "regrade") bridge.regrade(+quiz.dataset.msg, +quiz.dataset.quiz, +qEl.dataset.q);
+  else submitQuiz(qEl, act, button);
+});
+document.addEventListener("keydown", ev => {
+  if (ev.target.matches && ev.target.matches(".quiz textarea") && ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) {
+    ev.preventDefault();
+    submitQuiz(ev.target.closest(".q"), "free");
+  }
+});
+document.addEventListener("input", ev => {
+  if (ev.target.matches && ev.target.matches(".quiz textarea")) QUIZ_DRAFTS[quizKey(ev.target)] = ev.target.value;
+});
+
+// From the app: one quiz changed (an answer saved or graded, or a retake).
+function updateQuiz(msg, qi, quiz) {
+  (MSG_QUIZZES[msg] = MSG_QUIZZES[msg] || [])[qi] = quiz;
+  const el = document.querySelector(`.quiz[data-msg="${msg}"][data-quiz="${qi}"]`);
+  if (!el) return;
+  for (const [i, a] of Object.entries(quiz.answers || {})) delete QUIZ_DRAFTS[`${msg}:${qi}:${i}`];
+  el.innerHTML = quizInner(msg, qi, quiz);
+  setupQuizFields(el);
+}
+
+// From the app: an answer it couldn't read (e.g. an unreadable number); the input stays.
+function quizInputError(msg, qi, i, error) {
+  const q = document.querySelector(`.quiz[data-msg="${msg}"][data-quiz="${qi}"] .q[data-q="${i}"]`);
+  if (!q) return;
+  q.classList.remove("busy");
+  const el = q.querySelector(".q-error");
+  if (el) el.textContent = error;
 }
 
 function snippetHtml(s) {
@@ -184,7 +435,9 @@ function messageHtml(m, editing = false) {
   if (m.role === "user")
     return `<div class="msg user${editing ? " editing" : ""}">${(m.snippets || []).map(snippetHtml).join("")}<div class="body">${renderMarkdown(m.text)}</div></div>`;
   if (m.role === "error") return `<div class="msg error">${esc(m.text)}</div>`;
-  return `<div class="msg assistant">${renderMarkdown(m.text)}</div>`;
+  CURRENT_MSG = m.id;
+  try { return `<div class="msg assistant">${renderMarkdown(m.text)}</div>`; }
+  finally { CURRENT_MSG = null; }
 }
 
 const CHAT_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
@@ -195,6 +448,7 @@ function render(data) {
   THEME = { dark: !!data.dark, colors: data.colors || {} };
   VIZ = [];
   LIVE = false;
+  MSG_QUIZZES = Object.fromEntries(data.messages.map(m => [m.id, m.quizzes || []]));
   for (const [k, v] of Object.entries(data.colors || {})) root.style.setProperty(`--${k.replace(/_/g, "-")}`, v);
   const log = document.getElementById("log");
   // Actions only when nothing is streaming or being edited; while editing, the edited
@@ -208,6 +462,7 @@ function render(data) {
   if (!data.messages.length) html = `<div class="empty">${CHAT_ICON}${esc(data.placeholder || "")}</div>`;
   if (data.streaming !== null) html += `<div class="msg assistant" id="stream"></div>`;
   log.innerHTML = html;
+  setupQuizFields(log);
   if (data.streaming !== null) setStreaming(data.streaming);
   else if (editAt >= 0) document.querySelector(".msg.editing").scrollIntoView({ block: "nearest" });
   else window.scrollTo(0, document.body.scrollHeight);

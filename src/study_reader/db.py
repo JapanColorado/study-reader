@@ -61,6 +61,17 @@ CREATE TABLE IF NOT EXISTS calculations (
     value TEXT NOT NULL,            -- int, float or "num/den" fraction, to restore `ans` and variables
     created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS quiz_answers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, -- never reused: a grading in flight finds its answer by id
+    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    quiz INTEGER NOT NULL,          -- which quiz fence of the reply (0-based)
+    question INTEGER NOT NULL,      -- 0-based
+    response TEXT NOT NULL,         -- JSON: {"choice": i} | {"value": bool} | {"latex": s} | {"text": s}
+    status TEXT NOT NULL,           -- 'pending' (Claude is grading) | 'done' | 'error'
+    verdict TEXT,                   -- 'correct' | 'partial' | 'incorrect' (NULL if ungraded)
+    feedback TEXT NOT NULL DEFAULT '', -- Claude's, for free responses; the error for 'error'
+    created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
@@ -202,6 +213,9 @@ class Database:
             out.append(d)
         return out
 
+    def message(self, message_id: int) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone()
+
     def snippet(self, snippet_id: int) -> dict | None:
         s = self.conn.execute("SELECT * FROM snippets WHERE id=?", (snippet_id,)).fetchone()
         return {**dict(s), "rects": json.loads(s["rects"])} if s else None
@@ -214,6 +228,44 @@ class Database:
             (book_id,),
         )
         return [{**dict(s), "rects": json.loads(s["rects"])} for s in rows]
+
+    # -- quizzes -------------------------------------------------------------
+    def save_quiz_answer(
+        self, message_id: int, quiz: int, question: int, response: str, status: str,
+        verdict: str | None = None, feedback: str = "",
+    ) -> int:
+        """Replaces any earlier answer to the question, under a new id (so a grading still
+        running for the old one can't land on it)."""
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM quiz_answers WHERE message_id=? AND quiz=? AND question=?", (message_id, quiz, question)
+            )
+            cur = self.conn.execute(
+                "INSERT INTO quiz_answers (message_id, quiz, question, response, status, verdict, feedback, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (message_id, quiz, question, response, status, verdict, feedback, time.time()),
+            )
+        return cur.lastrowid
+
+    def quiz_answer(self, answer_id: int) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM quiz_answers WHERE id=?", (answer_id,)).fetchone()
+
+    def update_quiz_answer(self, answer_id: int, **fields) -> None:
+        self._update("quiz_answers", answer_id, fields)
+
+    def quiz_answers(self, chat_id: int) -> dict[int, list[sqlite3.Row]]:
+        """The chat's quiz answers by message id."""
+        out: dict[int, list[sqlite3.Row]] = {}
+        for r in self.conn.execute(
+            "SELECT a.* FROM quiz_answers a JOIN messages m ON m.id=a.message_id WHERE m.chat_id=? "
+            "ORDER BY a.quiz, a.question", (chat_id,),
+        ):
+            out.setdefault(r["message_id"], []).append(r)
+        return out
+
+    def clear_quiz_answers(self, message_id: int, quiz: int) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM quiz_answers WHERE message_id=? AND quiz=?", (message_id, quiz))
 
     # -- calculator -----------------------------------------------------------
     def add_calculation(self, book_id: int, expr: str, result: str, value: str, latex: str = "") -> int:
