@@ -83,6 +83,10 @@ class ChatService:
         self._locks: dict[int, asyncio.Lock] = {}
         self._base: dict[int, tuple[str | None, str]] = {}
 
+    def forget_base(self, book_id: int) -> None:
+        """Drop the cached base session, e.g. after the book's file was replaced."""
+        self._base.pop(book_id, None)
+
     def cwd(self, book_id: int) -> Path:
         return self.sessions_dir / f"book-{book_id}"
 
@@ -196,6 +200,9 @@ class ChatWorker(QObject):
 
     def submit(self, job: Job) -> None:
         asyncio.run_coroutine_threadsafe(self.service.ask(job), self.loop)
+
+    def forget_base(self, book_id: int) -> None:
+        self.loop.call_soon_threadsafe(self.service.forget_base, book_id)
 
     def submit_grade(self, job: Job, answer_id: int) -> None:
         asyncio.run_coroutine_threadsafe(self.service.grade(job, answer_id), self.loop)

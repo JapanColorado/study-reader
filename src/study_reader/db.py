@@ -148,8 +148,19 @@ class Database:
             )
         return self.conn.execute("SELECT * FROM books WHERE hash=?", (hash,)).fetchone()
 
+    def replace_book_file(self, book_id: int, hash: str, path: str, title: str, page_count: int) -> None:
+        """Point a book at a new version of its file (a fresh web snapshot), keeping its chats,
+        notes and highlights. Its base session holds the old text, so it is dropped."""
+        self.update_book(
+            book_id, hash=hash, path=path, title=title, page_count=page_count,
+            base_session_id=None, context_mode=None, opened_at=time.time(),
+        )
+
     def book(self, book_id: int) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM books WHERE id=?", (book_id,)).fetchone()
+
+    def book_by_hash(self, hash: str) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM books WHERE hash=?", (hash,)).fetchone()
 
     def books_from_url(self, url: str) -> list[sqlite3.Row]:
         """Snapshots of a web page, newest first."""

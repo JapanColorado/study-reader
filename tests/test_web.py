@@ -1,4 +1,6 @@
 import json
+import os
+import shutil
 
 import pytest
 
@@ -210,3 +212,48 @@ def test_snapshot_prints_with_contents_and_tex(tmp_path):
     assert doc.toc() == [(1, "Main", 0), (1, "Guide", 1), (2, "Rinsing", 1)]
     assert "$x^2$" in doc.page_text(0) and "cold tea" in doc.page_text(1)
     assert not list((tmp_path / "web").glob("*.html"))
+
+
+def test_fresh_copy_replaces_the_snapshot_in_place(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    import pymupdf
+    from PySide6.QtWidgets import QApplication
+    from study_reader.db import data_dir
+    from study_reader.main_window import MainWindow
+
+    def snapshot(name, text):
+        doc = pymupdf.open()
+        doc.new_page().insert_text((72, 72), text)
+        path = data_dir() / "web" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        doc.save(path)
+        return str(path)
+
+    QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "t.db")
+    win = MainWindow(db)
+    url = "https://example.com/zorblatts"
+    old = snapshot("old.pdf", "Zorblatts, first draft.")
+    win.open_book(old)
+    book_id = win.book_id
+    db.update_book(book_id, source_url=url, base_session_id="s1", context_mode="full")
+    chat_id = db.create_chat(book_id, "Kept")
+    forgotten = []
+    monkeypatch.setattr(win.worker, "forget_base", forgotten.append)
+    monkeypatch.setattr(win, "open_url", lambda u, refetch=False: True)
+
+    win.refetch(book_id)
+    new = snapshot("new.pdf", "Zorblatts, revised.")
+    win._on_web_done(new, url)
+    book = db.book(book_id)
+    assert win.book_id == book_id and book["path"] == new and book["source_url"] == url
+    assert book["base_session_id"] is None and forgotten == [book_id]
+    assert db.chat(chat_id) is not None and len(db.books_from_url(url)) == 1
+    assert not os.path.exists(old)
+
+    win.refetch(book_id)  # nothing changed: the new copy is dropped
+    same = str(data_dir() / "web" / "same.pdf")
+    shutil.copy(new, same)
+    win._on_web_done(same, url)
+    assert db.book(book_id)["path"] == new and not os.path.exists(same)

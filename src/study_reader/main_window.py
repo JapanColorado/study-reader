@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
@@ -74,12 +75,13 @@ class MainWindow(QMainWindow):
         self.library.openRequested.connect(self.open_book)
         self.library.browseRequested.connect(self.browse)
         self.library.webRequested.connect(self.ask_url)
-        self.library.refetchRequested.connect(lambda url: self.open_url(url, refetch=True))
+        self.library.refetchRequested.connect(self.refetch)
         self.web = WebImporter(data_dir() / "web", self)
         self.web.status.connect(lambda text: self._web_progress and self._web_progress.setLabelText(text))
         self.web.finished.connect(self._on_web_done)
         self.web.failed.connect(self._on_web_failed)
         self._web_progress: QProgressDialog | None = None
+        self._refetching: int | None = None  # the book a fresh web snapshot replaces
         self.reader.snippetChosen.connect(lambda sn, new: self._show_chat(lambda: self.chat.add_snippet(sn, new)))
         self.reader.quizChosen.connect(self._quiz_on)
         self.reader.noteChosen.connect(lambda sn: self._show_notes(lambda: self.notes.add_note(sn)))
@@ -317,21 +319,29 @@ class MainWindow(QMainWindow):
         if dialog.exec() and dialog.url():
             self.open_url(dialog.url())
 
-    def open_url(self, url: str, refetch: bool = False) -> None:
-        """Open the saved snapshot of a page, or fetch one (always, with `refetch`)."""
+    def refetch(self, book_id: int) -> None:
+        """Fetch a web snapshot's page again and swap it into the same library entry."""
+        book = self.db.book(book_id)
+        if book and book["source_url"] and self.open_url(book["source_url"], refetch=True):
+            self._refetching = book_id
+
+    def open_url(self, url: str, refetch: bool = False) -> bool:
+        """Open the saved snapshot of a page, or fetch one (always, with `refetch`).
+        True if a fetch was started."""
         try:
             url = normalize_url(url)
         except WebImportError as e:
             self._warn("Could not open web page", str(e))
-            return
+            return False
         if not refetch:
             for book in self.db.books_from_url(url):
                 if os.path.exists(book["path"]):
                     self.open_book(book["path"])
-                    return
+                    return False
         if self.web.busy:
             self._warn("Open web page", "Another page is still being fetched.", QMessageBox.Icon.Information)
-            return
+            return False
+        self._refetching = None
         self._web_progress = QProgressDialog("Fetching…", "Hide", 0, 0, self)
         self._web_progress.setWindowTitle("Open web page")
         self._web_progress.setMinimumDuration(0)
@@ -339,6 +349,7 @@ class MainWindow(QMainWindow):
         keep_minimum_size(self._web_progress)
         self._web_progress.show()
         self.web.start(url)
+        return True
 
     def _warn(self, title: str, text: str, kind=QMessageBox.Icon.Warning) -> None:
         box = QMessageBox(kind, title, text, QMessageBox.StandardButton.Ok, self)
@@ -353,8 +364,34 @@ class MainWindow(QMainWindow):
 
     def _on_web_done(self, path: str, url: str) -> None:
         self._close_web_progress()
+        book_id, self._refetching = self._refetching, None
+        old = self.db.book(book_id) if book_id is not None else None
+        if old:
+            path = self._replace_snapshot(old, path)
         if self.open_book(path, remember_dir=False):
             self.db.update_book(self.book_id, source_url=url)
+
+    def _replace_snapshot(self, old, path: str) -> str:
+        """Put a fresh snapshot in place of an old one, in the same library entry (so its
+        chats and notes stay), and return the path to open."""
+        try:
+            doc = Document(path)
+            title, pages = doc.title, doc.page_count
+            doc.close()
+        except Exception:
+            return path  # open_book reports it
+        new_hash = file_hash(path)
+        old_path = Path(old["path"])
+        if new_hash == old["hash"] and old_path.exists():
+            os.remove(path)  # the page hasn't changed: keep the file the entry already has
+            return str(old_path)
+        if self.db.book_by_hash(new_hash):
+            return path  # this snapshot is already another entry; open that one
+        self.db.replace_book_file(old["id"], new_hash, path, title, pages)
+        self.worker.forget_base(old["id"])
+        if old_path != Path(path) and old_path.parent == data_dir() / "web" and old_path.exists():
+            old_path.unlink()  # only snapshots the app made itself
+        return path
 
     def _on_web_failed(self, message: str) -> None:
         self._close_web_progress()

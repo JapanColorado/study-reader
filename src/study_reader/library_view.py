@@ -110,7 +110,7 @@ class LibraryView(QWidget):
     openRequested = Signal(str)  # file path
     browseRequested = Signal()
     webRequested = Signal()
-    refetchRequested = Signal(str)  # source URL of a web snapshot
+    refetchRequested = Signal(int)  # a web snapshot to replace with a fresh copy
 
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
@@ -248,4 +248,4 @@ class LibraryView(QWidget):
             self.db.delete_book(book["id"])
             self.refresh()
         elif refetch is not None and chosen is refetch:
-            self.refetchRequested.emit(book["source_url"])
+            self.refetchRequested.emit(book["id"])
