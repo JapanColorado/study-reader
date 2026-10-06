@@ -42,7 +42,7 @@ def test_forum_urls():
 def test_wiki_page_keeps_every_tab_in_order(monkeypatch):
     fake_forum(monkeypatch, {"tagBySlug": {"tags": {"results": [{
         "name": "Bayes' rule", "subtitle": None,
-        "description": {"html": '<h2>Intro</h2><p>See <a href="/w/odds">odds</a>.</p>'},
+        "description": {"html": '<h2>Intro</h2><p>See <a href="/w/odds">odds</a>.<a href="#fn1">1</a></p>'},
         "lenses": [
             {"title": "Bayes' rule: Guide", "tabTitle": "Guide", "tabSubtitle": None, "index": 1,
              "contents": {"html": "<p>The guide.</p>"}},
@@ -55,6 +55,7 @@ def test_wiki_page_keeps_every_tab_in_order(monkeypatch):
     assert [s.title for s in article.sections] == ["Main", "Definition (formal)", "Guide"]
     assert [s.byline for s in article.sections] == ["", "", "Bayes' rule: Guide"]
     assert 'href="https://www.lesswrong.com/w/odds"' in article.sections[0].html
+    assert 'href="#fn1"' in article.sections[0].html  # in-page, so the PDF links it to the footnote
 
     doc, toc = wi.build_html(article)
     assert toc == [(1, "Main"), (2, "Intro"), (1, "Definition (formal)"), (1, "Guide")]
@@ -137,14 +138,14 @@ def test_generic_article(monkeypatch):
     page = f"""<html><head><title>Zorblatt Care - Marmalade Weekly</title>
         <meta name="author" content="Pat Q"></head><body>
         <nav><a href="/">Home</a><a href="/about">About</a></nav>
-        <article><h1>Zorblatt Care</h1>{para}<p><img src="/img/z.png" srcset="/img/z2.png 2x" loading="lazy"></p>
+        <article><h1>Zorblatt Care</h1>{para}<p><a href="https://zorb.example/care#note">note</a></p><p><img src="/img/z.png" srcset="/img/z2.png 2x" loading="lazy"></p>
         <h2>Rinsing<span class="mw-editsection">[edit]</span></h2>{para}<script>track()</script></article>
         <footer>Copyright</footer></body></html>"""
     monkeypatch.setattr(wi, "http_get", lambda url, data=None, headers=None: (page.encode(), "text/html; charset=utf-8"))
     article = wi.fetch("https://zorb.example/care")
     assert article.title == "Zorblatt Care" and article.byline == "Pat Q"
     body = article.sections[0].html
-    assert '<img src="https://zorb.example/img/z.png">' in body
+    assert '<img src="https://zorb.example/img/z.png">' in body and 'href="#note"' in body
     assert "track()" not in body and "[edit]" not in body and "Copyright" not in body
 
 

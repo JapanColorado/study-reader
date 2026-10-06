@@ -22,6 +22,7 @@ Requires the `claude` CLI to be logged in (`claude` → `/login`). The app talks
 | Add a passage to the open chat | **Add to current chat** (`Ctrl+Shift+Return`) |
 | Ask about a figure or equation | **Screenshot region** (`Ctrl+Shift+S`), drag a rectangle |
 | Send | `Enter` (`Shift+Enter` for a new line). Sending with no text asks "Explain this." |
+| Read a footnote or cross-reference | Footnote markers are marked with a violet pill, linked references with a fainter one. Hover one to preview the target; click to jump there. **← Back** (bottom left), `Alt+Left` or the mouse's back button returns. Works with the PDF's own links and with plain superscript footnote numbers |
 | Jump back to a snippet's source | Click the quote or thumbnail in the chat |
 | Zoom | `Ctrl+=` / `Ctrl+-` or `Ctrl`+wheel |
 | Crop the page margins so the text fills the view | **Crop margins** (`Ctrl+Shift+0`), remembered per book |

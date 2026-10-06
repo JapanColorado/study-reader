@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,6 +19,15 @@ Rect = tuple[float, float, float, float]
 # Margin detection: pages scanned, render scale, what counts as ink, padding kept around it.
 CROP_SAMPLE_PAGES, CROP_SCALE, CROP_INK, CROP_PAD = 200, 0.25, 235, 6.0
 
+PREVIEW_CHARS = 700  # longest link-target preview
+# Numbers and symbols only: superscript letters are far more often math than footnotes.
+FOOTNOTE_MARK = re.compile(r"[(\[]?(\d{1,3}|[*†‡§¶‖#]{1,3})[.)\]]?")
+SUPERSCRIPT, BOLD = 1, 16  # PyMuPDF span flags
+BACKREF = re.compile(r"(?<!\S)[\^↩↑][\ufe0e\ufe0f]?(?!\S)")  # "back to the text" links in notes
+LABEL = re.compile(r"\s*(fig(?:ure|\.)?|table|exhibit|chart|box|listing|algorithm)\s*(\d+(?:[.\-–]\d+)*)(?![\d.]\d)", re.I)
+# Page margins of web-page snapshots (web_render prints with them), in points: left, top, right, bottom.
+WEB_MARGINS = (46, 44, 46, 44)
+
 
 @dataclass(frozen=True)
 class Word:
@@ -27,6 +38,29 @@ class Word:
     text: str
     block: int
     line: int
+
+
+@dataclass(frozen=True)
+class Line:
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    block: int
+    spans: tuple[dict, ...]  # PyMuPDF "dict" spans, blank ones dropped
+
+
+@dataclass(frozen=True)
+class Link:
+    rect: Rect  # the clickable area, on the page that holds the link
+    page: int  # target page and point, in page points
+    x: float
+    y: float
+    footnote: bool = False  # a footnote marker, as opposed to a cross-reference
+    quiet: bool = False  # works, but isn't marked on the page (headings linking to the contents)
+    # What to look for on the target page when the PDF's point is off (see Document.target):
+    # ("note", marker), ("back", marker or None, the in-text link's name) or ("label", ("fig", "2.1")).
+    hint: tuple | None = None
 
 
 def file_hash(path: str | Path) -> str:
@@ -44,6 +78,12 @@ class Document:
         if self.doc.is_reflowable:
             self.doc.layout(width=REFLOW_WIDTH, height=REFLOW_HEIGHT, fontsize=REFLOW_FONT)
         self._words: dict[int, list[Word]] = {}
+        self._line_cache: dict[int, list[Line]] = {}
+        self._links: dict[int, list[Link]] = {}
+        self._raw: dict[int, list[dict]] = {}
+        self._body_size: dict[int, float] = {}
+        self._targets: dict[Link, tuple[float, float]] = {}
+        self._contents: set[int] | None = None
 
     @property
     def page_count(self) -> int:
@@ -96,6 +136,174 @@ class Document:
             ]
         return self._words[index]
 
+    def _lines(self, index: int) -> list[Line]:
+        if index not in self._line_cache:
+            out = []
+            for b in self.doc[index].get_text("dict", sort=False)["blocks"]:
+                for ln in b.get("lines", []):
+                    spans = [s for s in ln["spans"] if s["text"].strip()]
+                    if spans:
+                        x0, y0, x1, y1 = ln["bbox"]
+                        out.append(Line(x0, y0, x1, y1, b["number"], tuple(spans)))
+            self._line_cache[index] = out
+        return self._line_cache[index]
+
+    def links(self, index: int) -> list[Link]:
+        """Internal links on a page (footnotes, cross-references), plus unlinked footnote
+        markers matched to their footnote at the bottom of the page."""
+        if index not in self._links:
+            links = [link for ln in self._raw_links(index) if (link := self._link(index, ln))]
+            for rect, x, y in footnote_refs(self._lines(index), self.page_size(index)[1]):
+                if not any(_overlaps(rect, ln.rect) for ln in links):
+                    links.append(Link(rect, index, x, y, True))
+            self._links[index] = links
+        return self._links[index]
+
+    def _raw_links(self, index: int) -> list[dict]:
+        if index not in self._raw:
+            self._raw[index] = self.doc[index].get_links()
+        return self._raw[index]
+
+    def _link(self, index: int, ln: dict) -> Link | None:
+        """A link, from what its own page says; the target page is only read once needed."""
+        name = ln.get("nameddest") or ""
+        if name:
+            # PyMuPDF leaves a named destination's point in PDF (bottom-up) coordinates.
+            target, x, y = self.doc.resolve_link("#" + name)
+            if self._web_snapshot:
+                # Chromium writes named destinations as if the page had no margins.
+                x, y = x + WEB_MARGINS[0], y + WEB_MARGINS[1]
+        elif ln["kind"] == pymupdf.LINK_GOTO:
+            target, x, y = ln["page"], ln["to"].x, ln["to"].y
+        else:
+            return None
+        if not 0 <= target < self.page_count:
+            return None
+        rect = tuple(ln["from"])
+        mark = marker_at(self._lines(index), rect)
+        if mark and not mark[1]:
+            hint = ("note", mark[0])
+        elif mark or name.startswith("fnref"):
+            hint = ("back", mark and mark[0], "fn" + name[5:] if name.startswith("fnref") else None)
+        else:
+            text = words_text([
+                w for w in self.words(index)
+                if rect[0] <= (w.x0 + w.x1) / 2 <= rect[2] and rect[1] <= (w.y0 + w.y1) / 2 <= rect[3]
+            ])
+            label = _label(text)
+            hint = ("label", label) if label else None
+        footnote = mark is not None or name.lower().startswith("fn") or "footnote" in name.lower()
+        # Headings that link back to the contents would mark up every section opening.
+        quiet = not footnote and (self._is_heading(index, rect) or target in self._contents_pages)
+        return Link(rect, target, x, y, footnote, quiet, hint)
+
+    def target(self, link: Link) -> tuple[float, float]:
+        """Where a link really points. Many books point links at the top of the page, so a
+        footnote marker is matched to the footnote with the same marker on the target page
+        (and a link back from a footnote to the marker in the text), and "Figure 2.1" to
+        its caption."""
+        if link in self._targets:
+            return self._targets[link]
+        x, y, hint, page = link.x, link.y, link.hint, link.page
+        found: tuple[float, float] | None = None
+        if hint and hint[0] == "note":
+            if note := footnote_starts(self._lines(page), self.page_size(page)[1]).get(hint[1]):
+                found = note.x0, note.y0
+        elif hint and hint[0] == "back":
+            _, mark, name = hint
+            for other in self._raw_links(page):
+                if (name and other.get("nameddest") == name) or (
+                    mark and marker_at(self._lines(page), tuple(other["from"])) == (mark, False)
+                ):
+                    found = other["from"].x0, other["from"].y0
+                    break
+        elif hint and hint[0] == "label":
+            # The caption rather than a line that mentions the figure: captions are usually
+            # bold, and mentions are usually links themselves.
+            refs = [tuple(other["from"]) for other in self._raw_links(page)]
+            cands = [c for c in self._lines(page) if _label(_line_text(c)) == hint[1]]
+            cands.sort(key=lambda c: (
+                not c.spans[0]["flags"] & BOLD,
+                any(_overlaps((c.x0, c.y0, c.x1, c.y1), r) for r in refs),
+                c.y0,
+            ))
+            if cands:
+                found = cands[0].x0, cands[0].y0
+        self._targets[link] = found or (x, y)
+        return self._targets[link]
+
+    @property
+    def _web_snapshot(self) -> bool:
+        return (self.doc.metadata or {}).get("creator") == "Study Reader"
+
+    def _is_heading(self, index: int, rect: Rect) -> bool:
+        if index not in self._body_size:
+            sizes: Counter[float] = Counter()
+            for ln in self._lines(index):
+                for s in ln.spans:
+                    sizes[round(s["size"], 1)] += len(s["text"])
+            self._body_size[index] = sizes.most_common(1)[0][0] if sizes else 0
+        body = self._body_size[index]
+        inside = [s["size"] for ln in self._lines(index) for s in ln.spans if _overlaps(tuple(s["bbox"]), rect)]
+        return bool(inside) and max(inside) > 1.15 * body
+
+    @property
+    def _contents_pages(self) -> set[int]:
+        """Pages of the table of contents, going by the outline."""
+        if self._contents is None:
+            toc = self.doc.get_toc()
+            self._contents = set()
+            for i, (_, title, page, *_) in enumerate(toc):
+                if title.strip(" \x00").lower().endswith("contents") and page > 0:
+                    end = next((p for _, _, p, *_ in toc[i + 1 :] if p > page), page + 1)
+                    self._contents.update(range(page - 1, end - 1))
+        return self._contents
+
+    def link_target(self, link: Link) -> tuple[str, list[Rect]]:
+        """The text a link points at (a footnote, a heading and what follows, a caption)
+        and the rects of its lines, for previewing and flashing the target."""
+        x, y = self.target(link)
+        if x <= 1 and y <= 1:
+            return "", []  # the whole page, not a spot on it
+        lines = self._lines(link.page)
+        below = [ln for ln in lines if ln.y0 >= y - 2]
+        if not below:
+            return "", []
+        # Nearest line below the point; in a two-column layout, the one in the point's column.
+        top = min(ln.y0 for ln in below)
+        first = min((ln for ln in below if ln.y0 <= top + 3), key=lambda ln: _x_dist(ln, x))
+        if link.hint and link.hint[0] == "back":
+            # Back to the marker in the text: show the lines leading up to it.
+            h = first.y1 - first.y0
+            above = sorted(
+                (ln for ln in lines if first.y0 - 3 * h < ln.y1 <= first.y0 + 1 and ln.x1 > first.x0 and ln.x0 < first.x1),
+                key=lambda ln: ln.y0,
+            )
+            chosen = [*above[-2:], first]
+            return BACKREF.sub("", " ".join(_line_text(ln) for ln in chosen)).strip(), [
+                (ln.x0, ln.y0, ln.x1, ln.y1) for ln in chosen
+            ]
+        chosen = [first]
+        for ln in lines[lines.index(first) + 1 :]:
+            text = sum(len(_line_text(c)) for c in chosen)
+            if text >= PREVIEW_CHARS or is_footnote_start(ln):
+                break
+            if ln.block != chosen[-1].block and text >= 12:
+                # A heading takes the paragraph under it too, and a bare marker ("1. ↩") the
+                # note after it.
+                heading = max(s["size"] for s in chosen[-1].spans) > 1.1 * max(s["size"] for s in ln.spans)
+                gap, h = ln.y0 - chosen[-1].y1, chosen[-1].y1 - chosen[-1].y0
+                # Some PDFs (Chromium's) make every line its own block; a line set tight
+                # under the last one continues the paragraph.
+                runs_on = 0 <= gap < 0.35 * h and ln.x0 >= chosen[0].x0 - 2
+                if not runs_on and (not heading or text >= 120 or gap > 2 * h):
+                    break
+            chosen.append(ln)
+        text = BACKREF.sub("", " ".join(_line_text(ln) for ln in chosen)).strip()
+        if len(text) > PREVIEW_CHARS:
+            text = text[:PREVIEW_CHARS].rsplit(" ", 1)[0] + "…"
+        return text, [(ln.x0, ln.y0, ln.x1, ln.y1) for ln in chosen]
+
     def page_text(self, index: int) -> str:
         return self.doc[index].get_text("text").strip()
 
@@ -121,6 +329,89 @@ class Document:
 
     def close(self) -> None:
         self.doc.close()
+
+
+# -- footnotes ---------------------------------------------------------------
+
+def _line_text(ln: Line) -> str:
+    return " ".join(s["text"].strip() for s in ln.spans)
+
+
+def _x_dist(ln: Line, x: float) -> float:
+    return max(ln.x0 - x, 0, x - ln.x1)
+
+
+def _overlaps(a: Rect, b: Rect) -> bool:
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def _mark_key(text: str) -> str | None:
+    m = FOOTNOTE_MARK.fullmatch(text.strip())
+    return m.group(1) if m else None
+
+
+def _label(text: str) -> tuple[str, str] | None:
+    """("fig", "2.1") for text starting "Figure 2.1", so a reference can find its caption."""
+    m = LABEL.match(text)
+    return (m.group(1).lower()[:3], m.group(2).replace("–", "-")) if m else None
+
+
+def marker_at(lines: list[Line], rect: Rect) -> tuple[str, bool] | None:
+    """If a link's text is a footnote marker (a number or symbol, smaller or raised), its
+    key and whether it opens the footnote itself rather than sitting in the text."""
+    for ln in lines:
+        spans = [s for s in ln.spans if _overlaps(tuple(s["bbox"]), rect)]
+        if not spans:
+            continue
+        size = max(s["size"] for s in ln.spans)
+        small = all(s["flags"] & SUPERSCRIPT or s["size"] < 0.85 * size for s in spans)
+        key = _mark_key("".join(s["text"] for s in spans))
+        if not small or key is None:
+            return None
+        return key, spans[0] is ln.spans[0] and is_footnote_start(ln)
+    return None
+
+
+def footnote_starts(lines: list[Line], page_height: float) -> dict[str, Line]:
+    """The first line of each footnote in the lower part of a page, by marker."""
+    starts: dict[str, Line] = {}
+    for ln in lines:
+        if ln.y0 > 0.4 * page_height and is_footnote_start(ln):
+            starts.setdefault(_mark_key(ln.spans[0]["text"]), ln)
+    return starts
+
+
+def is_footnote_start(ln: Line) -> bool:
+    """A line opening with a small or raised marker (``¹ Text…``), as footnotes do."""
+    if len(ln.spans) < 2 or _mark_key(ln.spans[0]["text"]) is None:
+        return False
+    mark, text = ln.spans[0], ln.spans[1]
+    return bool(mark["flags"] & SUPERSCRIPT) or mark["size"] < 0.9 * text["size"]
+
+
+def footnote_refs(lines: list[Line], page_height: float) -> list[tuple[Rect, float, float]]:
+    """Unlinked footnote markers: raised, small numbers or symbols in the text that match a
+    footnote starting lower on the page. Each is (marker rect, footnote x, footnote y)."""
+    starts = footnote_starts(lines, page_height)
+    if not starts:
+        return []
+    out = []
+    for ln in lines:
+        if ln in starts.values():
+            continue
+        size = max(s["size"] for s in ln.spans)
+        baseline = Counter(round(s["origin"][1]) for s in ln.spans if s["size"] == size).most_common(1)[0][0]
+        for prev, span in zip(ln.spans, ln.spans[1:]):
+            key = _mark_key(span["text"])
+            note = starts.get(key) if key else None
+            if note is None or note.y0 <= ln.y1 or span["size"] > 0.85 * size:
+                continue
+            raised = span["flags"] & SUPERSCRIPT or span["origin"][1] < baseline - 1
+            # A marker follows a word; a lone letter before it is more likely math (x², y²).
+            word = (prev["text"].split() or [""])[-1]
+            if raised and len(word) >= 2 and not word[-1].isdigit():
+                out.append((tuple(span["bbox"]), note.x0, note.y0))
+    return out
 
 
 # -- selection geometry --------------------------------------------------------

@@ -1,16 +1,18 @@
-"""Continuous-scroll page view with text selection, screenshot-region capture, and
-highlights on every passage that has been asked about or annotated."""
+"""Continuous-scroll page view with text selection, screenshot-region capture,
+highlights on every passage that has been asked about or annotated, and footnote and
+cross-reference links that preview on hover and jump on click."""
 
 from __future__ import annotations
 
 import bisect
+import html
 from collections import OrderedDict
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QKeySequence, QPainter, QPen
 from PySide6.QtWidgets import QAbstractScrollArea, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QPushButton, QToolTip
 
-from .document import Document, Rect, Word, line_rects, select_range, words_text
+from .document import Document, Link, Rect, Word, line_rects, select_range, words_text
 from .theme import darken_page, theme
 
 GAP = 14
@@ -29,7 +31,13 @@ MARK_DARK = (QColor(80, 62, 22), QColor(125, 95, 30))
 NOTE_LIGHT = (QColor(178, 218, 255), QColor(138, 196, 250))  # annotated passages, in blue
 NOTE_DARK = (QColor(26, 58, 92), QColor(40, 84, 130))
 FRAME_COLOR = (QColor(232, 168, 40), QColor(214, 130, 20))  # screenshot regions: (normal, hovered)
+# Link pills, blended like the highlighter: footnote markers, and fainter cross-references.
+FOOTNOTE_LIGHT = (QColor(200, 190, 252), QColor(172, 156, 246))
+FOOTNOTE_DARK = (QColor(62, 52, 118), QColor(88, 74, 160))
+XREF_LIGHT = (QColor(236, 233, 253), QColor(212, 204, 252))
+XREF_DARK = (QColor(36, 32, 64), QColor(62, 52, 118))
 CLICK_SLOP = 4  # px a press may move and still count as a click
+LINK_SLOP = 2.0  # pt around a link that still hits it (footnote markers are tiny)
 
 
 class ReaderView(QAbstractScrollArea):
@@ -64,6 +72,8 @@ class ReaderView(QAbstractScrollArea):
         self._marks: dict[int, list[dict]] = {}  # page -> dict(kind, rects, snippets, notes)
         self._hover: list[dict] = []
         self._press: QPointF | None = None
+        self._hover_link: Link | None = None
+        self._back: list[tuple[int, float]] = []  # positions to return to after following links
 
         self.viewport().setMouseTracking(True)
         self.viewport().setCursor(Qt.CursorShape.IBeamCursor)
@@ -95,13 +105,25 @@ class ReaderView(QAbstractScrollArea):
             row.addWidget(b)
         self._popup.hide()
 
+        self._back_bar = QFrame(self.viewport(), objectName="popup")
+        self._back_bar.setCursor(Qt.CursorShape.ArrowCursor)
+        row = QHBoxLayout(self._back_bar)
+        row.setContentsMargins(4, 4, 4, 4)
+        back = QPushButton("← Back")
+        back.setToolTip("Return to where you followed the link from (Alt+Left)")
+        back.clicked.connect(self.go_back)
+        row.addWidget(back)
+        self._back_bar.hide()
+
     # -- document / layout -----------------------------------------------------
     def set_document(
         self, doc: Document | None, page: int = 0, zoom: float | None = None, crop: bool = False
     ) -> None:
         self.doc = doc
         self._cache.clear()
-        self._marks, self._hover = {}, []
+        self._marks, self._hover, self._hover_link = {}, [], None
+        self._back = []
+        self._back_bar.hide()
         self.clear_selection()
         self._content_box = None
         self.crop = crop
@@ -202,6 +224,7 @@ class ReaderView(QAbstractScrollArea):
         if self.fit_mode and self._sizes:
             self.set_zoom(self._fit_width_zoom(), keep_fit=True)
         self._update_scrollbars()
+        self._place_back_bar()
 
     def _page_rect(self, i: int) -> QRectF:
         """Page rectangle in viewport coordinates."""
@@ -251,6 +274,57 @@ class ReaderView(QAbstractScrollArea):
             m for m in self._marks.get(page, [])
             if any(r[0] - 1 <= x <= r[2] + 1 and r[1] - 1 <= y <= r[3] + 1 for r in m["rects"])
         ]
+
+    # -- links -----------------------------------------------------------------------
+    def _link_at(self, pos: QPointF) -> Link | None:
+        hit = self._hit(pos)
+        if hit is None or not self.doc or not self._page_rect(hit[0]).contains(pos):
+            return None
+        page, x, y = hit
+        for link in self.doc.links(page):
+            r = link.rect
+            if r[0] - LINK_SLOP <= x <= r[2] + LINK_SLOP and r[1] - LINK_SLOP <= y <= r[3] + LINK_SLOP:
+                return link
+        return None
+
+    def _link_tip(self, link: Link) -> str:
+        text, _ = self.doc.link_target(link)
+        if not text:
+            return f"Go to page {link.page + 1}"
+        # Rich text, so Qt wraps long footnotes.
+        return f"<p style='white-space: pre-wrap'>{html.escape(text)}</p><p><i>Page {link.page + 1}</i></p>"
+
+    def follow_link(self, link: Link) -> None:
+        """Jump to a link's target and flash it; go_back() returns here."""
+        self._back.append(self._position())
+        _, rects = self.doc.link_target(link)
+        if rects:
+            self.flash(link.page, rects)
+        else:
+            self.go_to(link.page, self.doc.target(link)[1] or 0.001)
+        self._back_bar.show()
+        self._place_back_bar()
+
+    def go_back(self) -> bool:
+        """Return to where the last followed link was clicked; False if there is nowhere to go."""
+        if not self._back:
+            return False
+        page, y_pt = self._back.pop()
+        self.verticalScrollBar().setValue(int(self._tops[page] + (y_pt - self._clips[page][1]) * self.zoom))
+        self._check_page()
+        self._back_bar.setVisible(bool(self._back))
+        return True
+
+    def _position(self) -> tuple[int, float]:
+        """The page and y (in page points) at the top of the viewport."""
+        top = self.verticalScrollBar().value()
+        page = max(bisect.bisect_right(self._tops, top) - 1, 0)
+        return page, self._clips[page][1] + (top - self._tops[page]) / self.zoom
+
+    def _place_back_bar(self) -> None:
+        self._back_bar.adjustSize()
+        self._back_bar.move(12, self.viewport().height() - self._back_bar.height() - 12)
+        self._back_bar.raise_()
 
     def snippet_from(self, sn: dict) -> dict:
         """A saved snippet, rebuilt in the form snippetChosen emits."""
@@ -365,6 +439,7 @@ class ReaderView(QAbstractScrollArea):
             for spread, alpha in SHADOW:
                 p.fillRect(rect.adjusted(-spread, -spread + 1, spread, spread + 1), QColor(0, 0, 0, alpha))
             p.drawImage(rect, self._image(i))
+            self._paint_links(p, i, rect)
             self._paint_marks(p, i, rect)
             for r in line_rects(self._selection.get(i, [])):
                 p.fillRect(self._to_view(i, rect, r), SELECT_COLOR)
@@ -406,6 +481,32 @@ class ReaderView(QAbstractScrollArea):
                     p.fillRect(self._to_view(page, rect, r).adjusted(-1, 0, 1, 0), hovered if hover else normal)
         p.restore()
 
+    def _paint_links(self, p: QPainter, page: int, rect: QRectF) -> None:
+        links = self.doc.links(page)
+        if not links:
+            return
+        dark = theme().pages_dark
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setCompositionMode(
+            QPainter.CompositionMode.CompositionMode_Screen if dark else QPainter.CompositionMode.CompositionMode_Multiply
+        )
+        for link in links:
+            if link.quiet and link != self._hover_link:
+                continue
+            if link.footnote:
+                colors = FOOTNOTE_DARK if dark else FOOTNOTE_LIGHT
+            else:
+                colors = XREF_DARK if dark else XREF_LIGHT
+            r = self._to_view(page, rect, link.rect)
+            # Tiny superscripts get a pill at least as wide as it is tall.
+            pad = max(2.0, (r.height() - r.width()) / 2 + 1) if link.footnote else 2.0
+            r = r.adjusted(-pad, -1, pad, 1)
+            p.setBrush(colors[link == self._hover_link])
+            p.drawRoundedRect(r, min(r.height() / 2, 6), min(r.height() / 2, 6))
+        p.restore()
+
     # -- selection -------------------------------------------------------------------
     def set_region_mode(self, on: bool) -> None:
         self.region_mode = on
@@ -434,6 +535,9 @@ class ReaderView(QAbstractScrollArea):
         return page, x, y
 
     def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.BackButton:
+            self.go_back()
+            return
         if event.button() != Qt.MouseButton.LeftButton or not self.doc:
             return
         self.clear_selection()
@@ -463,6 +567,11 @@ class ReaderView(QAbstractScrollArea):
             (event.position() - self._press).manhattanLength() < CLICK_SLOP
         ):
             self.clear_selection()
+            if link := self._link_at(event.position()):
+                self._hover_link = None
+                QToolTip.hideText()
+                self.follow_link(link)
+                return
             marks = self._marks_at(event.position())
             if marks:
                 snippets = [sn for m in marks for sn in m["snippets"]]
@@ -478,21 +587,33 @@ class ReaderView(QAbstractScrollArea):
         self.viewport().update()
 
     def _update_hover(self, pos: QPointF) -> None:
+        link = None if self.region_mode else self._link_at(pos)
         marks = [] if self.region_mode else self._marks_at(pos)
-        if [id(m) for m in marks] != [id(m) for m in self._hover]:
+        left_link = self._hover_link is not None and link is None
+        if link != self._hover_link:
+            self._hover_link = link
+            self.viewport().update()
+            if link:
+                # A link's target (usually a footnote) shows on hover, over any note's text.
+                QToolTip.showText(self.viewport().mapToGlobal(pos.toPoint()), self._link_tip(link), self.viewport())
+        if left_link or [id(m) for m in marks] != [id(m) for m in self._hover]:
             self._hover = marks
             self.viewport().update()
             # A note's text shows on hover, so a passage's note can be read without opening the panel.
             bodies = [n["body"].strip() for m in marks for n in m["notes"] if n["body"].strip()]
-            if bodies:
+            if bodies and not link:
                 tip = "\n\n".join(b if len(b) <= 600 else b[:600] + "…" for b in bodies)
                 QToolTip.showText(self.viewport().mapToGlobal(pos.toPoint()), tip, self.viewport())
-            else:
+            elif not link:
                 QToolTip.hideText()
         if not self.region_mode:
-            self.viewport().setCursor(Qt.CursorShape.PointingHandCursor if marks else Qt.CursorShape.IBeamCursor)
+            pointing = link or marks
+            self.viewport().setCursor(Qt.CursorShape.PointingHandCursor if pointing else Qt.CursorShape.IBeamCursor)
 
     def leaveEvent(self, event) -> None:
+        if self._hover_link:
+            self._hover_link = None
+            self.viewport().update()
         if self._hover:
             self._hover = []
             self.viewport().update()
@@ -557,6 +678,10 @@ class ReaderView(QAbstractScrollArea):
     def keyPressEvent(self, event) -> None:
         if event.matches(QKeySequence.StandardKey.Copy):
             self.copy_selection()
+        elif event.matches(QKeySequence.StandardKey.Back) or (
+            event.key() == Qt.Key.Key_Left and event.modifiers() == Qt.KeyboardModifier.AltModifier
+        ):
+            self.go_back()
         elif event.key() == Qt.Key.Key_Escape:
             self.clear_selection()
         else:

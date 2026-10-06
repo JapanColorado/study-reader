@@ -273,7 +273,7 @@ def _clean_forum_html(fragment: str, site: str) -> str:
     if not fragment.strip():
         return ""
     root = lxml.html.fragment_fromstring(fragment, create_parent="div")
-    root.make_links_absolute(site + "/")
+    _absolute_links(root, site + "/")
     _normalize_math(root)
     _tidy(root)
     return _inner(root)
@@ -294,7 +294,7 @@ def _generic(url: str, body: bytes, ctype: str) -> Article:
     byline = _meta(page, "author") or _meta(page, "article:author")
     doc = Readability(lxml.html.tostring(page, encoding="unicode"), url=url)
     content = lxml.html.fragment_fromstring(doc.summary(html_partial=True), create_parent="div")
-    content.make_links_absolute(url)
+    _absolute_links(content, url)
     _tidy(content)
     body_html = _inner(content)
     if not lxml.html.fragment_fromstring(body_html or "<p></p>", create_parent="div").text_content().strip():
@@ -353,6 +353,20 @@ def _normalize_math(root) -> None:
                 break
             prev.drop_tree()
         _replace(el, _math_span(el.text or "", "mode=display" in el.get("type", "")))
+
+
+def _absolute_links(root, base: str) -> None:
+    """Resolve links against the page, but keep in-page ones (footnotes) as bare fragments,
+    so the printed PDF links them to their targets."""
+    page = base.split("#")[0]
+
+    def resolve(link: str) -> str:
+        if link.startswith("#"):
+            return link
+        link = urllib.parse.urljoin(base, link)
+        return link[len(page):] if link.startswith(page + "#") else link
+
+    root.rewrite_links(resolve, resolve_base_href=False)
 
 
 # Page furniture that readability sometimes keeps.

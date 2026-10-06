@@ -1,5 +1,6 @@
 import asyncio
 
+import pymupdf
 import pytest
 
 from study_reader import chat_service as cs
@@ -134,6 +135,88 @@ def test_reader_crop_maps_page_points(pdf_path, monkeypatch):
     assert view._to_view(1, rect, (x, y, x + 5, y + 5)).topLeft() == rect.topLeft() + QPointF(10 * view.zoom, 10 * view.zoom)
     view.set_crop(False)
     assert view._clips[1] == (0.0, 0.0, 400.0, 300.0) and view.current_page() == 1
+
+
+@pytest.fixture
+def footnote_pdf(tmp_path):
+    """Page 1: an unlinked footnote marker (and an x¹ that is not one); page 2: a linked
+    cross-reference to page 3."""
+    doc = pymupdf.open()
+    page = doc.new_page(width=400, height=300)
+    body = "Zorblatts are devices."
+    page.insert_text((40, 60), body, fontsize=12)
+    x = 40 + pymupdf.get_text_length(body, fontsize=12)
+    page.insert_text((x, 55), "1", fontsize=7)
+    page.insert_text((40, 90), "Area is x", fontsize=12)
+    page.insert_text((40 + pymupdf.get_text_length("Area is x", fontsize=12), 85), "1", fontsize=7)
+    page.insert_text((40, 255), "1", fontsize=6)
+    page.insert_text((44, 258), "A zorblatt has seven legs.", fontsize=9)
+    page = doc.new_page(width=400, height=300)
+    page.insert_text((40, 60), "See the rule on the next page.", fontsize=12)
+    page = doc.new_page(width=400, height=300)
+    page.insert_text((40, 40), "Unrelated text.", fontsize=12)
+    page.insert_text((40, 100), "The marmalade must be cold.", fontsize=12)
+    doc[1].insert_link({"kind": pymupdf.LINK_GOTO, "from": pymupdf.Rect(40, 48, 100, 62), "page": 2, "to": pymupdf.Point(40, 86)})
+    path = tmp_path / "notes.pdf"
+    doc.save(path)
+    return str(path)
+
+
+def test_footnote_and_cross_reference_links(footnote_pdf):
+    doc = Document(footnote_pdf)
+    (marker,) = doc.links(0)  # the x¹ follows a lone letter, so it reads as math
+    assert marker.page == 0 and marker.footnote and marker.rect[1] < 60 and marker.rect[0] > 100
+    text, rects = doc.link_target(marker)
+    assert text == "1 A zorblatt has seven legs." and len(rects) == 1 and rects[0][1] > 240
+    (ref,) = doc.links(1)
+    assert ref.page == 2 and not ref.footnote  # plain text, not a raised marker
+    assert doc.link_target(ref)[0] == "The marmalade must be cold."
+    assert doc.links(2) == []
+
+
+def test_page_level_links_find_their_caption_and_contents_links_stay_unmarked(tmp_path):
+    doc = pymupdf.open()
+    for _ in range(3):
+        doc.new_page(width=400, height=300)
+    doc[0].insert_text((40, 40), "Contents", fontsize=12)
+    doc[1].insert_text((40, 40), "Big Heading", fontsize=20)
+    doc[1].insert_text((40, 80), "As Figure 2 shows, zorblatts wobble.", fontsize=11)
+    doc[2].insert_text((40, 60), "Figure 2 is mentioned first.", fontsize=11)
+    doc[2].insert_text((40, 200), "Figure 2", fontsize=11, fontname="hebo")
+    doc[2].insert_text((100, 200), "A wobbling zorblatt.", fontsize=11)
+    doc[1].insert_link({"kind": pymupdf.LINK_GOTO, "from": pymupdf.Rect(40, 22, 160, 44), "page": 0, "to": pymupdf.Point(0, 0)})
+    doc[1].insert_link({"kind": pymupdf.LINK_GOTO, "from": pymupdf.Rect(52, 70, 95, 83), "page": 2, "to": pymupdf.Point(0, 0)})
+    doc.set_toc([[1, "Contents", 1], [1, "Chapter", 2]])
+    path = tmp_path / "figs.pdf"
+    doc.save(path)
+    d = Document(path)
+    heading, figure = sorted(d.links(1), key=lambda ln: ln.rect[1])
+    assert heading.quiet and heading.page == 0 and not figure.quiet
+    assert d.link_target(heading) == ("", [])  # the whole page
+    text, rects = d.link_target(figure)  # the bold caption, not the earlier mention
+    assert text.startswith("Figure 2 A wobbling") and rects[0][1] > 180
+
+
+def test_reader_follows_links_and_goes_back(footnote_pdf, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QPointF
+    from PySide6.QtWidgets import QApplication
+    from study_reader.reader_view import ReaderView
+
+    app = QApplication.instance() or QApplication([])
+    view = ReaderView()
+    view.resize(500, 200)
+    view.show()
+    view.set_document(Document(footnote_pdf), 1)
+    rect = view._page_rect(1)
+    link = view._link_at(rect.topLeft() + QPointF(50 * view.zoom, 55 * view.zoom))
+    assert link is not None and link.page == 2
+    assert view._link_at(rect.topLeft() + QPointF(300 * view.zoom, 200 * view.zoom)) is None
+    start = view.verticalScrollBar().value()
+    view.follow_link(link)
+    assert view.current_page() == 2 and view._flash[0] == 2 and view._back_bar.isVisible()
+    assert view.go_back() and view.verticalScrollBar().value() == start
+    assert not view._back_bar.isVisible() and not view.go_back()
 
 
 def test_asking_highlights_and_shows_chats(pdf_path, tmp_path, monkeypatch):

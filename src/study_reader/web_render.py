@@ -12,12 +12,11 @@ from PySide6.QtGui import QPageLayout, QPageSize
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 
 from . import web_import as wi
-from .document import REFLOW_HEIGHT, REFLOW_WIDTH
+from .document import REFLOW_HEIGHT, REFLOW_WIDTH, WEB_MARGINS
 
 # Give up waiting for slow images after this long and print what has loaded.
 LOAD_TIMEOUT_MS = 45_000
 READY_TIMEOUT_MS = 10_000
-MARGINS = (46, 44, 46, 44)  # points: left, top, right, bottom
 
 
 class WebImporter(QObject):
@@ -108,7 +107,7 @@ class WebImporter(QObject):
     def _print(self) -> None:
         layout = QPageLayout(
             QPageSize(QSizeF(REFLOW_WIDTH, REFLOW_HEIGHT), QPageSize.Unit.Point, "web"),
-            QPageLayout.Orientation.Portrait, QMarginsF(*MARGINS), QPageLayout.Unit.Point,
+            QPageLayout.Orientation.Portrait, QMarginsF(*WEB_MARGINS), QPageLayout.Unit.Point,
         )
         self.page.printToPdf(str(self._pdf), layout)
 
