@@ -1,0 +1,190 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="katex/katex.min.css">
+<script src="katex/katex.min.js"></script>
+<script src="markdown-it.min.js"></script>
+<script src="markdown.js"></script>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<style>
+  /* Fallbacks; the app sets these from theme.py. */
+  :root { --surface:#fbfaf8; --raised:#ffffff; --fg:#1f1e1c; --muted:#6b6862; --faint:#a19d95; --border:#dedad2;
+          --hover:#ebe8e1; --accent:#b8562f; --accent-fg:#ffffff; --accent-soft:#f4e2d8; --code:#f1eee8; --scroll:#cfcac1;
+          --note:#5b8fd0; }
+  html, body { margin:0; background:var(--surface); color:var(--fg); font:14px/1.55 system-ui, sans-serif; }
+  ::selection { background:var(--accent-soft); }
+  ::-webkit-scrollbar { width:11px; height:11px; }
+  ::-webkit-scrollbar-thumb { background:var(--scroll); border-radius:3px; border:3px solid transparent; background-clip:padding-box; }
+  ::-webkit-scrollbar-thumb:hover { background-color:var(--faint); }
+  #list { padding:4px 2px 24px; }
+  .empty { color:var(--muted); text-align:center; margin:56px auto 0; max-width:260px; line-height:1.5; }
+  .empty svg { display:block; margin:0 auto 12px; width:36px; height:36px; stroke:var(--faint); fill:none;
+               stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
+  .note { background:var(--raised); border:1px solid var(--border); border-radius:10px; padding:8px 11px 9px;
+          margin:0 0 10px; overflow-wrap:anywhere; transition:box-shadow .3s; }
+  .note.flash { box-shadow:0 0 0 2px var(--accent); }
+  .head { display:flex; align-items:center; gap:4px; font-size:11.5px; margin-bottom:4px; }
+  .head .loc { flex:1; font-weight:600; color:var(--accent); text-decoration:none; }
+  .head .loc:hover { text-decoration:underline; }
+  .head .act { color:var(--muted); text-decoration:none; padding:1px 6px; border-radius:5px; opacity:0; transition:opacity .12s; }
+  .note:hover .act, .act:focus { opacity:1; }
+  .head .act:hover { color:var(--fg); background:var(--hover); }
+  .quote { display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; white-space:pre-wrap;
+           color:var(--muted); font-size:13px; border-left:3px solid var(--note); padding:1px 0 1px 9px; border-radius:2px;
+           cursor:pointer; }
+  .quote:hover { color:var(--fg); }
+  .body { margin-top:7px; }
+  .body p { margin:0.45em 0; }
+  .body > :first-child { margin-top:0; } .body > :last-child { margin-bottom:0; }
+  .body.blank { color:var(--faint); font-style:italic; cursor:text; }
+  .body h1, .body h2, .body h3, .body h4 { line-height:1.3; margin:0.8em 0 0.3em; font-size:1.05em; }
+  .body ul, .body ol { padding-left:1.4em; } .body li { margin:0.15em 0; }
+  .body a { color:var(--accent); }
+  .body pre { background:var(--code); border:1px solid var(--border); padding:8px 10px; border-radius:7px; overflow-x:auto; }
+  .body code { background:var(--code); padding:1px 5px; border-radius:4px; font-size:0.88em; font-family:ui-monospace, "JetBrains Mono", monospace; }
+  .body pre code { padding:0; background:none; }
+  .body blockquote { border-left:3px solid var(--border); margin:0.4em 0; padding-left:10px; color:var(--muted); }
+  .body table { border-collapse:collapse; } .body th, .body td { border:1px solid var(--border); padding:3px 8px; }
+  .katex-display { overflow-x:auto; overflow-y:hidden; padding:2px 0; }
+  textarea { display:block; width:100%; box-sizing:border-box; margin-top:8px; padding:7px 9px; resize:none; overflow:hidden;
+             min-height:64px; font:inherit; color:var(--fg); background:var(--surface); border:1px solid var(--border);
+             border-radius:8px; outline:none; }
+  textarea:focus { border-color:var(--accent); }
+  .edit-row { display:flex; align-items:center; gap:6px; margin-top:6px; font-size:11.5px; color:var(--faint); }
+  .edit-row .grow { flex:1; }
+  .btn { font:inherit; font-size:12.5px; padding:3px 12px; border-radius:7px; cursor:pointer; border:1px solid var(--accent);
+         background:var(--accent); color:var(--accent-fg); }
+  .btn:hover { filter:brightness(1.08); }
+  .btn.quiet { background:transparent; color:var(--accent); border-color:var(--border); }
+  .btn.quiet:hover { background:var(--accent-soft); filter:none; }
+</style>
+</head>
+<body>
+<div id="list"></div>
+<script>
+// The app sends the (filtered) notes; edits, deletions and jumps go back through the web channel.
+let bridge = null;
+new QWebChannel(qt.webChannelTransport, channel => { bridge = channel.objects.notes; });
+
+const NOTE_ICON = `<svg viewBox="0 0 24 24"><path d="M15.5 3H5a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2V8.5L15.5 3Z"/><path d="M15 3v6h6"/></svg>`;
+let NOTES = [];
+let EDITING = null;  // {id, draft}: the note being edited, kept across renders
+
+function setTheme(colors) {
+  const root = document.documentElement;
+  for (const [k, v] of Object.entries(colors)) root.style.setProperty(`--${k.replace(/_/g, "-")}`, v);
+}
+
+function noteHtml(n) {
+  const editing = EDITING && EDITING.id === n.id;
+  const head = `<div class="head"><a class="loc" href="#" data-act="jump" title="Jump to the passage">p. ${n.page + 1}</a>`
+    + (editing ? "" : `<a class="act" href="#" data-act="edit">Edit</a>`)
+    + `<a class="act" href="#" data-act="remove" title="Delete this note and its highlight">Delete</a></div>`;
+  const quote = `<div class="quote" data-act="jump" title="Jump to the passage">${esc(n.text)}</div>`;
+  let body;
+  if (editing) {
+    body = `<textarea placeholder="Write a note… (Markdown, $math$)">${esc(EDITING.draft)}</textarea>`
+      + `<div class="edit-row"><span class="grow">Ctrl+Enter to save · Esc to cancel</span>`
+      + `<button class="btn quiet" data-act="cancel">Cancel</button><button class="btn" data-act="save">Save</button></div>`;
+  } else if (n.body.trim()) {
+    body = `<div class="body">${renderMarkdown(n.body)}</div>`;
+  } else {
+    body = `<div class="body blank" data-act="edit">Add a note…</div>`;
+  }
+  return `<div class="note" data-id="${n.id}">${head}${quote}${body}</div>`;
+}
+
+function render(data) {
+  NOTES = data.notes;
+  if (EDITING && !NOTES.some(n => n.id === EDITING.id)) EDITING = null;
+  const scroll = window.scrollY;
+  const list = document.getElementById("list");
+  list.innerHTML = NOTES.length ? NOTES.map(noteHtml).join("") : `<div class="empty">${NOTE_ICON}${esc(data.empty)}</div>`;
+  window.scrollTo(0, scroll);
+  if (EDITING) openEditor(false);
+}
+
+function rerender(id) {
+  const el = document.querySelector(`.note[data-id="${id}"]`);
+  const n = NOTES.find(n => n.id === id);
+  if (el && n) el.outerHTML = noteHtml(n);
+}
+
+function card(id) { return document.querySelector(`.note[data-id="${id}"]`); }
+
+function openEditor(focus = true) {
+  const el = card(EDITING.id);
+  const area = el && el.querySelector("textarea");
+  if (!area) return;
+  const fit = () => { area.style.height = "auto"; area.style.height = `${area.scrollHeight + 2}px`; };
+  area.addEventListener("input", () => { EDITING.draft = area.value; fit(); });
+  area.addEventListener("keydown", e => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); }
+    else if (e.key === "Escape") { e.preventDefault(); cancel(); }
+  });
+  fit();
+  if (focus) {
+    area.focus();
+    area.setSelectionRange(area.value.length, area.value.length);
+    el.scrollIntoView({ block: "nearest" });
+  }
+}
+
+// Start editing a note (the app calls this for a note it just created).
+function edit(id) {
+  const n = NOTES.find(n => n.id === id);
+  if (!n) return;
+  if (EDITING && EDITING.id !== id) save();
+  if (EDITING && EDITING.id === id) { openEditor(); return; }
+  EDITING = { id, draft: n.body };
+  rerender(id);
+  openEditor();
+}
+
+function save() {
+  if (!EDITING) return;
+  const { id, draft } = EDITING;
+  EDITING = null;
+  const n = NOTES.find(n => n.id === id);
+  if (n) n.body = draft;
+  rerender(id);
+  if (bridge) bridge.save(id, draft);
+}
+
+function cancel() {
+  if (!EDITING) return;
+  const id = EDITING.id;
+  EDITING = null;
+  rerender(id);
+  if (bridge) bridge.cancel(id);
+}
+
+// Scroll a note into view and flash it.
+function reveal(id) {
+  const el = card(id);
+  if (!el) return;
+  el.scrollIntoView({ block: "center", behavior: "smooth" });
+  el.classList.add("flash");
+  setTimeout(() => el.classList.remove("flash"), 1200);
+}
+
+document.addEventListener("click", e => {
+  const target = e.target.closest("[data-act]");
+  const el = target && target.closest(".note");
+  if (!el) return;
+  if (target.tagName === "A") e.preventDefault();
+  const id = +el.dataset.id;
+  const act = target.dataset.act;
+  if (act === "jump") { if (bridge) bridge.jump(id); }
+  else if (act === "edit") edit(id);
+  else if (act === "save") save();
+  else if (act === "cancel") cancel();
+  else if (act === "remove") {
+    if (EDITING && EDITING.id === id) EDITING = null;
+    if (bridge) bridge.remove(id);
+  }
+});
+</script>
+</body>
+</html>

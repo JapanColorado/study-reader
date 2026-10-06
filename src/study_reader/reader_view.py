@@ -1,5 +1,5 @@
 """Continuous-scroll page view with text selection, screenshot-region capture, and
-highlights on every passage that has been asked about."""
+highlights on every passage that has been asked about or annotated."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from collections import OrderedDict
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QKeySequence, QPainter, QPen
-from PySide6.QtWidgets import QAbstractScrollArea, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QPushButton
+from PySide6.QtWidgets import QAbstractScrollArea, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QPushButton, QToolTip
 
 from .document import Document, Rect, Word, line_rects, select_range, words_text
 from .theme import darken_page, theme
@@ -26,6 +26,8 @@ SHADOW = [(3, 10), (2, 14), (1, 22)]  # (spread px, alpha), outermost first
 # Highlighter ink: multiplied onto light pages, screened onto dark ones, so text stays legible.
 MARK_LIGHT = (QColor(255, 228, 130), QColor(255, 204, 80))  # (normal, hovered)
 MARK_DARK = (QColor(80, 62, 22), QColor(125, 95, 30))
+NOTE_LIGHT = (QColor(178, 218, 255), QColor(138, 196, 250))  # annotated passages, in blue
+NOTE_DARK = (QColor(26, 58, 92), QColor(40, 84, 130))
 FRAME_COLOR = (QColor(232, 168, 40), QColor(214, 130, 20))  # screenshot regions: (normal, hovered)
 CLICK_SLOP = 4  # px a press may move and still count as a click
 
@@ -34,9 +36,10 @@ class ReaderView(QAbstractScrollArea):
     # dict(kind, page, text, rects, png) and whether it should start a new chat
     snippetChosen = Signal(dict, bool)
     quizChosen = Signal(dict)  # a snippet to be quizzed on
+    noteChosen = Signal(dict)  # a text snippet to annotate
     pageChanged = Signal(int)
     zoomChanged = Signal(float)
-    highlightClicked = Signal(list, QPoint)  # snippets under the click, global position
+    highlightClicked = Signal(list, list, QPoint)  # snippets and notes under the click, global position
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -58,7 +61,7 @@ class ReaderView(QAbstractScrollArea):
         self._region: tuple[int, tuple[float, float, float, float]] | None = None
         self._flash: tuple[int, list] | None = None
         self._page = 0
-        self._marks: dict[int, list[dict]] = {}  # page -> dict(kind, rects, snippets)
+        self._marks: dict[int, list[dict]] = {}  # page -> dict(kind, rects, snippets, notes)
         self._hover: list[dict] = []
         self._press: QPointF | None = None
 
@@ -84,9 +87,11 @@ class ReaderView(QAbstractScrollArea):
         add.clicked.connect(lambda: self.choose(False))
         quiz = QPushButton("Quiz me")
         quiz.clicked.connect(self.choose_quiz)
+        self._note_btn = QPushButton("Note")
+        self._note_btn.clicked.connect(self.choose_note)
         self._copy_btn = QPushButton("Copy")
         self._copy_btn.clicked.connect(self.copy_selection)
-        for b in (ask, add, quiz, self._copy_btn):
+        for b in (ask, add, quiz, self._note_btn, self._copy_btn):
             row.addWidget(b)
         self._popup.hide()
 
@@ -215,12 +220,19 @@ class ReaderView(QAbstractScrollArea):
         return range(first, min(last, len(self._tops) - 1) + 1)
 
     # -- highlights ----------------------------------------------------------------
-    def set_highlights(self, snippets: list[dict]) -> None:
-        """snippets: db rows (page, kind, rects, chat_id, ...). Identical passages share one mark."""
+    def set_highlights(self, snippets: list[dict], notes: list[dict] = ()) -> None:
+        """snippets: db rows (page, kind, rects, chat_id, ...); notes: db rows (page, rects, body, ...).
+        Identical passages share one mark."""
         groups: dict[tuple, dict] = {}
+
+        def group(row: dict, kind: str) -> dict:
+            key = (row["page"], tuple(map(tuple, row["rects"])))
+            return groups.setdefault(key, {"kind": kind, "rects": row["rects"], "snippets": [], "notes": []})
+
         for sn in snippets:
-            key = (sn["page"], tuple(map(tuple, sn["rects"])))
-            groups.setdefault(key, {"kind": sn["kind"], "rects": sn["rects"], "snippets": []})["snippets"].append(sn)
+            group(sn, sn["kind"])["snippets"].append(sn)
+        for note in notes:
+            group(note, "text")["notes"].append(note)
         self._marks = {}
         for (page, _), mark in groups.items():
             self._marks.setdefault(page, []).append(mark)
@@ -369,7 +381,7 @@ class ReaderView(QAbstractScrollArea):
         marks = self._marks.get(page)
         if not marks:
             return
-        normal, hovered = MARK_DARK if theme().pages_dark else MARK_LIGHT
+        dark = theme().pages_dark
         p.save()
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         for m in marks:
@@ -383,9 +395,13 @@ class ReaderView(QAbstractScrollArea):
                     p.drawRoundedRect(self._to_view(page, rect, r).adjusted(-4, -4, 4, 4), 4, 4)
             else:
                 p.setCompositionMode(
-                    QPainter.CompositionMode.CompositionMode_Screen if theme().pages_dark
+                    QPainter.CompositionMode.CompositionMode_Screen if dark
                     else QPainter.CompositionMode.CompositionMode_Multiply
                 )
+                if m["notes"]:
+                    normal, hovered = NOTE_DARK if dark else NOTE_LIGHT
+                else:
+                    normal, hovered = MARK_DARK if dark else MARK_LIGHT
                 for r in m["rects"]:
                     p.fillRect(self._to_view(page, rect, r).adjusted(-1, 0, 1, 0), hovered if hover else normal)
         p.restore()
@@ -450,7 +466,8 @@ class ReaderView(QAbstractScrollArea):
             marks = self._marks_at(event.position())
             if marks:
                 snippets = [sn for m in marks for sn in m["snippets"]]
-                self.highlightClicked.emit(snippets, self.viewport().mapToGlobal(event.position().toPoint()))
+                notes = [n for m in marks for n in m["notes"]]
+                self.highlightClicked.emit(snippets, notes, self.viewport().mapToGlobal(event.position().toPoint()))
             return
         if self._region:
             r = self._region[1]
@@ -465,6 +482,13 @@ class ReaderView(QAbstractScrollArea):
         if [id(m) for m in marks] != [id(m) for m in self._hover]:
             self._hover = marks
             self.viewport().update()
+            # A note's text shows on hover, so a passage's note can be read without opening the panel.
+            bodies = [n["body"].strip() for m in marks for n in m["notes"] if n["body"].strip()]
+            if bodies:
+                tip = "\n\n".join(b if len(b) <= 600 else b[:600] + "…" for b in bodies)
+                QToolTip.showText(self.viewport().mapToGlobal(pos.toPoint()), tip, self.viewport())
+            else:
+                QToolTip.hideText()
         if not self.region_mode:
             self.viewport().setCursor(Qt.CursorShape.PointingHandCursor if marks else Qt.CursorShape.IBeamCursor)
 
@@ -476,6 +500,7 @@ class ReaderView(QAbstractScrollArea):
 
     def _show_popup(self, pos: QPoint) -> None:
         self._copy_btn.setVisible(bool(self._selection))
+        self._note_btn.setVisible(bool(self._selection))
         self._popup.adjustSize()
         vp = self.viewport().rect()
         x = min(max(pos.x() - self._popup.width() // 2, 4), vp.width() - self._popup.width() - 4)
@@ -503,6 +528,13 @@ class ReaderView(QAbstractScrollArea):
         """Ask for a quiz on the current selection or region; False if there is none."""
         if snippet := self.take_selection():
             self.quizChosen.emit(snippet)
+        return snippet is not None
+
+    def choose_note(self) -> bool:
+        """Annotate the selected text; False if there is none (regions take no notes)."""
+        snippet = self.take_selection() if self._selection else None
+        if snippet:
+            self.noteChosen.emit(snippet)
         return snippet is not None
 
     def take_selection(self) -> dict | None:

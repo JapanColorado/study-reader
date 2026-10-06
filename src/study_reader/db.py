@@ -1,4 +1,4 @@
-"""SQLite persistence: library, chats, messages and their book snippets."""
+"""SQLite persistence: library, chats, messages and their book snippets, notes."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS books (
     zoom REAL NOT NULL DEFAULT 0,   -- 0 = fit width
     crop_margins INTEGER NOT NULL DEFAULT 0,
     show_toc INTEGER NOT NULL DEFAULT 1,
-    right_panel TEXT NOT NULL DEFAULT 'chat', -- 'chat' | 'calc' | '' (collapsed)
+    right_panel TEXT NOT NULL DEFAULT 'chat', -- 'chat' | 'calc' | 'notes' | '' (collapsed)
     show_chat_list INTEGER NOT NULL DEFAULT 1,
     base_session_id TEXT,
     context_mode TEXT,              -- NULL (not prepared) | 'full' | 'partial'
@@ -73,6 +73,16 @@ CREATE TABLE IF NOT EXISTS quiz_answers (
     verdict TEXT,                   -- 'correct' | 'partial' | 'incorrect' (NULL if ungraded)
     feedback TEXT NOT NULL DEFAULT '', -- Claude's, for free responses; the error for 'error'
     created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS notes (
+    id INTEGER PRIMARY KEY,
+    book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    page INTEGER NOT NULL,
+    text TEXT NOT NULL,             -- the passage annotated
+    rects TEXT NOT NULL DEFAULT '[]', -- JSON [[x0,y0,x1,y1],...] in page points, like snippets
+    body TEXT NOT NULL DEFAULT '',  -- the note itself, Markdown with $math$
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
@@ -275,6 +285,34 @@ class Database:
     def clear_quiz_answers(self, message_id: int, quiz: int) -> None:
         with self.conn:
             self.conn.execute("DELETE FROM quiz_answers WHERE message_id=? AND quiz=?", (message_id, quiz))
+
+    # -- notes ---------------------------------------------------------------
+    def add_note(self, book_id: int, page: int, text: str, rects: list, body: str = "") -> int:
+        now = time.time()
+        with self.conn:
+            cur = self.conn.execute(
+                "INSERT INTO notes (book_id, page, text, rects, body, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+                (book_id, page, text, json.dumps(rects), body, now, now),
+            )
+        return cur.lastrowid
+
+    def note(self, note_id: int) -> dict | None:
+        n = self.conn.execute("SELECT * FROM notes WHERE id=?", (note_id,)).fetchone()
+        return {**dict(n), "rects": json.loads(n["rects"])} if n else None
+
+    def notes(self, book_id: int) -> list[dict]:
+        """The book's notes in reading order."""
+        rows = self.conn.execute("SELECT * FROM notes WHERE book_id=? ORDER BY page, id", (book_id,))
+        out = [{**dict(n), "rects": json.loads(n["rects"])} for n in rows]
+        out.sort(key=lambda n: (n["page"], min((r[1] for r in n["rects"]), default=0.0), n["id"]))
+        return out
+
+    def update_note(self, note_id: int, body: str) -> None:
+        self._update("notes", note_id, {"body": body, "updated_at": time.time()})
+
+    def delete_note(self, note_id: int) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM notes WHERE id=?", (note_id,))
 
     # -- calculator -----------------------------------------------------------
     def add_calculation(self, book_id: int, expr: str, result: str, value: str, latex: str = "") -> int:

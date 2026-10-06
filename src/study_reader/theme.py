@@ -70,6 +70,8 @@ ICONS = {
     "quiz": '<path d="M9 11l2 2 4-4"/><rect width="16" height="18" x="4" y="3" rx="2"/><path d="M9 17h6"/>',
     "check-circle": '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
     "help": '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
+    "note": '<path d="M15.5 3H5a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2V8.5L15.5 3Z"/><path d="M15 3v6h6"/>',
+    "download": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
 }
 
 
@@ -206,6 +208,9 @@ QComboBox QAbstractItemView { background: $raised; color: $fg; border: 1px solid
 QLineEdit#urlInput { background: $surface; color: $fg; border: 1px solid $border; border-radius: 7px; padding: 6px 8px;
                      selection-background-color: $accent_soft; selection-color: $fg; }
 QLineEdit#urlInput:focus { border-color: $accent; }
+QLineEdit#notesSearch { background: $raised; color: $fg; border: 1px solid $border; border-radius: 7px; padding: 4px 8px;
+                        selection-background-color: $accent_soft; selection-color: $fg; }
+QLineEdit#notesSearch:focus { border-color: $accent; }
 
 QSpinBox { background: $surface; color: $fg; border: 1px solid $border; border-radius: 6px; padding: 3px 4px; }
 QSpinBox:focus { border-color: $accent; }

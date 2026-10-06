@@ -5,6 +5,7 @@
 <link rel="stylesheet" href="katex/katex.min.css">
 <script src="katex/katex.min.js"></script>
 <script src="markdown-it.min.js"></script>
+<script src="markdown.js"></script>
 <script src="mathlive/mathlive.min.js"></script>
 <script src="mathfield.js"></script>
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
@@ -138,8 +139,6 @@
 <body>
 <div id="log"></div>
 <script>
-const md = markdownit({ html: false, linkify: true });
-
 // ```visualization <title> fences hold self-contained HTML that runs in a sandboxed
 // iframe (scripts only: no network, no same-origin access, no top navigation).
 const VIZ_LANG = /^(visualization|viz)\b\s*(.*)$/;
@@ -211,29 +210,6 @@ window.addEventListener("message", e => {
   frame.style.height = `${Math.min(Math.max(height, 40), VIZ_MAX_HEIGHT)}px`;
   if (atBottom) window.scrollTo(0, document.body.scrollHeight);
 });
-const MATH = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|\$(?!\s)([^$\n]+?)(?<!\s)\$(?!\d)/g;
-const CODE = /(```[\s\S]*?(?:```|$)|`[^`\n]*`)/;
-
-function esc(s) { return s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
-
-// Math is lifted out before Markdown runs so underscores and backslashes survive.
-function renderMarkdown(src, inline = false) {
-  const store = [];
-  const parts = src.split(CODE).map((part, i) => {
-    if (i % 2) return part;
-    return part.replace(MATH, (m, d1, d2, i1, i2) => {
-      const display = d1 !== undefined || d2 !== undefined;
-      store.push({ tex: d1 ?? d2 ?? i1 ?? i2, display });
-      return `@@MATH${store.length - 1}@@`;
-    });
-  });
-  return (inline ? md.renderInline : md.render).call(md, parts.join("")).replace(/@@MATH(\d+)@@/g, (m, n) => {
-    const { tex, display } = store[+n];
-    try { return katex.renderToString(tex, { displayMode: display, throwOnError: false }); }
-    catch (e) { return esc(tex); }
-  });
-}
-
 // ```quiz fences: the app parses them (quiz.py) and replaces each with `#<index>` into
 // the message's `quizzes`; answers go back through the web channel and come back graded.
 const QUIZ_LANG = /^quiz\b/;

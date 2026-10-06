@@ -1,4 +1,4 @@
-"""Main window: table of contents | reader or library | chats or calculator."""
+"""Main window: table of contents | reader or library | chats, calculator or notes."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from .chat_service import ChatWorker
 from .db import Database, data_dir
 from .document import Document, file_hash
 from .library_view import LibraryView
+from .notes import NotesPanel
 from .reader_view import ReaderView
 from .theme import MODES, icon, theme
 from .web_import import WebImportError, normalize_url
@@ -56,9 +57,10 @@ class MainWindow(QMainWindow):
         self.chat = ChatPanel(self.db, self.worker)
         self.chat.current_page = self.reader.current_page
         self.calc = CalculatorPanel(self.db)
-        self.right = QStackedWidget()  # chats and the calculator take turns in the same slot
-        self.right.addWidget(self.chat)
-        self.right.addWidget(self.calc)
+        self.notes = NotesPanel(self.db)
+        self.right = QStackedWidget()  # chats, the calculator and notes take turns in the same slot
+        for w in (self.chat, self.calc, self.notes):
+            self.right.addWidget(w)
 
         split = QSplitter()
         split.setChildrenCollapsible(False)
@@ -80,8 +82,11 @@ class MainWindow(QMainWindow):
         self._web_progress: QProgressDialog | None = None
         self.reader.snippetChosen.connect(lambda sn, new: self._show_chat(lambda: self.chat.add_snippet(sn, new)))
         self.reader.quizChosen.connect(self._quiz_on)
+        self.reader.noteChosen.connect(lambda sn: self._show_notes(lambda: self.notes.add_note(sn)))
         self.reader.highlightClicked.connect(self._highlight_menu)
         self.chat.highlightsChanged.connect(self._refresh_highlights)
+        self.notes.notesChanged.connect(self._refresh_highlights)
+        self.notes.jumpRequested.connect(self.reader.flash)
         self.reader.pageChanged.connect(self._on_page_changed)
         self.reader.zoomChanged.connect(lambda z: self.zoom_label.setText(f"{round(z * 100)}%"))
         self.chat.jumpRequested.connect(self.reader.flash)
@@ -169,8 +174,10 @@ class MainWindow(QMainWindow):
         # Act on the current selection without reaching for the popup.
         action("Ask in new chat", "Ctrl+Return", lambda: self.reader.choose(True))
         action("Add to current chat", "Ctrl+Shift+Return", lambda: self.reader.choose(False))
+        add_note = action("Add note", "Ctrl+Shift+N", self.reader.choose_note)
         self.book_actions = [
             zoom_out, zoom_in, fit, self.crop_action, self.region_action, self.quiz_action, self.finished_action, new_chat,
+            add_note,
         ]
         self.book_items = book_items + [
             zoom_out, zoom_in, fit, self.crop_action, self.region_action, self.quiz_action, self.finished_action,
@@ -210,11 +217,19 @@ class MainWindow(QMainWindow):
         settings.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         bar.addWidget(settings)
 
-        self.calc_action = action("Calculator", "F11", self._toggle_calc, "calculator", checkable=True)
+        self.notes_action = action("Notes", "F12", lambda on: self._toggle_right("notes", on), "note", checkable=True)
+        bar.addAction(self.notes_action)
+        self.calc_action = action("Calculator", "F11", lambda on: self._toggle_right("calc", on), "calculator", checkable=True)
         bar.addAction(self.calc_action)
-        self.chat_action = action("Chats", "F10", self._toggle_chat, "message", checkable=True)
+        self.chat_action = action("Chats", "F10", lambda on: self._toggle_right("chat", on), "message", checkable=True)
         self.chat_action.setChecked(True)
         bar.addAction(self.chat_action)
+        # The right-hand slot's panels, by the name books.right_panel stores; one at most is shown.
+        self.right_panels = {
+            "chat": (self.chat_action, self.chat),
+            "calc": (self.calc_action, self.calc),
+            "notes": (self.notes_action, self.notes),
+        }
 
     # -- appearance ---------------------------------------------------------------
     def _set_theme(self, mode: str | None = None, dark_pages: bool | None = None) -> None:
@@ -230,18 +245,14 @@ class MainWindow(QMainWindow):
         self.sidebar.setVisible(on and self.toc.topLevelItemCount() > 0)
         self._save_panels()
 
-    def _toggle_chat(self, on: bool) -> None:
+    def _toggle_right(self, name: str, on: bool) -> None:
         if on:
-            self.calc_action.setChecked(False)
+            for other, (a, _) in self.right_panels.items():
+                if other != name:
+                    a.setChecked(False)
         self._sync_right()
         self._save_panels()
-
-    def _toggle_calc(self, on: bool) -> None:
-        if on:
-            self.chat_action.setChecked(False)
-        self._sync_right()
-        self._save_panels()
-        if on and self.right.isVisible():
+        if on and name == "calc" and self.right.isVisible():
             self.calc.focus_input()
 
     def _set_finished(self, on: bool) -> None:
@@ -252,12 +263,12 @@ class MainWindow(QMainWindow):
         """Remember per book which sidebars are open, so reopening it restores them."""
         if self.book_id is None:
             return
-        right = "chat" if self.chat_action.isChecked() else "calc" if self.calc_action.isChecked() else ""
+        right = next((name for name, (a, _) in self.right_panels.items() if a.isChecked()), "")
         self.db.update_book(self.book_id, show_toc=int(self.toc_action.isChecked()), right_panel=right)
 
     def _sync_right(self) -> None:
-        """Show whichever of chats / calculator is toggled on, or neither."""
-        panel = self.chat if self.chat_action.isChecked() else self.calc if self.calc_action.isChecked() else None
+        """Show whichever of chats / calculator / notes is toggled on, or none."""
+        panel = next((w for a, w in self.right_panels.values() if a.isChecked()), None)
         if panel:
             self.right.setCurrentWidget(panel)
         self.right.setVisible(panel is not None and self.book_id is not None)
@@ -277,6 +288,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Study Reader")
         self.chat.set_book(None)
         self.calc.set_book(None)
+        self.notes.set_book(None)
         self.library.refresh()
         self.center.setCurrentWidget(self.library)
         self._set_book_ui(False)
@@ -286,8 +298,8 @@ class MainWindow(QMainWindow):
             a.setEnabled(reading)
         for a in self.book_items:
             a.setVisible(reading)
-        self.chat_action.setEnabled(reading)
-        self.calc_action.setEnabled(reading)
+        for a, _ in self.right_panels.values():
+            a.setEnabled(reading)
         self._sync_right()
         has_toc = reading and self.toc.topLevelItemCount() > 0
         self.toc_action.setEnabled(has_toc)
@@ -368,8 +380,8 @@ class MainWindow(QMainWindow):
 
         self._fill_toc()
         self.toc_action.setChecked(bool(book["show_toc"]))
-        self.chat_action.setChecked(book["right_panel"] == "chat")
-        self.calc_action.setChecked(book["right_panel"] == "calc")
+        for name, (a, _) in self.right_panels.items():
+            a.setChecked(book["right_panel"] == name)
         self.page_spin.blockSignals(True)
         self.page_spin.setRange(1, doc.page_count)
         self.page_spin.blockSignals(False)
@@ -386,6 +398,7 @@ class MainWindow(QMainWindow):
         self._on_page_changed(self.reader.current_page())
         self.chat.set_book(self.book_id)
         self.calc.set_book(self.book_id)
+        self.notes.set_book(self.book_id)
         self._refresh_highlights()
         return True
 
@@ -407,12 +420,20 @@ class MainWindow(QMainWindow):
         if self.book_id is not None:
             # Pending snippets are marked too, so a passage stays highlighted while its question is drafted.
             pending = [{**sn, "chat_id": None} for sn in self.chat.pending_snippets()]
-            self.reader.set_highlights(self.db.book_snippets(self.book_id) + pending)
+            self.reader.set_highlights(self.db.book_snippets(self.book_id) + pending, self.db.notes(self.book_id))
 
-    def _highlight_menu(self, snippets: list[dict], pos) -> None:
-        """Clicked highlight: open one of the chats that asked about it, or start another."""
+    def _highlight_menu(self, snippets: list[dict], notes: list[dict], pos) -> None:
+        """Clicked highlight: open its note or one of the chats that asked about it, or start another."""
         menu = QMenu(self)
         metrics = menu.fontMetrics()
+        for note in notes:
+            body = " ".join(note["body"].split()) or "Empty note"
+            title = metrics.elidedText(body, Qt.TextElideMode.ElideRight, 360)
+            menu.addAction(icon("note", "muted"), title).triggered.connect(
+                lambda _=False, n=note["id"]: self._show_notes(lambda: self.notes.reveal(n))
+            )
+        if notes:
+            menu.addSeparator()
         chat_ids = list(dict.fromkeys(sn["chat_id"] for sn in reversed(snippets) if sn["chat_id"] is not None))
         for chat_id in chat_ids:
             chat = self.db.chat(chat_id)
@@ -422,13 +443,21 @@ class MainWindow(QMainWindow):
                     lambda _=False, c=chat_id: self._show_chat(lambda: self.chat.open_chat(c))
                 )
         menu.addSeparator()
-        latest = snippets[-1]
+        latest = snippets[-1] if snippets else {**notes[-1], "kind": "text"}
         menu.addAction(icon("message-plus"), "New chat about this").triggered.connect(
             lambda: self._show_chat(lambda: self.chat.add_snippet(self.reader.snippet_from(latest), True))
         )
         menu.addAction("Add to current chat").triggered.connect(
             lambda: self._show_chat(lambda: self.chat.add_snippet(self.reader.snippet_from(latest), False))
         )
+        if notes:
+            menu.addAction(icon("trash", "muted"), "Delete note" if len(notes) == 1 else "Delete notes").triggered.connect(
+                lambda: [self.notes.remove(n["id"]) for n in notes]
+            )
+        elif latest["kind"] == "text":
+            menu.addAction(icon("note"), "Add note…").triggered.connect(
+                lambda: self._show_notes(lambda: self.notes.add_note(latest))
+            )
         menu.exec(pos)
 
     # -- quizzes --------------------------------------------------------------------
@@ -448,6 +477,11 @@ class MainWindow(QMainWindow):
     def _show_chat(self, then) -> None:
         if not self.chat_action.isChecked():
             self.chat_action.trigger()
+        then()
+
+    def _show_notes(self, then) -> None:
+        if not self.notes_action.isChecked():
+            self.notes_action.trigger()
         then()
 
     def _set_crop(self, on: bool) -> None:
