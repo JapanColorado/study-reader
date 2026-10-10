@@ -76,7 +76,8 @@ class ChatService:
     status(book_id, text), base(book_id, session_id, mode), delta(chat_id, text),
     done(chat_id, session_id, text, message_uuid), failed(chat_id, message),
     for quiz grading graded(answer_id, text), gradeFailed(answer_id, message), and for grading
-    a card in review cardGraded(card_id, text), cardGradeFailed(card_id, message)."""
+    a card in review cardGraded(card_id, text), cardGradeFailed(card_id, message), and
+    titled(chat_id, title) when a chat's auto-title is ready."""
 
     def __init__(self, emit: Callable[..., None], sessions_dir: str | Path):
         self.emit = emit
@@ -154,6 +155,15 @@ class ChatService:
         except Exception as e:
             self.emit(failed, answer_id, str(e) or type(e).__name__)
 
+    async def title(self, chat_id: int, question: str, passage: str, reply: str) -> None:
+        """Name a chat from its first exchange. Failures are ignored: the chat keeps its title."""
+        try:
+            title = await cc.chat_title(question, passage, reply, cwd=self.sessions_dir / "titles")
+        except Exception:
+            return
+        if title:
+            self.emit("titled", chat_id, title)
+
     async def _turn(self, job: Job, chat_session_id: str | None, on_delta) -> cc.TurnResult:
         cwd = self.cwd(job.book.id)
         extra: list[str] = []
@@ -192,6 +202,7 @@ class ChatWorker(QObject):
     gradeFailed = Signal(int, str)
     cardGraded = Signal(int, str)
     cardGradeFailed = Signal(int, str)
+    titled = Signal(int, str)
 
     def __init__(self, sessions_dir: str | Path, parent: QObject | None = None):
         super().__init__(parent)
@@ -214,6 +225,9 @@ class ChatWorker(QObject):
 
     def submit_card_grade(self, job: Job, card_id: int) -> None:
         asyncio.run_coroutine_threadsafe(self.service.grade(job, card_id, card=True), self.loop)
+
+    def submit_title(self, chat_id: int, question: str, passage: str, reply: str) -> None:
+        asyncio.run_coroutine_threadsafe(self.service.title(chat_id, question, passage, reply), self.loop)
 
     def shutdown(self) -> None:
         self.loop.call_soon_threadsafe(self.loop.stop)

@@ -299,6 +299,35 @@ def test_mark_book_finished(pdf_path, tmp_path, monkeypatch):
     assert win.library.list.item(0).data(HEADER_ROLE) is None and win.library.list.count() == 1
 
 
+def test_new_chats_are_titled_after_the_first_reply(chat_panel):
+    panel, worker, db, book_id = chat_panel
+    panel.add_snippet({"kind": "text", "page": 1, "text": "quote", "rects": []}, new_chat=True)
+    panel.input.setPlainText("what does this mean?")
+    panel.send()
+    chat = panel.chat_id
+    assert db.chat(chat)["title"] == "what does this mean?" and worker.titles == []
+    worker.done.emit(chat, "s1", "a1", "u1")
+    assert worker.titles == [(chat, "what does this mean?", "quote", "a1")]
+    worker.titled.emit(chat, "Meaning of the quote")
+    assert db.chat(chat)["title"] == "Meaning of the quote"
+    assert panel.chat_list.currentItem().text() == "Meaning of the quote"
+
+    panel.input.setPlainText("more")  # only the first reply names the chat
+    panel.send()
+    worker.done.emit(chat, "s2", "a2", "u2")
+    assert len(worker.titles) == 1
+
+    # A chat renamed by hand before its title arrives keeps the user's name.
+    panel.new_chat()
+    panel.input.setPlainText("second")
+    panel.send()
+    other = panel.chat_id
+    worker.done.emit(other, "s3", "a3", "u3")
+    db.update_chat(other, title="Mine")
+    worker.titled.emit(other, "Claude's")
+    assert db.chat(other)["title"] == "Mine"
+
+
 def test_edit_and_regenerate_branch_the_chat(chat_panel):
     panel, worker, db, book_id = chat_panel
 
@@ -454,9 +483,12 @@ class FakeClaude:
         monkeypatch.setattr(cc, "run_turn", self.run_turn)
         monkeypatch.setattr(cc, "session_exists", lambda sid, cwd: sid in self.sessions)
 
-    async def run_turn(self, blocks, *, cwd, model=None, resume=None, fork=False, resume_at=None, on_delta=None):
+    async def run_turn(
+        self, blocks, *, cwd, model=None, resume=None, fork=False, resume_at=None, on_delta=None, system_prompt=None
+    ):
         text = "\n".join(b.get("text", "") for b in blocks if b.get("text") != cc.READER_INSTRUCTIONS)
         self.calls.append({"text": text, "resume": resume, "fork": fork, "resume_at": resume_at})
+        self.options = (model, system_prompt)
         if "<book>" in text and self.fail_priming:
             raise cc.ClaudeError(self.fail_priming)
         if resume_at and resume_at not in self.uuids:
@@ -468,6 +500,32 @@ class FakeClaude:
         if on_delta:
             on_delta("ans")
         return cc.TurnResult(sid, "answer", message_uuid=f"u{self.n}")
+
+
+def test_chat_title_is_a_fresh_small_model_turn(monkeypatch, service, pdf_path):
+    fake = FakeClaude(monkeypatch)
+    svc, events = service
+    asyncio.run(svc.title(7, "why does it spin?", "The zorblatt spins.", "Because of torque."))
+    call = fake.calls[-1]
+    assert call["resume"] is None and fake.options == (cc.TITLE_MODEL, cc.TITLE_PROMPT)
+    assert "why does it spin?" in call["text"] and "The zorblatt spins." in call["text"]
+    assert events == [("titled", 7, "answer")]
+
+
+def test_chat_title_failure_is_silent(monkeypatch, service):
+    async def boom(*a, **kw):
+        raise cc.ClaudeError("offline")
+    monkeypatch.setattr(cc, "run_turn", boom)
+    svc, events = service
+    asyncio.run(svc.title(7, "q", "", "a"))
+    assert events == []
+
+
+def test_clean_title():
+    assert cc.clean_title('"Why the Zorblatt spins."\nextra') == "Why the Zorblatt spins"
+    assert cc.clean_title("**Title:** Torque and spin") == "Torque and spin"
+    assert cc.clean_title("# Spin") == "Spin"
+    assert len(cc.clean_title("word " * 40)) <= cc.TITLE_LENGTH
 
 
 def run_job(service, events, **kw):

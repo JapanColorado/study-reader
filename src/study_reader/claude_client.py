@@ -31,6 +31,15 @@ SYSTEM_PROMPT = (
     "Use Markdown, and LaTeX ($...$ or $$...$$) for math. You have no tools."
 )
 
+TITLE_PROMPT = (
+    "You name conversations for a list in a study app. Given a reader's first question about "
+    "a book (and the passage it is about) plus the start of the reply, write a short title, "
+    "3 to 7 words, naming the topic. Plain text in sentence case: no quotes, Markdown, or "
+    "final period. Reply with the title only."
+)
+TITLE_MODEL = "haiku"
+TITLE_LENGTH = 70
+
 # Sent with every question rather than in SYSTEM_PROMPT: a resumed or forked session
 # keeps the system prompt it was created with, so edits there never reach books
 # primed (or chats started) before the change.
@@ -190,12 +199,13 @@ def _prefer_subscription_login() -> None:
 
 
 def _options(
-    cwd: str | Path, model: str | None, resume: str | None, fork: bool, resume_at: str | None = None
+    cwd: str | Path, model: str | None, resume: str | None, fork: bool, resume_at: str | None = None,
+    system_prompt: str = SYSTEM_PROMPT,
 ) -> ClaudeAgentOptions:
     _prefer_subscription_login()
     Path(cwd).mkdir(parents=True, exist_ok=True)
     return ClaudeAgentOptions(
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         # No tools at all: tools=[] only drops the built-ins, so also shut out
         # MCP servers (including claude.ai connectors like Gmail/Drive, which
         # otherwise load from the account and add ~40k tokens of schemas).
@@ -224,6 +234,7 @@ async def run_turn(
     fork: bool = False,
     resume_at: str | None = None,
     on_delta: Callable[[str], None] | None = None,
+    system_prompt: str = SYSTEM_PROMPT,
 ) -> TurnResult:
     """Send one user message and return the reply, streaming text through on_delta.
 
@@ -242,7 +253,7 @@ async def run_turn(
     result: ResultMessage | None = None
     last_uuid: str | None = None
     try:
-        async for msg in query(prompt=prompt(), options=_options(cwd, model, resume, fork, resume_at)):
+        async for msg in query(prompt=prompt(), options=_options(cwd, model, resume, fork, resume_at, system_prompt)):
             if isinstance(msg, StreamEvent):
                 ev = msg.event
                 if ev.get("type") == "content_block_delta" and ev.get("delta", {}).get("type") == "text_delta":
@@ -273,3 +284,26 @@ async def prime_book(title: str, book_text: str, *, cwd: str | Path, model: str 
     res = await run_turn(priming_blocks(title, book_text), cwd=cwd, model=model)
     return res.session_id
 
+
+def clean_title(text: str) -> str:
+    """The first line of a title reply, without quotes, Markdown, or a final period."""
+    line = next((l for l in text.strip().splitlines() if l.strip()), "")
+    line = " ".join(line.strip().lstrip("#").replace("**", "").replace("`", "").split())
+    if line.lower().startswith("title:"):
+        line = line[6:].strip()
+    line = line.strip("\"'“”‘’*_ ").rstrip(".")
+    return line[:TITLE_LENGTH].strip()
+
+
+async def chat_title(question: str, passage: str, reply: str, *, cwd: str | Path) -> str:
+    """A short title for a chat from its first exchange, written by a small model
+    in a fresh session (no book context needed). Empty if nothing usable came back."""
+    parts = []
+    if passage:
+        parts.append(f"<passage>\n{passage[:600]}\n</passage>")
+    parts.append(f"<question>\n{question[:600]}\n</question>")
+    parts.append(f"<reply>\n{reply[:1500]}\n</reply>")
+    res = await run_turn(
+        [{"type": "text", "text": "\n".join(parts)}], cwd=cwd, model=TITLE_MODEL, system_prompt=TITLE_PROMPT,
+    )
+    return clean_title(res.text)

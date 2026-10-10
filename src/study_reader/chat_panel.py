@@ -59,6 +59,10 @@ class ChatPanel(QWidget):
         self.current_page = lambda: 0  # set by the main window
         self._pending: list[dict] = []
         self._streams: dict[int, str] = {}  # chat id -> reply text so far
+        # Chats still named after their first question (chat id -> that title): Claude names
+        # them after the first reply, unless they were renamed meanwhile.
+        self._untitled: dict[int, str] = {}
+        self._naming: dict[int, str] = {}
         self._status = ""
         self._editing: int | None = None  # id of the message being rewritten in the composer
         self._draft: tuple[str, list[dict]] | None = None  # composer contents set aside while editing
@@ -194,6 +198,7 @@ class ChatPanel(QWidget):
         worker.status.connect(self._on_status)
         worker.graded.connect(self._on_graded)
         worker.gradeFailed.connect(self._on_grade_failed)
+        worker.titled.connect(self._on_titled)
         self.set_book(None)
 
     # -- layout --------------------------------------------------------------------
@@ -388,7 +393,9 @@ class ChatPanel(QWidget):
             title = question if question != DEFAULT_QUESTION or not first else (
                 first["text"] or f"Screenshot, p. {first['page'] + 1}"
             )
-            self.chat_id = self.db.create_chat(self.book_id, " ".join(title.split())[:70], self._draft_model)
+            title = " ".join(title.split())[:70]
+            self.chat_id = self.db.create_chat(self.book_id, title, self._draft_model)
+            self._untitled[self.chat_id] = title
         prior = self.db.messages(self.chat_id)
         editing = self._editing
         if editing is not None:
@@ -644,6 +651,32 @@ class ChatPanel(QWidget):
         if self.db.chat(chat_id) is not None:
             self.db.update_chat(chat_id, session_id=session_id)
         self._finish(chat_id, "assistant", text, session_id, message_uuid or None)
+        self._name_chat(chat_id, text)
+
+    def _name_chat(self, chat_id: int, reply: str) -> None:
+        """Ask for a title once the chat's first reply is in."""
+        title = self._untitled.pop(chat_id, None)
+        messages = self.db.messages(chat_id) if title is not None and self.db.chat(chat_id) else []
+        first = next((m for m in messages if m["role"] == "user"), None)
+        if first is None:
+            return
+        passage = next((s["text"] for s in first["snippets"] if s["kind"] == "text" and s["text"]), "")
+        self._naming[chat_id] = title
+        self.worker.submit_title(chat_id, first["text"], passage, reply)
+
+    def _on_titled(self, chat_id: int, title: str) -> None:
+        chat = self.db.chat(chat_id)
+        if chat is None or chat["title"] != self._naming.pop(chat_id, None):  # gone, or renamed by hand
+            return
+        self.db.update_chat(chat_id, title=title)
+        # In place rather than _refresh_list, which would close a rename in progress.
+        self.chat_list.blockSignals(True)
+        for row in range(self.chat_list.count()):
+            item = self.chat_list.item(row)
+            if item.data(Qt.ItemDataRole.UserRole) == chat_id:
+                item.setText(title)
+                item.setToolTip(f"{title}\n\nDouble-click or F2 to rename")
+        self.chat_list.blockSignals(False)
 
     def _on_failed(self, chat_id: int, message: str) -> None:
         self._finish(chat_id, "error", f"Claude request failed: {message}")
