@@ -1,4 +1,4 @@
-"""SQLite persistence: library, chats, messages and their book snippets, notes."""
+"""SQLite persistence: library, chats, messages and their book snippets, notes, review cards."""
 
 from __future__ import annotations
 
@@ -83,6 +83,36 @@ CREATE TABLE IF NOT EXISTS notes (
     body TEXT NOT NULL DEFAULT '',  -- the note itself, Markdown with $math$
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cards (
+    id INTEGER PRIMARY KEY,
+    book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    -- The reply whose quiz holds the question; NULL once that reply is deleted (only cards
+    -- already reviewed outlive it, see delete_messages_from).
+    message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    quiz INTEGER NOT NULL,          -- which quiz fence of the reply (0-based)
+    question INTEGER NOT NULL,      -- 0-based
+    title TEXT NOT NULL,            -- the quiz's title
+    data TEXT NOT NULL,             -- JSON: the question, as quiz.py parses it
+    page INTEGER,                   -- 0-based page it draws on, if known
+    stage INTEGER NOT NULL DEFAULT 0, -- 0 new | fsrs.State: 1 learning, 2 review, 3 relearning
+    fsrs TEXT NOT NULL DEFAULT '',  -- JSON fsrs.Card ('' while new)
+    due REAL NOT NULL,              -- next due (new cards: when added)
+    reps INTEGER NOT NULL DEFAULT 0,
+    lapses INTEGER NOT NULL DEFAULT 0,
+    suspended INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    UNIQUE (message_id, quiz, question)
+);
+CREATE INDEX IF NOT EXISTS cards_due ON cards (book_id, suspended, stage, due);
+CREATE TABLE IF NOT EXISTS reviews (
+    id INTEGER PRIMARY KEY,
+    card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+    rating INTEGER NOT NULL,        -- 1 again | 2 hard | 3 good | 4 easy
+    source TEXT NOT NULL,           -- 'chat' (the first answer, in the quiz) | 'review'
+    response TEXT NOT NULL DEFAULT '', -- JSON, as in quiz_answers ('' if not answered, e.g. a flashcard)
+    verdict TEXT,                   -- 'correct' | 'partial' | 'incorrect' (NULL if self-rated)
+    reviewed_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
@@ -204,6 +234,7 @@ class Database:
 
     def delete_chat(self, chat_id: int) -> None:
         with self.conn:
+            self._drop_new_cards("SELECT id FROM messages WHERE chat_id=?", (chat_id,))
             self.conn.execute("DELETE FROM chats WHERE id=?", (chat_id,))
 
     # -- messages ------------------------------------------------------------
@@ -228,8 +259,10 @@ class Database:
         return cur.lastrowid
 
     def delete_messages_from(self, chat_id: int, message_id: int) -> None:
-        """Drop a message and everything after it in its chat (their snippets go too)."""
+        """Drop a message and everything after it in its chat (their snippets go too, and their
+        quizzes' cards that were never reviewed; reviewed ones stay in the deck)."""
         with self.conn:
+            self._drop_new_cards("SELECT id FROM messages WHERE chat_id=? AND id>=?", (chat_id, message_id))
             self.conn.execute("DELETE FROM messages WHERE chat_id=? AND id>=?", (chat_id, message_id))
 
     def messages(self, chat_id: int) -> list[dict]:
@@ -344,6 +377,85 @@ class Database:
     def clear_calculations(self, book_id: int) -> None:
         with self.conn:
             self.conn.execute("DELETE FROM calculations WHERE book_id=?", (book_id,))
+
+    # -- review cards ----------------------------------------------------------
+    def _drop_new_cards(self, messages_sql: str, args: tuple) -> None:
+        self.conn.execute(f"DELETE FROM cards WHERE reps=0 AND message_id IN ({messages_sql})", args)
+
+    def add_card(
+        self, book_id: int, message_id: int | None, quiz: int, question: int, title: str, data: str,
+        page: int | None, now: float,
+    ) -> int | None:
+        """A new card for a quiz question; None if the question has one already."""
+        with self.conn:
+            cur = self.conn.execute(
+                "INSERT OR IGNORE INTO cards (book_id, message_id, quiz, question, title, data, page, due, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (book_id, message_id, quiz, question, title, data, page, now, now),
+            )
+        return cur.lastrowid if cur.rowcount else None
+
+    def card(self, card_id: int) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM cards WHERE id=?", (card_id,)).fetchone()
+
+    def card_for(self, message_id: int, quiz: int, question: int) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM cards WHERE message_id=? AND quiz=? AND question=?", (message_id, quiz, question)
+        ).fetchone()
+
+    def quiz_cards(self, message_id: int, quiz: int) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM cards WHERE message_id=? AND quiz=? ORDER BY question", (message_id, quiz)
+        ).fetchall()
+
+    def cards(self, book_id: int | None = None, where: str = "1", args: tuple = (), order: str = "id",
+              limit: int = -1) -> list[sqlite3.Row]:
+        """Cards of a book (or of every book), filtered by a SQL condition."""
+        scope = "book_id=? AND " if book_id is not None else ""
+        return self.conn.execute(
+            f"SELECT * FROM cards WHERE {scope}({where}) ORDER BY {order} LIMIT ?",
+            ((book_id,) if book_id is not None else ()) + args + (limit,),
+        ).fetchall()
+
+    def count_cards(self, book_id: int | None = None, where: str = "1", args: tuple = ()) -> int:
+        scope = "book_id=? AND " if book_id is not None else ""
+        return self.conn.execute(
+            f"SELECT COUNT(*) FROM cards WHERE {scope}({where})", ((book_id,) if book_id is not None else ()) + args
+        ).fetchone()[0]
+
+    def record_review(
+        self, card_id: int, rating: int, source: str, response: str, verdict: str | None, at: float, **card_fields,
+    ) -> None:
+        """Log a review and store the card's new schedule."""
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO reviews (card_id, rating, source, response, verdict, reviewed_at) VALUES (?,?,?,?,?,?)",
+                (card_id, rating, source, response, verdict, at),
+            )
+        self._update("cards", card_id, card_fields)
+
+    def reviews(self, card_id: int) -> list[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM reviews WHERE card_id=? ORDER BY id", (card_id,)).fetchall()
+
+    def new_cards_reviewed_since(self, since: float) -> int:
+        """Cards, in any book, whose first review was in review (not the chat) after `since`."""
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM reviews r WHERE r.source='review' AND r.reviewed_at>=? "
+            "AND NOT EXISTS (SELECT 1 FROM reviews p WHERE p.card_id=r.card_id AND p.id<r.id)", (since,),
+        ).fetchone()[0]
+
+    def update_card(self, card_id: int, **fields) -> None:
+        self._update("cards", card_id, fields)
+
+    def set_quiz_suspended(self, message_id: int, quiz: int, suspended: bool) -> None:
+        with self.conn:
+            self.conn.execute(
+                "UPDATE cards SET suspended=? WHERE message_id=? AND quiz=?", (int(suspended), message_id, quiz)
+            )
+
+    def delete_card(self, card_id: int) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM cards WHERE id=?", (card_id,))
 
     # -- settings ------------------------------------------------------------
     def get_setting(self, key: str, default: str = "") -> str:

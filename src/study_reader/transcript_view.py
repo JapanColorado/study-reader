@@ -40,6 +40,7 @@ class _Page(QWebEnginePage):
     edit = Signal(int)
     regenerate = Signal(int)
     page = Signal(int)
+    quiz = Signal(int)
 
     def acceptNavigationRequest(self, url: QUrl, nav_type, is_main_frame: bool) -> bool:
         if not is_main_frame:  # a visualization's iframe: only its own srcdoc
@@ -49,6 +50,7 @@ class _Page(QWebEnginePage):
             return False
         actions = {
             "jump": self.jump, "viz": self.openViz, "edit": self.edit, "regen": self.regenerate, "page": self.page,
+            "quiz": self.quiz,
         }
         if url.scheme() in actions:
             if (n := _url_id(url)) is not None:
@@ -79,15 +81,21 @@ class _QuizBridge(QObject):
     def regrade(self, message_id: int, quiz: int, question: int) -> None:
         self.view.quizRegrade.emit(message_id, quiz, question)
 
+    @Slot(int, int)
+    def toggleReview(self, message_id: int, quiz: int) -> None:
+        self.view.quizReviewToggled.emit(message_id, quiz)
+
 
 class TranscriptView(QWebEngineView):
     jumpRequested = Signal(int)  # snippet id
     pageRequested = Signal(int)  # 0-based page, from a quiz question's page link
     editRequested = Signal(int)  # message id
     regenerateRequested = Signal(int)  # message id
+    quizRequested = Signal(int)  # message id: quiz me on this reply
     quizAnswered = Signal(int, int, int, str)  # message id, quiz, question, response JSON
     quizRetake = Signal(int, int)  # message id, quiz
     quizRegrade = Signal(int, int, int)  # message id, quiz, question (its grading failed)
+    quizReviewToggled = Signal(int, int)  # message id, quiz: put its cards in or out of review
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -96,6 +104,7 @@ class TranscriptView(QWebEngineView):
         page.page.connect(self.pageRequested)
         page.edit.connect(self.editRequested)
         page.regenerate.connect(self.regenerateRequested)
+        page.quiz.connect(self.quizRequested)
         page.openViz.connect(self._open_viz)
         self.setPage(page)
         self.channel = QWebChannel(page)

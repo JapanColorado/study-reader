@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QStyledItemDelegate, QVBoxLayout, QWidget,
 )
 
+from . import srs
 from .db import Database
 from .theme import icon, rounded, theme
 
@@ -111,6 +112,7 @@ class LibraryView(QWidget):
     browseRequested = Signal()
     webRequested = Signal()
     refetchRequested = Signal(int)  # a web snapshot to replace with a fresh copy
+    reviewRequested = Signal()  # review every book's cards
 
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
@@ -130,10 +132,15 @@ class LibraryView(QWidget):
         top.addWidget(title)
         top.addSpacing(8)
         top.addWidget(self.count)
+        self.review = QPushButton("Review")
+        self.review.setIcon(icon("cards"))
+        self.review.setToolTip("Review the cards from every book's quizzes")
+        self.review.clicked.connect(self.reviewRequested)
         web = QPushButton("Open web page…")
         web.setIcon(icon("globe"))
         web.clicked.connect(self.webRequested)
         top.addStretch()
+        top.addWidget(self.review)
         top.addWidget(web)
         top.addWidget(browse)
 
@@ -200,8 +207,14 @@ class LibraryView(QWidget):
                 for b in finished:
                     self._add_book(b)
         self.count.setText(f"{len(books)} book{'s' * (len(books) != 1)}" if books else "")
+        self.set_review_counts(srs.counts(self.db, None))
         self.list.setVisible(bool(books))
         self.empty.setVisible(not books)
+
+    def set_review_counts(self, counts: dict) -> None:
+        waiting = counts["due"] + counts["new"]
+        self.review.setText(f"Review · {waiting}" if waiting else "Review")
+        self.review.setVisible(counts["total"] > 0)
 
     def _add_book(self, b) -> None:
         chats = len(self.db.chats(b["id"]))

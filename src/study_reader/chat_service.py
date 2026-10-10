@@ -75,7 +75,8 @@ class ChatService:
     """Events are reported through emit(name, *args):
     status(book_id, text), base(book_id, session_id, mode), delta(chat_id, text),
     done(chat_id, session_id, text, message_uuid), failed(chat_id, message),
-    and for quiz grading graded(answer_id, text), gradeFailed(answer_id, message)."""
+    for quiz grading graded(answer_id, text), gradeFailed(answer_id, message), and for grading
+    a card in review cardGraded(card_id, text), cardGradeFailed(card_id, message)."""
 
     def __init__(self, emit: Callable[..., None], sessions_dir: str | Path):
         self.emit = emit
@@ -138,8 +139,10 @@ class ChatService:
         except Exception as e:
             self.emit("failed", job.chat_id, str(e) or type(e).__name__)
 
-    async def grade(self, job: Job, answer_id: int) -> None:
-        """Ask Claude to grade a quiz answer, as a detached turn from the quiz's reply."""
+    async def grade(self, job: Job, answer_id: int, card: bool = False) -> None:
+        """Ask Claude to grade a quiz answer, as a detached turn from the quiz's reply.
+        card: answer_id is a review card's id, and the events are cardGraded / cardGradeFailed."""
+        graded, failed = ("cardGraded", "cardGradeFailed") if card else ("graded", "gradeFailed")
         try:
             try:
                 res = await self._turn(job, job.chat_session_id, None)
@@ -147,9 +150,9 @@ class ChatService:
                 if not job.chat_session_id:
                     raise
                 res = await self._turn(job, None, None)
-            self.emit("graded", answer_id, res.text)
+            self.emit(graded, answer_id, res.text)
         except Exception as e:
-            self.emit("gradeFailed", answer_id, str(e) or type(e).__name__)
+            self.emit(failed, answer_id, str(e) or type(e).__name__)
 
     async def _turn(self, job: Job, chat_session_id: str | None, on_delta) -> cc.TurnResult:
         cwd = self.cwd(job.book.id)
@@ -187,6 +190,8 @@ class ChatWorker(QObject):
     failed = Signal(int, str)
     graded = Signal(int, str)
     gradeFailed = Signal(int, str)
+    cardGraded = Signal(int, str)
+    cardGradeFailed = Signal(int, str)
 
     def __init__(self, sessions_dir: str | Path, parent: QObject | None = None):
         super().__init__(parent)
@@ -206,6 +211,9 @@ class ChatWorker(QObject):
 
     def submit_grade(self, job: Job, answer_id: int) -> None:
         asyncio.run_coroutine_threadsafe(self.service.grade(job, answer_id), self.loop)
+
+    def submit_card_grade(self, job: Job, card_id: int) -> None:
+        asyncio.run_coroutine_threadsafe(self.service.grade(job, card_id, card=True), self.loop)
 
     def shutdown(self) -> None:
         self.loop.call_soon_threadsafe(self.loop.stop)

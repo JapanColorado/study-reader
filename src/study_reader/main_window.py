@@ -1,4 +1,4 @@
-"""Main window: table of contents | reader or library | chats, calculator or notes."""
+"""Main window: table of contents | reader, library or review | chats, calculator, notes or review."""
 
 from __future__ import annotations
 
@@ -8,12 +8,12 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
+    QApplication, QDialog, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
     QProgressDialog, QPushButton, QSizePolicy, QSpinBox, QSplitter, QStackedWidget, QToolBar, QToolButton,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import quiz
+from . import quiz, srs
 from .calculator import CalculatorPanel
 from .chat_panel import MODELS, ChatPanel
 from .chat_service import ChatWorker
@@ -22,6 +22,7 @@ from .document import Document, file_hash
 from .library_view import LibraryView
 from .notes import NotesPanel
 from .reader_view import ReaderView
+from .review import ReviewPanel
 from .theme import MODES, icon, theme
 from .web_import import WebImportError, normalize_url
 from .web_render import WebImporter
@@ -35,6 +36,7 @@ class MainWindow(QMainWindow):
         self.db = db or Database()
         theme().configure(self.db.get_setting("theme", "system"), self.db.get_setting("dark_pages") == "1")
         self.worker = ChatWorker(data_dir() / "sessions", self)
+        srs.backfill(self.db)  # once: cards for quizzes from before there were cards
         self.doc: Document | None = None
         self.book_id: int | None = None
 
@@ -52,15 +54,18 @@ class MainWindow(QMainWindow):
 
         self.reader = ReaderView()
         self.library = LibraryView(self.db)
+        self.review_all = ReviewPanel(self.db, self.worker, all_books=True)  # every book's cards, from the library
         self.center = QStackedWidget()
         self.center.addWidget(self.library)
         self.center.addWidget(self.reader)
+        self.center.addWidget(self.review_all)
         self.chat = ChatPanel(self.db, self.worker)
         self.chat.current_page = self.reader.current_page
         self.calc = CalculatorPanel(self.db)
         self.notes = NotesPanel(self.db)
-        self.right = QStackedWidget()  # chats, the calculator and notes take turns in the same slot
-        for w in (self.chat, self.calc, self.notes):
+        self.review = ReviewPanel(self.db, self.worker)
+        self.right = QStackedWidget()  # chats, the calculator, notes and review take turns in the same slot
+        for w in (self.chat, self.calc, self.notes, self.review):
             self.right.addWidget(w)
 
         split = QSplitter()
@@ -76,6 +81,7 @@ class MainWindow(QMainWindow):
         self.library.browseRequested.connect(self.browse)
         self.library.webRequested.connect(self.ask_url)
         self.library.refetchRequested.connect(self.refetch)
+        self.library.reviewRequested.connect(self.show_review_all)
         self.web = WebImporter(data_dir() / "web", self)
         self.web.status.connect(lambda text: self._web_progress and self._web_progress.setLabelText(text))
         self.web.finished.connect(self._on_web_done)
@@ -93,6 +99,11 @@ class MainWindow(QMainWindow):
         self.reader.zoomChanged.connect(lambda z: self.zoom_label.setText(f"{round(z * 100)}%"))
         self.chat.jumpRequested.connect(self.reader.flash)
         self.chat.pageRequested.connect(self.reader.go_to)
+        self.chat.cardsChanged.connect(self._on_cards_changed)
+        for panel in (self.review, self.review_all):
+            panel.countsChanged.connect(self._on_cards_changed)
+            panel.sourceRequested.connect(self._review_source)
+            panel.chatRequested.connect(self._review_chat)
         theme().changed.connect(self._on_theme_changed)
         self._on_theme_changed()
 
@@ -178,11 +189,12 @@ class MainWindow(QMainWindow):
         action("Add to current chat", "Ctrl+Shift+Return", lambda: self.reader.choose(False))
         add_note = action("Add note", "Ctrl+Shift+N", self.reader.choose_note)
         self.book_actions = [
-            zoom_out, zoom_in, fit, self.crop_action, self.region_action, self.quiz_action, self.finished_action, new_chat,
-            add_note,
+            zoom_out, zoom_in, fit, self.crop_action, self.region_action, self.quiz_action,
+            self.finished_action, new_chat, add_note,
         ]
         self.book_items = book_items + [
-            zoom_out, zoom_in, fit, self.crop_action, self.region_action, self.quiz_action, self.finished_action,
+            zoom_out, zoom_in, fit, self.crop_action, self.region_action, self.quiz_action,
+            self.finished_action,
         ]
 
         spacer = QWidget()
@@ -212,6 +224,7 @@ class MainWindow(QMainWindow):
             a.setChecked(self.chat.default_model() == value)
             a.triggered.connect(lambda _=False, v=value: self.chat.set_default_model(v))
             group.addAction(a)
+        menu.addAction(icon("cards"), "New review cards per day…").triggered.connect(self._set_new_per_day)
         settings = QToolButton()
         settings.setIcon(icon("settings"))
         settings.setToolTip("Settings")
@@ -219,6 +232,8 @@ class MainWindow(QMainWindow):
         settings.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         bar.addWidget(settings)
 
+        self.review_action = action("Review", "F8", lambda on: self._toggle_right("review", on), "cards", checkable=True)
+        bar.addAction(self.review_action)
         self.notes_action = action("Notes", "F12", lambda on: self._toggle_right("notes", on), "note", checkable=True)
         bar.addAction(self.notes_action)
         self.calc_action = action("Calculator", "F11", lambda on: self._toggle_right("calc", on), "calculator", checkable=True)
@@ -231,6 +246,7 @@ class MainWindow(QMainWindow):
             "chat": (self.chat_action, self.chat),
             "calc": (self.calc_action, self.calc),
             "notes": (self.notes_action, self.notes),
+            "review": (self.review_action, self.review),
         }
 
     # -- appearance ---------------------------------------------------------------
@@ -256,6 +272,9 @@ class MainWindow(QMainWindow):
         self._save_panels()
         if on and name == "calc" and self.right.isVisible():
             self.calc.focus_input()
+        if on and name == "review" and self.right.isVisible():
+            self.review.refresh()
+            self.review.focus()
 
     def _set_finished(self, on: bool) -> None:
         if self.book_id is not None:
@@ -291,6 +310,8 @@ class MainWindow(QMainWindow):
         self.chat.set_book(None)
         self.calc.set_book(None)
         self.notes.set_book(None)
+        self.review.set_book(None)
+        self.review_all.stop()
         self.library.refresh()
         self.center.setCurrentWidget(self.library)
         self._set_book_ui(False)
@@ -436,6 +457,8 @@ class MainWindow(QMainWindow):
         self.chat.set_book(self.book_id)
         self.calc.set_book(self.book_id)
         self.notes.set_book(self.book_id)
+        self.review.set_book(self.book_id)
+        self._update_review_counts()
         self._refresh_highlights()
         return True
 
@@ -510,6 +533,59 @@ class MainWindow(QMainWindow):
     def _quiz_on(self, snippet: dict) -> None:
         question, title = quiz.snippet_request(snippet)
         self._show_chat(lambda: self.chat.start_quiz(question, title, snippet["page"], snippet))
+
+    # -- review ---------------------------------------------------------------------
+    def show_review_all(self) -> None:
+        """Review every book's cards, in the center in place of the library."""
+        self.show_library()
+        self.center.setCurrentWidget(self.review_all)
+        self.setWindowTitle("Review — Study Reader")
+        self.review_all.refresh()
+        self.review_all.focus()
+
+    def _on_cards_changed(self) -> None:
+        for panel in (self.review, self.review_all):
+            if panel.card_id is None:  # a card being answered stays put
+                panel.refresh()
+        self._update_review_counts()
+
+    def _update_review_counts(self) -> None:
+        c = srs.counts(self.db, self.book_id) if self.book_id is not None else None
+        waiting = c["due"] + c["new"] if c else 0
+        self.review_action.setToolTip(
+            f"Review (F8) · {waiting} card{'s' * (waiting != 1)} to review" if c else "Review (F8)"
+        )
+        self.library.set_review_counts(srs.counts(self.db, None))
+
+    def _review_source(self, book_id: int, page: int) -> None:
+        """A card's page: in the open book, or the book opened with its Review panel."""
+        if book_id != self.book_id and not self._open_book_id(book_id):
+            return
+        if not self.review_action.isChecked():
+            self.review_action.trigger()
+        if page >= 0:
+            self.reader.go_to(page)
+
+    def _review_chat(self, book_id: int, chat_id: int) -> None:
+        if book_id != self.book_id and not self._open_book_id(book_id):
+            return
+        self._show_chat(lambda: self.chat.open_chat(chat_id))
+
+    def _open_book_id(self, book_id: int) -> bool:
+        book = self.db.book(book_id)
+        if book is None or not os.path.exists(book["path"]):
+            self._warn("Could not open book", f"The book's file is missing:\n{book['path'] if book else book_id}")
+            return False
+        return self.open_book(book["path"], remember_dir=False)
+
+    def _set_new_per_day(self) -> None:
+        n, ok = QInputDialog.getInt(
+            self, "New review cards per day", "Cards never reviewed before, introduced per day across all books:",
+            srs.new_per_day(self.db), 0, 9999,
+        )
+        if ok:
+            self.db.set_setting(srs.NEW_PER_DAY_SETTING, str(n))
+            self._on_cards_changed()
 
     def _show_chat(self, then) -> None:
         if not self.chat_action.isChecked():

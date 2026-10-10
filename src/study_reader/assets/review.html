@@ -1,0 +1,196 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="katex/katex.min.css">
+<link rel="stylesheet" href="quiz.css">
+<script src="katex/katex.min.js"></script>
+<script src="markdown-it.min.js"></script>
+<script src="markdown.js"></script>
+<script src="mathlive/mathlive.min.js"></script>
+<script src="mathfield.js"></script>
+<script src="quiz.js"></script>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<style>
+  /* Fallbacks; the app sets these from theme.py. */
+  :root { --surface:#fbfaf8; --raised:#ffffff; --fg:#1f1e1c; --muted:#6b6862; --faint:#a19d95; --border:#dedad2;
+          --hover:#ebe8e1; --accent:#b8562f; --accent-fg:#ffffff; --accent-soft:#f4e2d8; --code:#f1eee8; --scroll:#cfcac1;
+          --user:#efece6; --error:#c0392b; --success:#3a8f5c; --warning:#b8860b; }
+  html, body { margin:0; background:var(--surface); color:var(--fg); font:14.5px/1.6 system-ui, sans-serif; }
+  ::selection { background:var(--accent-soft); }
+  ::-webkit-scrollbar { width:11px; height:11px; }
+  ::-webkit-scrollbar-thumb { background:var(--scroll); border-radius:3px; border:3px solid transparent; background-clip:padding-box; }
+  ::-webkit-scrollbar-thumb:hover { background-color:var(--faint); }
+  #root { max-width:680px; margin:0 auto; padding:6px 4px 28px; overflow-wrap:anywhere; }
+  h1 { font-size:1.15em; margin:0 0 12px; }
+  .stats { display:flex; gap:8px; margin:0 0 14px; }
+  .stat { flex:1; background:var(--raised); border:1px solid var(--border); border-radius:10px; padding:8px 10px; }
+  .stat .n { font-size:1.6em; font-weight:650; line-height:1.2; }
+  .stat .l { font-size:12px; color:var(--muted); }
+  .stat.due .n { color:var(--accent); } .stat.new .n { color:var(--success); }
+  .start { display:block; width:100%; font:inherit; font-weight:600; padding:9px; border-radius:9px; cursor:pointer;
+           border:1px solid var(--accent); background:var(--accent); color:var(--accent-fg); }
+  .start:hover { filter:brightness(1.08); }
+  .msg { color:var(--muted); text-align:center; margin:18px auto; line-height:1.5; }
+  .msg strong { color:var(--fg); }
+  .hint { color:var(--muted); font-size:12.5px; margin-top:18px; line-height:1.5; }
+  .hint kbd, .keys kbd { font:inherit; font-size:11px; padding:0 4px; border:1px solid var(--border); border-radius:4px; background:var(--code); }
+  .empty svg { display:block; margin:30px auto 12px; width:36px; height:36px; stroke:var(--faint); fill:none;
+               stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
+  .bar { display:flex; align-items:center; gap:4px; font-size:12px; color:var(--muted); margin-bottom:8px; }
+  .bar .grow { flex:1; }
+  .bar a { color:var(--muted); text-decoration:none; padding:1px 7px; border-radius:5px; }
+  .bar a:hover { color:var(--fg); background:var(--hover); }
+  .bar .count { font-weight:600; }
+  .bar .count .due { color:var(--accent); } .bar .count .new { color:var(--success); }
+  .card { background:var(--raised); border:1px solid var(--border); border-radius:12px; overflow:hidden; }
+  .card .q { border-bottom:none; padding:12px 14px 14px; }
+  .card .q-meta { flex-wrap:wrap; gap:4px 8px; }
+  .card .q-meta .tag { color:var(--success); }
+  .card .q-meta .book { color:var(--fg); }
+  .card .q-meta .src { white-space:nowrap; }
+  .keys { font-size:11.5px; color:var(--faint); margin-top:6px; text-align:center; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+// The app picks the cards and schedules them (srs.py); this page shows the overview or one card,
+// and sends answers, ratings and actions back through the web channel.
+let bridge = null;
+new QWebChannel(qt.webChannelTransport, channel => { bridge = channel.objects.review; });
+
+const CARDS_ICON = `<svg viewBox="0 0 24 24"><rect width="14" height="16" x="7" y="5" rx="2"/><path d="M4 16V5a2 2 0 0 1 2-2h9"/></svg>`;
+let CARD = null;  // the card on display, as the app sent it; null on the overview
+
+function setTheme(colors, dark) {
+  const root = document.documentElement;
+  root.dataset.theme = dark ? "dark" : "light";
+  for (const [k, v] of Object.entries(colors)) root.style.setProperty(`--${k.replace(/_/g, "-")}`, v);
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+function showOverview(o) {
+  CARD = null;
+  const root = document.getElementById("root");
+  if (o.disabled) { root.innerHTML = ""; return; }
+  const how = `Every question in a quiz Claude writes becomes a review card. Choose <em>Quiz me</em>
+    (<kbd>Ctrl+Shift+Q</kbd>) on a selection or the section you're reading, or under one of
+    Claude's replies.`;
+  if (!o.total) {
+    root.innerHTML = `<div class="empty">${CARDS_ICON}<div class="msg">No review cards ${o.all ? "yet" : "for this book yet"}.</div></div>`
+      + `<div class="hint">${how}</div>`;
+    return;
+  }
+  let html = `<h1>${o.all ? "Review all books" : "Review"}</h1><div class="stats">`
+    + `<div class="stat due"><div class="n">${o.due}</div><div class="l">due</div></div>`
+    + `<div class="stat new"><div class="n">${o.new}</div><div class="l">new today${o.new_total > o.new ? ` · ${o.new_total} waiting` : ""}</div></div>`
+    + `<div class="stat"><div class="n">${o.total}</div><div class="l">cards${o.suspended ? ` · ${o.suspended} suspended` : ""}</div></div></div>`;
+  if (o.reviewed) html += `<div class="msg"><strong>${plural(o.reviewed, "card")} reviewed.</strong></div>`;
+  if (o.ready) html += `<button class="start" data-act="start">${o.reviewed ? "Keep going" : "Start review"}</button>`
+    + `<div class="keys"><kbd>Space</kbd> to start</div>`;
+  else html += `<div class="msg">All caught up${o.next ? ` — the next card is due ${esc(o.next)}` : ""}.`
+    + (o.new_total > o.new ? `<br>Today's ${o.new_per_day} new cards are done; more tomorrow.` : "") + `</div>`;
+  root.innerHTML = html + `<div class="hint">${how}</div>`;
+}
+
+function showCard(c) {
+  CARD = c;
+  const q = c.question, a = c.answer;
+  const meta = [
+    c.new ? `<span class="tag">New</span>` : "",
+    c.book ? `<span class="book">${esc(c.book)}</span>` : "",
+    `<span>${esc(c.title)}</span>`,
+    c.page !== null ? `<a class="src" href="#" data-act="source" title="Show this page in the book">p. ${c.page + 1}</a>` : "",
+    c.chat ? `<a class="src" href="#" data-act="chat" title="Open the chat the quiz is in">Open chat</a>` : "",
+  ].filter(Boolean).join("<span>·</span>");
+  const freeActions = `<div class="submit-row"><span class="grow">Ctrl+Enter to grade</span>`
+    + `<button class="qbtn quiet" data-act="show">Show answer</button><button class="qbtn" data-act="free">Grade with Claude</button></div>`;
+  let html = `<div class="bar"><a href="#" data-act="stop" title="Back to the overview">← Overview</a><span class="grow"></span>`
+    + `<span class="count"><span class="due">${c.remaining.due}</span> due · <span class="new">${c.remaining.new}</span> new</span>`
+    + `<a href="#" data-act="skip" title="Show another card first">Skip</a>`
+    + `<a href="#" data-act="suspend" title="Leave this card out of review (the quiz's “In review” toggle brings it back)">Suspend</a>`
+    + `<a href="#" data-act="delete" title="Delete this card and its history">Delete</a></div>`;
+  html += `<div class="card">${questionHtml(q, a || undefined, { meta, freeActions, openAnswer: true })}`;
+  html += `</div>`;
+  if (c.previews) {
+    html += `<div class="submit-row" style="margin-top:12px">How well did you know it?</div>${ratingRow(c.previews, c.suggested)}`
+      + `<div class="keys"><kbd>1</kbd>–<kbd>4</kbd> to rate · <kbd>Space</kbd> for ${RATING_LABELS[c.suggested || 3]}</div>`;
+  } else if (q.type === "flashcard" && !a) {
+    html += `<div class="keys"><kbd>Space</kbd> to show the answer</div>`;
+  }
+  const root = document.getElementById("root");
+  root.innerHTML = html;
+  setupMathFields(root, qEl => answer("numeric", qEl));
+  window.scrollTo(0, 0);
+  const field = root.querySelector("math-field, textarea.free");
+  if (field) field.focus();
+}
+
+function answer(act, qEl, button) {
+  if (!CARD || !bridge || qEl.classList.contains("busy")) return;
+  const q = CARD.question;
+  if (act === "reveal") { bridge.check(CARD.id, "{}"); return; }
+  if (act === "show") {
+    const area = qEl.querySelector("textarea");
+    bridge.check(CARD.id, JSON.stringify({ text: area ? area.value.trim() : "" }));
+    return;
+  }
+  if (act === "free" || act === "regrade") {
+    const text = act === "regrade" ? (CARD.answer && CARD.answer.response.text) || "" : qEl.querySelector("textarea").value.trim();
+    if (text) bridge.claude(CARD.id, text);
+    return;
+  }
+  const response = readResponse(q, qEl, act, button);
+  if (!response) return;
+  qEl.classList.add("busy");
+  bridge.check(CARD.id, JSON.stringify(response));
+}
+
+// From the app: an answer it couldn't read; the input stays.
+function inputError(cardId, error) {
+  const q = CARD && CARD.id === cardId ? document.querySelector(".card .q") : null;
+  if (!q) return;
+  q.classList.remove("busy");
+  const el = q.querySelector(".q-error");
+  if (el) el.textContent = error;
+}
+
+document.addEventListener("click", ev => {
+  const target = ev.target.closest("[data-act]");
+  if (!target || target.disabled || !bridge) return;
+  if (target.tagName === "A") ev.preventDefault();
+  const act = target.dataset.act;
+  if (act === "start") bridge.start();
+  else if (act === "stop") bridge.stop();
+  else if (!CARD) return;
+  else if (act === "rate") bridge.rate(CARD.id, +target.dataset.k);
+  else if (["source", "chat", "skip", "suspend", "delete"].includes(act)) bridge.act(CARD.id, act);
+  else answer(act, target.closest(".q"), target);
+});
+
+document.addEventListener("keydown", ev => {
+  if (!bridge || ev.ctrlKey && ev.key !== "Enter" || ev.altKey || ev.metaKey) return;
+  const typing = ev.target.matches && ev.target.matches("textarea, input, math-field");
+  if (typing) {
+    if (ev.key === "Enter" && ev.ctrlKey && ev.target.matches("textarea.free")) {
+      ev.preventDefault();
+      answer("free", ev.target.closest(".q"));
+    }
+    return;
+  }
+  const go = () => ev.preventDefault();
+  if (!CARD) {
+    if ((ev.key === " " || ev.key === "Enter") && document.querySelector("[data-act=start]")) { go(); bridge.start(); }
+    return;
+  }
+  if (CARD.previews && "1234".includes(ev.key) && ev.key.length === 1) { go(); bridge.rate(CARD.id, +ev.key); }
+  else if (ev.key === " " || ev.key === "Enter") {
+    if (CARD.previews) { go(); bridge.rate(CARD.id, CARD.suggested || 3); }
+    else if (CARD.question.type === "flashcard" && !CARD.answer) { go(); bridge.check(CARD.id, "{}"); }
+  }
+});
+</script>
+</body>
+</html>

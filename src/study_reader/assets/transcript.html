@@ -3,11 +3,13 @@
 <head>
 <meta charset="utf-8">
 <link rel="stylesheet" href="katex/katex.min.css">
+<link rel="stylesheet" href="quiz.css">
 <script src="katex/katex.min.js"></script>
 <script src="markdown-it.min.js"></script>
 <script src="markdown.js"></script>
 <script src="mathlive/mathlive.min.js"></script>
 <script src="mathfield.js"></script>
+<script src="quiz.js"></script>
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 <style>
   /* Fallbacks; the app sets these from theme.py on every render. */
@@ -57,7 +59,8 @@
   .viz.pending { padding:14px 12px; color:var(--muted); font-size:13px; }
   .actions { display:flex; gap:2px; margin:-12px 0 14px; font-size:12px; }
   .actions.user { justify-content:flex-end; margin:-15px 0 4px; opacity:0; transition:opacity .12s; }
-  .turn:hover .actions.user, .actions.user:focus-within { opacity:1; }
+  .actions.reply { opacity:0; transition:opacity .12s; }
+  .turn:hover .actions.user, .actions.user:focus-within, .turn:hover .actions.reply, .actions.reply:focus-within { opacity:1; }
   .actions a { display:inline-flex; align-items:center; gap:4px; color:var(--muted); text-decoration:none;
                padding:2px 7px; border-radius:6px; }
   .actions a:hover { color:var(--fg); background:var(--code); }
@@ -70,68 +73,12 @@
                background:var(--code); font-size:12px; color:var(--muted); }
   .quiz-head .title { flex:1; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .quiz-broken { padding:10px 12px; color:var(--muted); font-size:13px; }
-  .q { padding:10px 12px 12px; border-bottom:1px solid var(--border); }
-  .q-meta { display:flex; gap:8px; font-size:11px; font-weight:600; color:var(--muted); margin-bottom:4px; }
-  .q-meta a { color:var(--accent); text-decoration:none; font-weight:600; }
-  .q-meta a:hover { text-decoration:underline; }
-  .q-text > :first-child { margin-top:0; } .q-text > :last-child { margin-bottom:0; }
-  .choices { display:flex; flex-direction:column; gap:5px; margin-top:8px; }
-  .choices.tf { flex-direction:row; }
-  .choice { display:flex; align-items:baseline; gap:9px; text-align:left; padding:6px 10px; font:inherit; color:var(--fg);
-            background:var(--raised); border:1px solid var(--border); border-radius:8px; cursor:pointer; }
-  .choices.tf .choice { flex:1; justify-content:center; }
-  .choices.tf .c-text { flex:none; }
-  .choice:hover:not(:disabled) { border-color:var(--accent); background:var(--accent-soft); }
-  .choice:disabled { cursor:default; }
-  .choice .letter { flex:none; font-size:12px; font-weight:700; color:var(--muted); }
-  .choice .c-text { flex:1; min-width:0; }
-  .choice.right { border-color:var(--success); box-shadow:inset 0 0 0 1px var(--success); }
-  .choice.right .letter { color:var(--success); }
-  .choice.wrong { border-color:var(--error); box-shadow:inset 0 0 0 1px var(--error); }
-  .choice.wrong .letter { color:var(--error); }
-  .choice.dim { opacity:0.55; }
-  .answer-row { display:flex; align-items:center; gap:8px; margin-top:8px; }
-  .answer-row math-field { flex:1; min-width:0; font-size:1.1em; padding:3px 8px; background:var(--raised); color:var(--fg);
-               border:1px solid var(--border); border-radius:8px; outline:none;
-               --caret-color:var(--accent); --selection-background-color:var(--accent-soft); --selection-color:var(--fg);
-               --contains-highlight-background-color:transparent; --primary:var(--accent);
-               --highlight-text:transparent; --text-highlight-background-color:var(--accent-soft); --smart-fence-color:var(--faint); }
-  .answer-row math-field:focus-within { border-color:var(--accent); }
-  math-field::part(virtual-keyboard-toggle), math-field::part(menu-toggle) { display:none; }
-  .unit { color:var(--muted); }
-  textarea.free { display:block; width:100%; box-sizing:border-box; margin-top:8px; padding:7px 9px; resize:vertical;
-                  font:inherit; color:var(--fg); background:var(--raised); border:1px solid var(--border); border-radius:8px; outline:none; }
-  textarea.free:focus { border-color:var(--accent); }
-  .submit-row { display:flex; align-items:center; gap:8px; margin-top:6px; font-size:12px; color:var(--faint); }
-  .submit-row .grow { flex:1; }
-  .qbtn { font:inherit; font-size:12.5px; padding:4px 12px; border-radius:7px; cursor:pointer; border:1px solid var(--accent);
-          background:var(--accent); color:var(--accent-fg); }
-  .qbtn:hover { filter:brightness(1.08); }
-  .qbtn.quiet { background:transparent; color:var(--accent); border-color:var(--border); }
-  .qbtn.quiet:hover { background:var(--accent-soft); filter:none; }
-  .q.busy .qbtn, .q.busy .choice { pointer-events:none; opacity:0.6; }
-  .q-error { color:var(--error); font-size:12.5px; margin-top:4px; }
-  .q-error:empty { display:none; }
-  .given { margin-top:8px; padding:6px 10px; background:var(--user); border-radius:8px; white-space:pre-wrap; }
-  .given .label, .expected .label { font-size:11px; font-weight:600; color:var(--muted); margin-right:6px; }
-  .expected { margin-top:6px; }
-  .verdict { display:inline-flex; align-items:center; gap:6px; margin-top:8px; font-size:12.5px; font-weight:600; }
-  .verdict.correct { color:var(--success); } .verdict.partial { color:var(--warning); }
-  .verdict.incorrect, .verdict.error { color:var(--error); }
-  .verdict.pending, .verdict.none { color:var(--muted); }
-  .verdict.error { font-weight:400; }
-  .verdict .qbtn { font-weight:400; }
-  .feedback, .explain { margin-top:4px; font-size:13.5px; }
-  .explain { color:var(--muted); }
-  .feedback > :first-child, .explain > :first-child { margin-top:0; }
-  .feedback > :last-child, .explain > :last-child { margin-bottom:0; }
-  .q details { margin-top:6px; font-size:13px; color:var(--muted); }
-  .q summary { cursor:pointer; }
   .quiz-foot { display:flex; align-items:center; gap:8px; padding:8px 12px; background:var(--code); font-size:13px; }
   .quiz-foot .score { flex:1; font-weight:600; }
-  .spinner { width:11px; height:11px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%;
-             animation:spin .8s linear infinite; }
-  @keyframes spin { to { transform:rotate(360deg); } }
+  .quiz-head .deck { font:inherit; font-size:11px; padding:1px 7px; border-radius:5px; cursor:pointer; color:var(--muted);
+                     background:transparent; border:1px solid var(--border); }
+  .quiz-head .deck.on { color:var(--success); border-color:var(--success); }
+  .quiz-head .deck:hover { background:var(--accent-soft); }
   .cursor::after { content:"▍"; color:var(--accent); animation:blink 1s steps(2) infinite; }
   @keyframes blink { 50% { opacity:0; } }
 </style>
@@ -212,19 +159,15 @@ window.addEventListener("message", e => {
 });
 // ```quiz fences: the app parses them (quiz.py) and replaces each with `#<index>` into
 // the message's `quizzes`; answers go back through the web channel and come back graded.
+// Questions are drawn by quiz.js. Each quiz's questions are also review cards (srs.py).
 const QUIZ_LANG = /^quiz\b/;
-const LETTERS = "ABCDEFGHIJ";
-const VERDICT_LABELS = { correct: "✓ Correct", partial: "◐ Partly right", incorrect: "✗ Not quite" };
 let MSG_QUIZZES = {};  // message id -> its quizzes, for the current render
 let CURRENT_MSG = null;  // message being rendered, which its quiz fences resolve against
 const QUIZ_DRAFTS = {};  // "msg:quiz:question" -> typed answer not yet submitted, kept across renders
+const REVEALED = {};  // "msg:quiz:question" -> true for a flashcard whose back is showing, not yet rated
 
 let bridge = null;
 new QWebChannel(qt.webChannelTransport, channel => { bridge = channel.objects.quiz; });
-
-function tex(latex) {
-  try { return katex.renderToString(latex, { throwOnError: false }); } catch (e) { return esc(latex); }
-}
 
 function quizFence(content) {
   if (LIVE) return `<div class="quiz pending">Writing quiz…</div>`;
@@ -236,6 +179,13 @@ function quizFence(content) {
 
 function points(a) {
   return a && a.status === "done" ? { correct: 1, partial: 0.5 }[a.verdict] || 0 : 0;
+}
+
+function deckToggle(quiz) {
+  if (!quiz.review) return "";
+  const on = quiz.review === "on";
+  const title = on ? "Its questions come back in Review; click to leave them out" : "Left out of Review; click to add its questions back";
+  return `<button class="deck${on ? " on" : ""}" data-act="deck" title="${title}">${on ? "In review" : "Not in review"}</button>`;
 }
 
 function quizInner(msg, qi, quiz) {
@@ -252,74 +202,22 @@ function quizInner(msg, qi, quiz) {
     const shown = Number.isInteger(score) ? score : score.toFixed(1);
     const text = graded === qs.length ? `Score: ${shown} / ${qs.length}` : `${answered} of ${qs.length} answered`;
     foot = `<div class="quiz-foot"><span class="score">${text}</span>`
-      + `<button class="qbtn quiet" data-act="retake" title="Clear your answers and start again">Retake</button></div>`;
+      + `<button class="qbtn quiet" data-act="retake" title="Clear your answers and start again (review scheduling is kept)">Retake</button></div>`;
   }
-  return head(`<span>${answered} / ${qs.length}</span>`)
-    + qs.map((q, i) => questionHtml(msg, qi, q, i, qs.length, answers[i])).join("") + foot;
+  return head(`${deckToggle(quiz)}<span>${answered} / ${qs.length}</span>`)
+    + qs.map((q, i) => {
+      const key = `${msg}:${qi}:${i}`;
+      const page = q.page ? `<a href="page://go/${q.page - 1}" title="Go to page ${q.page}">p. ${q.page}</a>` : "";
+      return questionHtml(q, answers[i], {
+        index: i, meta: `<span>Question ${i + 1} of ${qs.length}</span>${page}`,
+        draft: QUIZ_DRAFTS[key], revealed: REVEALED[key], rate: true,
+      });
+    }).join("") + foot;
 }
 
-function questionHtml(msg, qi, q, i, count, a) {
-  const key = `${msg}:${qi}:${i}`;
-  const draft = QUIZ_DRAFTS[key] || "";
-  const page = q.page ? `<a href="page://go/${q.page - 1}" title="Go to page ${q.page}">p. ${q.page}</a>` : "";
-  let html = `<div class="q-meta"><span>Question ${i + 1} of ${count}</span>${page}</div>`
-    + `<div class="q-text">${renderMarkdown(q.question)}</div>`;
-  const r = a ? a.response : {};
-  const option = (label, k, value, chosen) => {
-    let cls = "choice";
-    if (a) cls += value === q.answer ? " right" : chosen ? " wrong" : " dim";
-    return `<button class="${cls}" data-act="choose" data-k="${k}"${a ? " disabled" : ""}>`
-      + (label ? `<span class="letter">${label}</span>` : "") + `<span class="c-text">${value === true ? "True" : value === false ? "False" : renderMarkdown(q.choices[k], true)}</span></button>`;
-  };
-  if (q.type === "choice") {
-    html += `<div class="choices">${q.choices.map((_, k) => option(LETTERS[k], k, k, r.choice === k)).join("")}</div>`;
-  } else if (q.type === "truefalse") {
-    html += `<div class="choices tf">${[true, false].map((v, k) => option("", k, v, r.value === v)).join("")}</div>`;
-  } else if (q.type === "numeric") {
-    const unit = q.unit ? ` <span class="unit">${renderMarkdown(q.unit, true)}</span>` : "";
-    if (a) {
-      html += `<div class="given"><span class="label">Your answer</span>${tex(r.latex || "")}${unit}</div>`;
-      if (a.verdict !== "correct") html += `<div class="expected"><span class="label">Answer</span>${tex(q.answer_latex)}${unit}</div>`;
-    } else {
-      html += `<div class="answer-row"><math-field math-virtual-keyboard-policy="manual">${esc(draft)}</math-field>${unit}`
-        + `<button class="qbtn" data-act="numeric">Check</button></div>`
-        + `<div class="submit-row">Enter to check · / for a fraction, ^ for a power</div><div class="q-error"></div>`;
-    }
-  } else if (a) {
-    html += `<div class="given">${esc(r.text || "")}</div>`;
-  } else {
-    html += `<textarea class="free" rows="3" placeholder="Your answer…">${esc(draft)}</textarea>`
-      + `<div class="submit-row"><span class="grow">Ctrl+Enter to submit · Claude grades it</span>`
-      + `<button class="qbtn" data-act="free">Submit</button></div>`;
-  }
-  if (a) html += resultHtml(q, a);
-  return `<div class="q${a ? " answered" : ""}" data-q="${i}">${html}</div>`;
-}
-
-function resultHtml(q, a) {
-  if (a.status === "pending") return `<div class="verdict pending"><span class="spinner"></span>Claude is grading…</div>`;
-  if (a.status === "error")
-    return `<div class="verdict error">Grading failed: ${esc(a.feedback || "unknown error")}`
-      + ` <button class="qbtn quiet" data-act="regrade">Try again</button></div>`;
-  let html = `<div class="verdict ${a.verdict || "none"}">${VERDICT_LABELS[a.verdict] || "Feedback"}</div>`;
-  if (a.feedback) html += `<div class="feedback">${renderMarkdown(a.feedback)}</div>`;
-  if (q.explanation) html += `<div class="explain">${renderMarkdown(q.explanation)}</div>`;
-  if (q.type === "free" && q.answer)
-    html += `<details><summary>Model answer</summary>${renderMarkdown(q.answer)}</details>`;
-  return html;
-}
-
-// Math fields in freshly rendered quizzes: the calculator's typing, Enter to check, drafts kept.
+// Math fields in freshly rendered quizzes: Enter to check, drafts kept.
 function setupQuizFields(root) {
-  for (const mf of root.querySelectorAll(".quiz math-field")) {
-    configureMathField(mf);
-    mf.addEventListener("keydown", ev => {
-      if (ev.key !== "Enter") return;
-      ev.preventDefault(); ev.stopPropagation();
-      submitQuiz(mf.closest(".q"), "numeric");
-    }, { capture: true });
-    mf.addEventListener("input", () => { QUIZ_DRAFTS[quizKey(mf)] = mf.value; });
-  }
+  setupMathFields(root, qEl => submitQuiz(qEl, "numeric"), mf => { QUIZ_DRAFTS[quizKey(mf)] = mf.value; });
 }
 
 function quizKey(el) {
@@ -330,21 +228,8 @@ function quizKey(el) {
 function submitQuiz(qEl, act, button) {
   const quiz = qEl.closest(".quiz");
   const msg = +quiz.dataset.msg, qi = +quiz.dataset.quiz, i = +qEl.dataset.q;
-  const q = MSG_QUIZZES[msg][qi].questions[i];
-  let response;
-  if (act === "choose") {
-    const k = +button.dataset.k;
-    response = q.type === "truefalse" ? { value: k === 0 } : { choice: k };
-  } else if (act === "numeric") {
-    const latex = qEl.querySelector("math-field").value.trim();
-    if (!latex) return;
-    response = { latex };
-  } else {
-    const text = qEl.querySelector("textarea").value.trim();
-    if (!text) return;
-    response = { text };
-  }
-  if (!bridge || qEl.classList.contains("busy")) return;
+  const response = readResponse(MSG_QUIZZES[msg][qi].questions[i], qEl, act, button);
+  if (!response || !bridge || qEl.classList.contains("busy")) return;
   qEl.classList.add("busy");
   bridge.answer(msg, qi, i, JSON.stringify(response));
 }
@@ -354,9 +239,14 @@ document.addEventListener("click", ev => {
   const quiz = button && button.closest(".quiz");
   if (!quiz || button.disabled || !bridge) return;
   const act = button.dataset.act, qEl = button.closest(".q");
-  if (act === "retake") bridge.retake(+quiz.dataset.msg, +quiz.dataset.quiz);
-  else if (act === "regrade") bridge.regrade(+quiz.dataset.msg, +quiz.dataset.quiz, +qEl.dataset.q);
-  else submitQuiz(qEl, act, button);
+  const msg = +quiz.dataset.msg, qi = +quiz.dataset.quiz;
+  if (act === "retake") bridge.retake(msg, qi);
+  else if (act === "deck") bridge.toggleReview(msg, qi);
+  else if (act === "regrade") bridge.regrade(msg, qi, +qEl.dataset.q);
+  else if (act === "reveal") {
+    REVEALED[quizKey(qEl)] = true;
+    updateQuiz(msg, qi, MSG_QUIZZES[msg][qi]);
+  } else submitQuiz(qEl, act, button);
 });
 document.addEventListener("keydown", ev => {
   if (ev.target.matches && ev.target.matches(".quiz textarea") && ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) {
@@ -368,12 +258,15 @@ document.addEventListener("input", ev => {
   if (ev.target.matches && ev.target.matches(".quiz textarea")) QUIZ_DRAFTS[quizKey(ev.target)] = ev.target.value;
 });
 
-// From the app: one quiz changed (an answer saved or graded, or a retake).
+// From the app: one quiz changed (an answer saved or graded, a retake, or a review toggle).
 function updateQuiz(msg, qi, quiz) {
   (MSG_QUIZZES[msg] = MSG_QUIZZES[msg] || [])[qi] = quiz;
   const el = document.querySelector(`.quiz[data-msg="${msg}"][data-quiz="${qi}"]`);
   if (!el) return;
-  for (const [i, a] of Object.entries(quiz.answers || {})) delete QUIZ_DRAFTS[`${msg}:${qi}:${i}`];
+  for (const [i, a] of Object.entries(quiz.answers || {})) {
+    delete QUIZ_DRAFTS[`${msg}:${qi}:${i}`];
+    delete REVEALED[`${msg}:${qi}:${i}`];
+  }
   el.innerHTML = quizInner(msg, qi, quiz);
   setupQuizFields(el);
 }
@@ -394,17 +287,21 @@ function snippetHtml(s) {
 }
 
 const EDIT_ICON = `<svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>`;
+const QUIZ_ICON = `<svg viewBox="0 0 24 24"><path d="M9 11l2 2 4-4"/><rect width="16" height="18" x="4" y="3" rx="2"/><path d="M9 17h6"/></svg>`;
 const REGEN_ICON = `<svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>`;
 
 function actionsHtml(m, isLast, idle) {
   if (!idle) return "";
   if (m.role === "user")
     return `<div class="actions user"><a href="edit://message/${m.id}" title="Edit this message and ask again">${EDIT_ICON}Edit</a></div>`;
+  // A quiz on a reply that isn't itself a quiz.
+  const quiz = m.role === "assistant" && !(m.quizzes || []).length
+    ? `<a href="quiz://message/${m.id}" title="Quiz me on this reply; the questions join your review deck">${QUIZ_ICON}Quiz me</a>` : "";
   if (isLast) {
     const label = m.role === "error" ? "Retry" : "Regenerate";
-    return `<div class="actions"><a href="regen://message/${m.id}" title="${label} this reply">${REGEN_ICON}${label}</a></div>`;
+    return `<div class="actions"><a href="regen://message/${m.id}" title="${label} this reply">${REGEN_ICON}${label}</a>${quiz}</div>`;
   }
-  return "";
+  return quiz ? `<div class="actions reply">${quiz}</div>` : "";
 }
 
 function messageHtml(m, editing = false) {

@@ -1,6 +1,7 @@
 """Quizzes Claude writes into replies as ```quiz <title> fences of JSON: parsing them, grading
-answers (locally, except free responses, which Claude grades), and describing the answers back
-to Claude on later questions. Qt-free."""
+answers (locally, except free responses, which Claude grades, and flashcards, which the user
+rates), and describing the answers back to Claude on later questions. Every question also
+becomes a spaced-repetition card (srs.py). Qt-free."""
 
 from __future__ import annotations
 
@@ -16,9 +17,16 @@ TYPES = {
     "truefalse": "truefalse", "true_false": "truefalse", "tf": "truefalse", "boolean": "truefalse",
     "numeric": "numeric", "number": "numeric", "math": "numeric",
     "free": "free", "free_response": "free", "short_answer": "free", "open": "free",
+    "flashcard": "flashcard", "card": "flashcard", "basic": "flashcard",
 }
-TYPE_LABELS = {"choice": "Multiple choice", "truefalse": "True or false", "numeric": "Numeric", "free": "Free response"}
+TYPE_LABELS = {
+    "choice": "Multiple choice", "truefalse": "True or false", "numeric": "Numeric", "free": "Free response",
+    "flashcard": "Flashcard",
+}
 VERDICTS = ("correct", "partial", "incorrect")
+# How well a flashcard was recalled, as the user rates it (FSRS's Again / Hard / Good / Easy).
+RATINGS = {1: "Again", 2: "Hard", 3: "Good", 4: "Easy"}
+RATING_VERDICTS = {1: "incorrect", 2: "partial", 3: "correct", 4: "correct"}
 # Numeric answers within this fraction of the expected value count, unless the quiz gives a tolerance.
 RELATIVE_TOLERANCE = 0.01
 
@@ -99,6 +107,10 @@ def _validate(data, title: str) -> dict:
             out.update(answer=answer, unit=str(q.get("unit") or ""), answer_latex=answer_latex(answer))
             if isinstance(q.get("tolerance"), (int, float)) and q["tolerance"] >= 0:
                 out["tolerance"] = float(q["tolerance"])
+        elif kind == "flashcard":
+            if not _text(answer).strip():
+                raise ValueError("a flashcard needs an answer for its back")
+            out["answer"] = _text(answer)
         else:
             out.update(answer=_text(answer), rubric=_text(q.get("rubric")))
         questions.append(out)
@@ -138,6 +150,15 @@ def snippet_request(snippet: dict) -> tuple[str, str]:
     if snippet["kind"] == "image":
         return "Quiz me on this.", f"Quiz: screenshot, p. {snippet['page'] + 1}"
     return "Quiz me on this passage.", "Quiz: " + " ".join(snippet["text"].split())
+
+
+def reply_request(reply_text: str, last: bool) -> str:
+    """The question asking for a quiz on one of Claude's replies in the chat."""
+    if last:
+        return "Quiz me on your last reply."
+    start = " ".join(split(reply_text)[0].split())
+    start = start if len(start) <= 80 else start[:80].rsplit(" ", 1)[0] + "…"
+    return f"Quiz me on your earlier reply that begins “{start}”."
 
 
 def _text(value) -> str:
@@ -181,6 +202,11 @@ def grade(question: dict, response: dict) -> str:
         return "correct" if response.get("choice") == question["answer"] else "incorrect"
     if kind == "truefalse":
         return "correct" if response.get("value") is question["answer"] else "incorrect"
+    if kind == "flashcard":
+        rating = response.get("rating")
+        if rating not in RATING_VERDICTS:
+            raise AnswerError("Rate how well you knew it")
+        return RATING_VERDICTS[rating]
     if kind == "numeric":
         latex = str(response.get("latex", "")).strip()
         if not latex:
@@ -198,11 +224,19 @@ def grade(question: dict, response: dict) -> str:
 
 
 def grading_prompt(quiz: dict, index: int, response_text: str) -> str:
-    q = quiz["questions"][index]
-    parts = [
-        f"Grade my answer to question {index + 1} of the quiz \"{quiz['title']}\" in your earlier reply.",
-        f"<question>\n{q['question']}\n</question>",
-    ]
+    intro = f"Grade my answer to question {index + 1} of the quiz \"{quiz['title']}\" in your earlier reply."
+    return _grading_prompt(intro, quiz["questions"][index], response_text)
+
+
+def review_grading_prompt(title: str, index: int, question: dict, response_text: str) -> str:
+    """Grading a free response given when the question came back in review."""
+    intro = (f"I'm reviewing question {index + 1} of your quiz \"{title}\" again, in spaced-repetition "
+             "review. Grade my answer.")
+    return _grading_prompt(intro, question, response_text)
+
+
+def _grading_prompt(intro: str, q: dict, response_text: str) -> str:
+    parts = [intro, f"<question>\n{q['question']}\n</question>"]
     if q.get("answer"):
         parts.append(f"<model_answer>\n{q['answer']}\n</model_answer>")
     if q.get("rubric"):
@@ -242,6 +276,8 @@ def describe_response(question: dict, response: dict) -> str:
         return f"answered {'true' if response.get('value') else 'false'}"
     if kind == "numeric":
         return f"answered ${response.get('latex', '')}$"
+    if kind == "flashcard":
+        return f"rated my recall {RATINGS.get(response.get('rating'), '?')}"
     return "wrote:\n<answer>\n" + str(response.get("text", "")) + "\n</answer>"
 
 

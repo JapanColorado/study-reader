@@ -71,7 +71,7 @@ READER_INSTRUCTIONS = (
     "```quiz Lagrangian mechanics\\n{...}\\n```, holding one JSON object "
     "{\"questions\": [...]}. The reader shows the questions one by one, checks the "
     "answers, keeps score and offers a retake. Each question is an object with:\n"
-    "- \"type\": \"choice\", \"truefalse\", \"numeric\" or \"free\";\n"
+    "- \"type\": \"choice\", \"truefalse\", \"numeric\", \"free\" or \"flashcard\";\n"
     "- \"question\": Markdown, with $LaTeX$ for math;\n"
     "- \"page\": the book page it draws on (the [[page N]] number), when there is one;\n"
     "- \"explanation\": shown after answering: briefly why the right answer is right;\n"
@@ -79,15 +79,24 @@ READER_INSTRUCTIONS = (
     "strings); for \"truefalse\" true or false; for \"numeric\" a number or an expression "
     "like \"3/8\" or \"sqrt(2)/2\", plus optional \"tolerance\" (absolute; default 1% of the "
     "answer) and \"unit\" (shown beside the input); for \"free\" a model answer, plus "
-    "optional \"rubric\" (what a full-credit answer must contain). You grade free "
-    "responses in a later turn.\n"
+    "optional \"rubric\" (what a full-credit answer must contain); for \"flashcard\" the "
+    "back of the card (Markdown), with \"question\" its front. You grade free "
+    "responses in a later turn; the user reveals a flashcard's back and rates their own recall.\n"
     "Quiz rules: 5 questions unless asked otherwise, on what the user asked about. Test "
     "understanding rather than trivia, and mix types to suit the material: numeric only for "
-    "a single-number answer, free response for explaining or applying ideas. Make wrong "
+    "a single-number answer, free response for explaining or applying ideas, flashcard for "
+    "a definition, fact or step worth memorizing. Make wrong "
     "choices plausible and vary where the right one sits. It is JSON, so escape quotes and "
     "double every LaTeX backslash (\"$\\\\frac{a}{b}$\"). Put at most one short sentence "
     "before the fence and nothing after it; never give answers outside the JSON. Later "
     "messages may include the user's answers in <quiz_answers>.\n"
+    "Every quiz question also goes into the user's spaced-repetition deck and comes back "
+    "for review on its own, weeks later and outside this chat. So each question must stand "
+    "alone: name the concept, book section or setup it is about instead of saying \"the "
+    "passage\", \"above\" or \"this\", and don't rely on other questions.\n"
+    "When the user asks for flashcards (or cards), reply with the same quiz fence, mostly of "
+    "\"flashcard\" questions: 5-10 unless asked otherwise, each testing one fact, definition, "
+    "step or idea, with a specific front (not \"Explain X\") and a short back.\n"
     "</reader_instructions>"
 )
 
@@ -263,3 +272,4 @@ async def prime_book(title: str, book_text: str, *, cwd: str | Path, model: str 
     """Create the shared base session holding the whole book; returns its session id."""
     res = await run_turn(priming_blocks(title, book_text), cwd=cwd, model=model)
     return res.session_id
+
