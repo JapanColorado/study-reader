@@ -78,10 +78,14 @@ def test_grade_reply_parsing():
 
 
 def test_section_around():
-    toc = [(1, "One", 0), (2, "1.1", 0), (2, "1.2", 4), (2, "1.3", 8), (1, "Two", 10)]
+    toc = [(1, "One", 0), (2, "1.1", 0), (3, "Sub\0\0", 1), (2, "1.2", 4), (2, "1.3", 8), (1, "Two", 10)]
+    assert quiz.scopes(toc, 2, 20) == [(1, 0, 9, "One"), (2, 0, 3, "1.1"), (3, 1, 3, "Sub")]
     assert quiz.section_around(toc, 2, 20) == (0, 3, "1.1")
-    assert quiz.section_around(toc, 9, 20) == (0, 9, "One")  # 1.3 alone is too short
-    assert quiz.section_around(toc, 15, 20) == (10, 19, "Two")
+    assert quiz.section_around(toc, 2, 20, level=3) == (1, 3, "Sub")
+    assert quiz.section_around(toc, 2, 20, level=1) == (0, 9, "One")
+    assert quiz.section_around(toc, 2, 20, level=quiz.PAGE_LEVEL) == (2, 2, None)
+    assert quiz.section_around(toc, 9, 20) == (8, 9, "1.3")
+    assert quiz.section_around(toc, 15, 20) == (10, 19, "Two")  # no level 2 here: the nearest above
     assert quiz.section_around([], 0, 20) == (0, 2, None)
     assert quiz.section_around([], 19, 20) == (17, 19, None)
     assert quiz.request(0, 3, "1.1") == ("Quiz me on the section “1.1” (pages 1–4).", "Quiz: 1.1")

@@ -30,9 +30,11 @@ RATING_VERDICTS = {1: "incorrect", 2: "partial", 3: "correct", 4: "correct"}
 # Numeric answers within this fraction of the expected value count, unless the quiz gives a tolerance.
 RELATIVE_TOLERANCE = 0.01
 
-# "Quiz me" without a selection covers the section being read: the deepest contents entry around
-# the page that spans at least this many pages, or, without contents, this many pages either side.
-MIN_SECTION_PAGES = 3
+# "Quiz me" without a selection covers the contents entry around the page at a chosen depth (a
+# contents level; PAGE_LEVEL is just the page), DEFAULT_LEVEL until one is picked from the button's
+# menu, or, without contents, this many pages either side.
+DEFAULT_LEVEL = 2
+PAGE_LEVEL = 0
 NEARBY_PAGES = 2
 
 # A whole ```quiz fence (or ~~~quiz), closed by the same fence; the title follows the info word.
@@ -119,27 +121,43 @@ def _validate(data, title: str) -> dict:
     return {"title": title or str(data.get("title") or "Quiz"), "questions": questions}
 
 
-def section_around(toc: list[tuple[int, str, int]], page: int, page_count: int) -> tuple[int, int, str | None]:
-    """(first page, last page, title or None) of what to quiz on around `page`, all 0-based.
-    toc: (level, title, first page) as Document.toc() gives it."""
-    spans = []
-    for i, (level, title, start) in enumerate(toc):
+def scopes(toc: list[tuple[int, str, int]], page: int, page_count: int) -> list[tuple[int, int, int, str]]:
+    """The nested contents entries around `page`, outermost first, as (level, first page, last page,
+    title), all 0-based. toc: (level, title, first page) as Document.toc() gives it."""
+    path: list[int] = []  # indices into toc
+    for i, (level, _, start) in enumerate(toc):
         if start > page:
-            continue
+            break
+        path = [j for j in path if toc[j][0] < level] + [i]
+    out = []
+    for i in path:
+        level, title, start = toc[i]
         following = next((s for lvl, _, s in toc[i + 1:] if lvl <= level), page_count)
-        end = max(following - 1, start)
-        if end >= page:
-            spans.append((level, start, end, title))
-    if spans:
-        long = [s for s in spans if s[2] - s[1] + 1 >= MIN_SECTION_PAGES]
-        _, start, end, title = max(long or spans, key=lambda s: (s[0], s[1]))
+        out.append((level, start, max(following - 1, start), " ".join(title.replace("\0", " ").split())))
+    return out
+
+
+def section_around(
+    toc: list[tuple[int, str, int]], page: int, page_count: int, level: int = DEFAULT_LEVEL
+) -> tuple[int, int, str | None]:
+    """(first page, last page, title or None) of what to quiz on around `page`, all 0-based: the
+    deepest entry around it no deeper than `level`."""
+    if level == PAGE_LEVEL:
+        return page, page, None
+    path = scopes(toc, page, page_count)
+    if path:
+        _, start, end, title = ([s for s in path if s[0] <= level] or path[:1])[-1]
         return start, end, title
     return max(page - NEARBY_PAGES, 0), min(page + NEARBY_PAGES, page_count - 1), None
 
 
+def pages_label(first: int, last: int) -> str:
+    return f"page {first + 1}" if first == last else f"pages {first + 1}–{last + 1}"
+
+
 def request(first: int, last: int, title: str | None) -> tuple[str, str]:
     """(question asking for a quiz on pages first..last, chat title)."""
-    pages = f"page {first + 1}" if first == last else f"pages {first + 1}–{last + 1}"
+    pages = pages_label(first, last)
     if title:
         return f"Quiz me on the section “{title}” ({pages}).", f"Quiz: {title}"
     return f"Quiz me on {pages}.", f"Quiz: {pages}"

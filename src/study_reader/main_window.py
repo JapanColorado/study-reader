@@ -179,10 +179,16 @@ class MainWindow(QMainWindow):
         labelled(self.region_action)
         self.quiz_action = action("Quiz me", "Ctrl+Shift+Q", self.quiz, "quiz")
         self.quiz_action.setToolTip(
-            "Quiz me on the selection, or else the section being read (Ctrl+Shift+Q)"
+            "Quiz me on the selection, or else the section being read (Ctrl+Shift+Q); "
+            "the arrow picks how much to cover"
         )
         bar.addAction(self.quiz_action)
         labelled(self.quiz_action)
+        self.quiz_menu = QMenu(self)
+        self.quiz_menu.aboutToShow.connect(self._fill_quiz_menu)
+        quiz_button = bar.widgetForAction(self.quiz_action)
+        quiz_button.setMenu(self.quiz_menu)
+        quiz_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
         new_chat = action("New chat", "Ctrl+N", self.chat.new_chat, "message-plus")
         # Act on the current selection without reaching for the popup.
         action("Ask in new chat", "Ctrl+Return", lambda: self.reader.choose(True))
@@ -525,10 +531,46 @@ class MainWindow(QMainWindow):
         """Quiz on the selection if there is one, else on the section being read."""
         if self.doc is None or self.reader.choose_quiz():
             return
+        self._quiz_scope(self._quiz_level())
+
+    def _quiz_level(self) -> int:
+        """The contents depth "Quiz me" covers in this book: the one last picked from its menu."""
+        return int(self.db.get_setting(f"quiz_level:{self.book_id}", str(quiz.DEFAULT_LEVEL)))
+
+    def _quiz_scope(self, level: int) -> None:
         page = self.reader.current_page()
-        first, last, title = quiz.section_around(self.doc.toc(), page, self.doc.page_count)
+        first, last, title = quiz.section_around(self.doc.toc(), page, self.doc.page_count, level)
         question, chat_title = quiz.request(first, last, title)
         self._show_chat(lambda: self.chat.start_quiz(question, chat_title, first))
+
+    def _fill_quiz_menu(self) -> None:
+        """The contents entries around the page being read, outermost first, plus the page alone;
+        the one the button would quiz on is checked. Picking one quizzes on it and remembers its depth."""
+        self.quiz_menu.clear()
+        if self.doc is None:
+            return
+        page = self.reader.current_page()
+        path = quiz.scopes(self.doc.toc(), page, self.doc.page_count)
+        current = quiz.section_around(self.doc.toc(), page, self.doc.page_count, self._quiz_level())
+
+        def pick(level: int) -> None:
+            self.db.set_setting(f"quiz_level:{self.book_id}", str(level))
+            self._quiz_scope(level)
+
+        group = QActionGroup(self.quiz_menu)
+        for depth, (level, first, last, title) in enumerate(path):
+            a = self.quiz_menu.addAction("    " * depth + f"{title}  ({quiz.pages_label(first, last)})".replace("&", "&&"))
+            a.setCheckable(True)
+            a.setChecked((first, last, title) == current)
+            a.triggered.connect(lambda _=False, lvl=level: pick(lvl))
+            group.addAction(a)
+        if path:
+            self.quiz_menu.addSeparator()
+        a = self.quiz_menu.addAction(f"This page only  ({quiz.pages_label(page, page)})")
+        a.setCheckable(True)
+        a.setChecked(current == (page, page, None))
+        a.triggered.connect(lambda: pick(quiz.PAGE_LEVEL))
+        group.addAction(a)
 
     def _quiz_on(self, snippet: dict) -> None:
         question, title = quiz.snippet_request(snippet)
