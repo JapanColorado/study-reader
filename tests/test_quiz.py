@@ -84,6 +84,9 @@ def test_section_around():
     assert quiz.section_around(toc, 2, 20, level=3) == (1, 3, "Sub")
     assert quiz.section_around(toc, 2, 20, level=1) == (0, 9, "One")
     assert quiz.section_around(toc, 2, 20, level=quiz.PAGE_LEVEL) == (2, 2, None)
+    assert quiz.section_around(toc, 2, 20, level=quiz.DOCUMENT_LEVEL) == (0, 19, None)
+    assert quiz.section_around(toc, 2, 200, level=quiz.DOCUMENT_LEVEL) == (0, 9, "One")  # too long
+    assert quiz.request(0, 19, None, whole=True) == ("Quiz me on the whole document (pages 1–20).", "Quiz: whole document")
     assert quiz.section_around(toc, 9, 20) == (8, 9, "1.3")
     assert quiz.section_around(toc, 15, 20) == (10, 19, "Two")  # no level 2 here: the nearest above
     assert quiz.section_around([], 0, 20) == (0, 2, None)

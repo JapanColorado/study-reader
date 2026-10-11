@@ -540,12 +540,14 @@ class MainWindow(QMainWindow):
     def _quiz_scope(self, level: int) -> None:
         page = self.reader.current_page()
         first, last, title = quiz.section_around(self.doc.toc(), page, self.doc.page_count, level)
-        question, chat_title = quiz.request(first, last, title)
+        whole = (first, last) == (0, self.doc.page_count - 1) and level == quiz.DOCUMENT_LEVEL
+        question, chat_title = quiz.request(first, last, title, whole)
         self._show_chat(lambda: self.chat.start_quiz(question, chat_title, first))
 
     def _fill_quiz_menu(self) -> None:
-        """The contents entries around the page being read, outermost first, plus the page alone;
-        the one the button would quiz on is checked. Picking one quizzes on it and remembers its depth."""
+        """The whole document (if short), the contents entries around the page being read, outermost
+        first, and the page alone; the one the button would quiz on is checked. Picking one quizzes on
+        it and remembers its depth."""
         self.quiz_menu.clear()
         if self.doc is None:
             return
@@ -558,6 +560,14 @@ class MainWindow(QMainWindow):
             self._quiz_scope(level)
 
         group = QActionGroup(self.quiz_menu)
+        n = self.doc.page_count
+        if n <= quiz.WHOLE_DOCUMENT_PAGES:
+            a = self.quiz_menu.addAction(f"Whole document  ({quiz.pages_label(0, n - 1)})")
+            a.setCheckable(True)
+            a.setChecked(self._quiz_level() == quiz.DOCUMENT_LEVEL)
+            a.triggered.connect(lambda: pick(quiz.DOCUMENT_LEVEL))
+            group.addAction(a)
+            self.quiz_menu.addSeparator()
         for depth, (level, first, last, title) in enumerate(path):
             a = self.quiz_menu.addAction("    " * depth + f"{title}  ({quiz.pages_label(first, last)})".replace("&", "&&"))
             a.setCheckable(True)
@@ -568,7 +578,7 @@ class MainWindow(QMainWindow):
             self.quiz_menu.addSeparator()
         a = self.quiz_menu.addAction(f"This page only  ({quiz.pages_label(page, page)})")
         a.setCheckable(True)
-        a.setChecked(current == (page, page, None))
+        a.setChecked(self._quiz_level() == quiz.PAGE_LEVEL)
         a.triggered.connect(lambda: pick(quiz.PAGE_LEVEL))
         group.addAction(a)
 

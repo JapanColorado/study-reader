@@ -31,10 +31,13 @@ RATING_VERDICTS = {1: "incorrect", 2: "partial", 3: "correct", 4: "correct"}
 RELATIVE_TOLERANCE = 0.01
 
 # "Quiz me" without a selection covers the contents entry around the page at a chosen depth (a
-# contents level; PAGE_LEVEL is just the page), DEFAULT_LEVEL until one is picked from the button's
-# menu, or, without contents, this many pages either side.
+# contents level; PAGE_LEVEL is just the page, DOCUMENT_LEVEL all of a document of at most
+# WHOLE_DOCUMENT_PAGES), DEFAULT_LEVEL until one is picked from the button's menu, or, without
+# contents, this many pages either side.
 DEFAULT_LEVEL = 2
 PAGE_LEVEL = 0
+DOCUMENT_LEVEL = -1
+WHOLE_DOCUMENT_PAGES = 50
 NEARBY_PAGES = 2
 
 # A whole ```quiz fence (or ~~~quiz), closed by the same fence; the title follows the info word.
@@ -144,6 +147,8 @@ def section_around(
     deepest entry around it no deeper than `level`."""
     if level == PAGE_LEVEL:
         return page, page, None
+    if level == DOCUMENT_LEVEL and page_count <= WHOLE_DOCUMENT_PAGES:
+        return 0, page_count - 1, None
     path = scopes(toc, page, page_count)
     if path:
         _, start, end, title = ([s for s in path if s[0] <= level] or path[:1])[-1]
@@ -155,9 +160,11 @@ def pages_label(first: int, last: int) -> str:
     return f"page {first + 1}" if first == last else f"pages {first + 1}–{last + 1}"
 
 
-def request(first: int, last: int, title: str | None) -> tuple[str, str]:
-    """(question asking for a quiz on pages first..last, chat title)."""
+def request(first: int, last: int, title: str | None, whole: bool = False) -> tuple[str, str]:
+    """(question asking for a quiz on pages first..last, chat title). whole: they are the whole document."""
     pages = pages_label(first, last)
+    if whole:
+        return f"Quiz me on the whole document ({pages}).", "Quiz: whole document"
     if title:
         return f"Quiz me on the section “{title}” ({pages}).", f"Quiz: {title}"
     return f"Quiz me on {pages}.", f"Quiz: {pages}"
