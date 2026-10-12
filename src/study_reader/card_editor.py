@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 from . import cardmodel, quiz
 from .db import Database, media_dir
 
-QUIZ_TYPES = [("flashcard", "Flashcard"), ("free", "Free response (graded by Claude)"), ("choice", "Multiple choice"),
+QUIZ_TYPES = [("free", "Free response (graded by Claude)"), ("choice", "Multiple choice"),
               ("truefalse", "True or false"), ("numeric", "Numeric")]
 ADD_KINDS = [(k, cardmodel.KIND_LABELS[k]) for k in ("basic", "reverse", "cloze", "quiz")]
 
@@ -271,7 +271,7 @@ class NoteEditor(QWidget):
         self._extra = {}
 
     def _load_quiz(self, q: dict) -> None:
-        i = self.q_type.findData(q.get("type", "flashcard"))
+        i = self.q_type.findData(q.get("type", "free"))
         self.q_type.setCurrentIndex(max(i, 0))
         self.q_question.setPlainText(str(q.get("question", "")))
         self.q_explanation.setPlainText(str(q.get("explanation", "")))
@@ -279,7 +279,7 @@ class NoteEditor(QWidget):
         answer = q.get("answer")
         self.q_correct.setValue(answer + 1 if q.get("type") == "choice" and isinstance(answer, int) else 1)
         self.q_tf.setCurrentIndex(0 if answer is True or q.get("type") != "truefalse" else 1)
-        self.q_answer.setPlainText(str(answer) if q.get("type") in ("free", "flashcard") and answer is not None else "")
+        self.q_answer.setPlainText(str(answer) if q.get("type") == "free" and answer is not None else "")
         self.q_number.setText(str(answer) if q.get("type") == "numeric" else "")
         self.q_unit.setText(str(q.get("unit", "")))
         self.q_tolerance.setValue(float(q.get("tolerance") or 0))
@@ -290,12 +290,12 @@ class NoteEditor(QWidget):
         t = self.q_type.currentData()
         rows = {"type", "question", "explanation"} | {
             "choice": {"choices", "correct"}, "truefalse": {"tf"}, "numeric": {"number", "unit", "tolerance"},
-            "free": {"answer", "rubric"}, "flashcard": {"answer"},
+            "free": {"answer", "rubric"},
         }[t]
         for key, (label, w) in self.q_rows.items():
             label.setVisible(key in rows)
             w.setVisible(key in rows)
-        self.q_rows["answer"][0].setText("Model answer" if t == "free" else "Back" if t == "flashcard" else "Answer")
+        self.q_rows["answer"][0].setText("Model answer" if t == "free" else "Answer")
         self._changed()
 
     # -- values --------------------------------------------------------------------------
@@ -327,11 +327,9 @@ class NoteEditor(QWidget):
             raw["unit"] = self.q_unit.text().strip()
             if self.q_tolerance.value() > 0:
                 raw["tolerance"] = self.q_tolerance.value()
-        elif t == "free":
-            raw["answer"] = self.q_answer.toPlainText().strip()
-            raw["rubric"] = self.q_rubric.toPlainText().strip()
         else:
             raw["answer"] = self.q_answer.toPlainText().strip()
+            raw["rubric"] = self.q_rubric.toPlainText().strip()
         try:
             return quiz.validate_question(raw)
         except (ValueError, TypeError, KeyError) as e:

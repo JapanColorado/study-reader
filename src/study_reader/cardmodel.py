@@ -3,8 +3,10 @@ question each card shows in review (the JSON review.html and quiz.js draw). Qt-f
 
 Kinds and their fields (text fields are Markdown that may hold inline HTML, with $math$ or
 \\(math\\)):
-- quiz: a question as quiz.py parses it from Claude's quizzes (type, question, answer, ...)
-- basic: front, back, extra (shown under the answer)
+- quiz: a question the learner answers, as quiz.py parses it from Claude's quizzes (type choice,
+  truefalse, numeric or free; question, answer, ...)
+- basic: front, back, extra (shown under the answer); every flashcard, including those in
+  Claude's quizzes (note_for_question)
 - reverse: like basic, plus a second card asking the back for the front
 - cloze: text with {{c1::answer}} or {{c1::answer::hint}} deletions, one card per number; extra
 - occlusion: an image (media file name) with shapes masked over it, one card per shape number;
@@ -67,6 +69,17 @@ def check(kind: str, fields: dict) -> None:
         raise NoteError("An image occlusion needs an image and at least one shape.")
     if kind == "quiz" and not _filled(fields.get("question")):
         raise NoteError("The question is empty.")
+    if kind == "quiz" and fields.get("type") == "flashcard":
+        raise NoteError("A flashcard is a Basic note, not a quiz question.")
+
+
+def note_for_question(q: dict) -> tuple[str, dict]:
+    """(kind, fields) of the note for a question as quiz.py parses it: a flashcard is a Basic
+    note, anything else a quiz note."""
+    if q.get("type") == "flashcard":
+        return "basic", {"front": str(q.get("question", "")), "back": str(q.get("answer", "")),
+                         "extra": str(q.get("explanation") or "")}
+    return "quiz", dict(q)
 
 
 def card_data(kind: str, fields: dict, ord: int) -> dict:

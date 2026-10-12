@@ -87,8 +87,9 @@ def test_quiz_cards_go_into_their_books_deck(tmp_path):
         assert db.deck(db.book_deck(other))["name"] == "A (2)"
 
 
-def test_old_cards_become_quiz_notes_in_book_decks(tmp_path):
-    """A database from before decks: its cards table is rebuilt; reviews survive."""
+def test_old_cards_become_notes_in_book_decks(tmp_path):
+    """A database from before decks: its cards table is rebuilt; reviews survive; a flashcard
+    becomes a Basic note."""
     path = tmp_path / "old.db"
     db = Database(path)
     book = db.upsert_book("h", "/a.pdf", "Old book", 3)["id"]
@@ -115,7 +116,8 @@ def test_old_cards_become_quiz_notes_in_book_decks(tmp_path):
     card = db.card(7)
     assert card["note_id"] and db.deck(card["deck_id"])["name"] == "Old book" and card["reps"] == 3
     assert (card["stability"], card["difficulty"]) == (9.5, 3.0) and card["last_review"] > 1.7e9
-    assert len(db.reviews(7)) == 1 and db.card_note(card["note_id"])["kind"] == "quiz"
+    assert len(db.reviews(7)) == 1 and db.card_note(card["note_id"])["kind"] == "basic"
+    assert json.loads(card["data"])["type"] == "flashcard" and json.loads(card["data"])["question"] == "F"
     assert db.conn.execute("PRAGMA foreign_key_check").fetchall() == []
     db.delete_card(7)  # the review log follows its card again
     assert db.conn.execute("SELECT COUNT(*) FROM reviews").fetchone()[0] == 0
@@ -221,9 +223,45 @@ def test_conversion_manager(db, chat_panel):
     assert not manager.busy() and changed
     assert [c["status"] for c in db.conversions()] == ["kept", "proposed", "proposed"]
     assert manager.accept_all() == 2 and json.loads(db.card(ids[1])["data"])["type"] == "truefalse"
+    assert db.card_note(db.card(ids[2])["note_id"])["kind"] == "basic"  # a flashcard stays a Basic note
     manager.start([ids[0]])
     worker.convertFailed.emit(worker.conversions[-1][0], "rate limited")
     assert db.conversions(("error",))[0]["reason"] == "rate limited"
+
+
+def test_conversion_never_makes_needless_flashcards(db):
+    deck = db.ensure_deck("D")
+    free = db.add_card_note("quiz", {"type": "free", "question": "Why?", "answer": "Because.", "rubric": ""}, deck)
+    basic = db.add_card_note("basic", {"front": "What is $x$?", "back": "A variable"}, deck)
+    other = db.add_card_note("basic", {"front": "Vague", "back": "Too much"}, deck)
+    (q,), (b,), (o,) = db.note_cards(free), db.note_cards(basic), db.note_cards(other)
+    ids = convert.start(db, [q["id"], b["id"], o["id"]])
+    convert.record(db, ids, json.dumps({"cards": [
+        {"id": q["id"], "action": "convert", "reason": "recall", "question":
+            {"type": "flashcard", "question": "Why?", "answer": "Because."}},
+        {"id": b["id"], "action": "convert", "question": {"type": "flashcard", "question": "What is $x$?",
+                                                         "answer": "A  variable"}},
+        {"id": o["id"], "action": "convert", "question": {"type": "flashcard", "question": "Sharp?", "answer": "Short"}},
+    ]}))
+    assert [db.conversion(ids[i])["status"] for i in (q["id"], b["id"], o["id"])] == ["kept", "kept", "proposed"]
+    assert "quiz questions stay" in db.conversion(ids[q["id"]])["reason"]
+    assert convert.accept(db, ids[o["id"]])
+    note = db.card_note(db.card(o["id"])["note_id"])
+    assert note["kind"] == "basic" and json.loads(note["fields"])["front"] == "Sharp?"
+    with pytest.raises(cardmodel.NoteError):
+        db.add_card_note("quiz", {"type": "flashcard", "question": "F", "answer": "B"}, deck)
+
+
+def test_flashcards_in_quizzes_are_basic_notes(tmp_path):
+    db = Database(tmp_path / "t.db")
+    book = db.upsert_book("h", "/a.pdf", "A", 3)["id"]
+    chat = db.create_chat(book, "Cards")
+    reply = db.add_message(chat, "assistant", '```quiz Cards\n[{"type": "flashcard", "question": "F", '
+                           '"answer": "B", "explanation": "E"}]\n```')
+    (card_id,) = srs.add_quiz_cards(db, book, reply, db.message(reply)["text"], now=NOW)
+    note = db.card_note(db.card(card_id)["note_id"])
+    assert note["kind"] == "basic" and json.loads(note["fields"]) == {"front": "F", "back": "B", "extra": "E"}
+    assert srs.question(db.card(card_id))["type"] == "flashcard" and db.card_for(reply, 0, 0)["id"] == card_id
 
 
 # -- review of cards from no book ----------------------------------------------------------

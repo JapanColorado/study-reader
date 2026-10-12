@@ -1,8 +1,10 @@
 """Claude Conversion: Claude (Sonnet) rewrites review cards, e.g. ones migrated from Anki, into
 the question types that fit them best (a free response Claude grades, a numeric problem, a
-multiple-choice question, or a sharper flashcard), or says to keep them. Each rewrite is a
-proposal the user accepts or rejects; an accepted one replaces the card's content and keeps
-its schedule and review history. Proposals live in the conversions table. Qt-free."""
+multiple-choice question, or a sharper flashcard), or says to keep them. Quiz questions never
+become flashcards, and a flashcard proposed for a card that already says the same is kept.
+Each rewrite is a proposal the user accepts or rejects; an accepted one replaces the card's
+content (a flashcard as a Basic note, anything else as a quiz note) and keeps its schedule and
+review history. Proposals live in the conversions table. Qt-free."""
 
 from __future__ import annotations
 
@@ -29,7 +31,8 @@ SYSTEM_PROMPT = (
     "\"numeric\" (a number, typed as math, checked within a tolerance), \"choice\" (multiple "
     "choice) and \"truefalse\", besides \"flashcard\" (recall, then self-rate). For each card, "
     "decide whether another type would make the learner think harder about what the card is "
-    "really testing, and if so rewrite it. Reply with JSON only."
+    "really testing, and if so rewrite it. A card that already makes the learner answer "
+    "(choice, truefalse, numeric, free) never becomes a flashcard. Reply with JSON only."
 )
 
 INSTRUCTIONS = """Rewrite each card below as the question type that best fits it, or keep it.
@@ -41,10 +44,13 @@ Choosing:
   it needs the idea, not memorized arithmetic.
 - "choice" when there are plausible confusions to tell apart (2-5 choices, plausible wrong ones).
 - "truefalse" for a crisp claim that people commonly get wrong.
-- "flashcard" for pure recall worth memorizing verbatim (a definition, a formula, a name); improve
-  a vague front or an overloaded back.
-- "keep" when the card already works well as it is (good cloze and recall cards usually do), or
-  when it depends on an image or context you can't see.
+- "flashcard" for pure recall worth memorizing verbatim (a definition, a formula, a name), and
+  only for cards that are flashcards, cloze or image occlusion now: improve a vague front or an
+  overloaded back. Never turn a "choice", "truefalse", "numeric" or "free" card into a flashcard;
+  keep it, or rewrite it as another of those types if that is clearly better.
+- "keep" when the card already works well as it is (good cloze, recall and quiz cards usually
+  do), when a rewrite would only reword it, or when it depends on an image or context you can't
+  see.
 Never add facts that aren't in the card or standard, correct knowledge of its subject. Keep the
 card's scope: one card in, one question out. Each question must stand alone (name the concept;
 no "the passage" or "above").
@@ -200,9 +206,28 @@ def record(db: Database, conversions: dict[int, int], text: str) -> None:
         return
     for card_id, conversion_id in conversions.items():
         r = results[card_id]
+        card = db.card(card_id)
+        why = _needless(json.loads(card["data"]), r["question"]) if card is not None and r["question"] else None
+        if why:
+            r = {"action": "keep", "question": None, "reason": f"{r['reason']} ({why})" if r["reason"] else why}
         status = {"keep": "kept", "convert": "proposed", "error": "error"}[r["action"]]
         db.update_conversion(conversion_id, status=status, reason=r["reason"],
                              proposal=json.dumps(r["question"], ensure_ascii=False) if r["question"] else "")
+
+
+def _needless(current: dict, question: dict) -> str | None:
+    """Why a proposed flashcard shouldn't replace the card's question, if it shouldn't: quiz
+    questions don't become flashcards, and a flashcard saying the same needs no change."""
+    if question.get("type") != "flashcard":
+        return None
+    if current.get("type") not in cardmodel.SELF_RATED:
+        return "quiz questions stay quiz questions"
+    if current.get("type") == "flashcard" and all(
+        cardmodel.plain(str(current.get(k) or "")) == cardmodel.plain(str(question.get(k) or ""))
+        for k in ("question", "answer")
+    ):
+        return "the flashcard would be the same"
+    return None
 
 
 def fail(db: Database, conversions: dict[int, int], message: str) -> None:
@@ -211,8 +236,8 @@ def fail(db: Database, conversions: dict[int, int], message: str) -> None:
 
 
 def accept(db: Database, conversion_id: int) -> bool:
-    """Give the card its proposed content (as a quiz question of its own note); it keeps its
-    deck, tags, schedule and history. The old content is kept for revert()."""
+    """Give the card its proposed content (as a note of its own: Basic for a flashcard, else a
+    quiz note); it keeps its deck, tags, schedule and history. The old content is kept for revert()."""
     c = db.conversion(conversion_id)
     if c is None or c["status"] != "proposed" or not c["proposal"]:
         return False
@@ -222,7 +247,7 @@ def accept(db: Database, conversion_id: int) -> bool:
         return False
     original = {"note_id": note["id"], "kind": note["kind"], "fields": json.loads(note["fields"]),
                 "ord": card["ord"], "data": json.loads(card["data"])}
-    db.move_card_to_note(card["id"], "quiz", json.loads(c["proposal"]))
+    db.move_card_to_note(card["id"], *cardmodel.note_for_question(json.loads(c["proposal"])))
     db.update_conversion(conversion_id, status="accepted", original=json.dumps(original, ensure_ascii=False))
     return True
 
@@ -252,8 +277,10 @@ def revert(db: Database, conversion_id: int) -> bool:
     taken = old is not None and any(x["ord"] == original["ord"] for x in db.note_cards(old["id"]))
     if old is not None and not taken:
         db.move_card(card["id"], old["id"], original["ord"])
-    elif original["kind"] in ("basic", "quiz"):
-        db.move_card_to_note(card["id"], original["kind"], original["fields"])
+    elif original["kind"] == "basic":
+        db.move_card_to_note(card["id"], "basic", original["fields"])
+    elif original["kind"] == "quiz":  # (a flashcard from before flashcards were Basic notes comes back as one)
+        db.move_card_to_note(card["id"], *cardmodel.note_for_question(original["fields"]))
     else:  # a cloze or occlusion card whose note is gone: keep what it showed, as a flashcard
         q = original["data"]
         front = q.get("question", "")

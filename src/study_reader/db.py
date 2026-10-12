@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS decks (
 CREATE TABLE IF NOT EXISTS card_notes (
     id INTEGER PRIMARY KEY,
     kind TEXT NOT NULL,             -- 'quiz' | 'basic' | 'reverse' | 'cloze' | 'occlusion' (cardmodel.py)
-    fields TEXT NOT NULL,           -- JSON object; for 'quiz' the question as quiz.py parses it
+    fields TEXT NOT NULL,           -- JSON object; for 'quiz' the question as quiz.py parses it (never a flashcard)
     tags TEXT NOT NULL DEFAULT '',  -- ' tag1 tag2 ' (cardmodel.join_tags)
     sort_text TEXT NOT NULL DEFAULT '',   -- plain text of the first field: the browser's Question column
     search_text TEXT NOT NULL DEFAULT '', -- plain text of every field, for search
@@ -273,6 +273,14 @@ class Database:
         card_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(cards)")}
         if "note_id" not in card_cols:
             self._migrate_cards_to_notes()
+        # Flashcards were once quiz notes too; they are Basic notes now.
+        for r in self.conn.execute("SELECT id, fields FROM card_notes "
+                                   "WHERE kind='quiz' AND json_extract(fields, '$.type')='flashcard'").fetchall():
+            kind, fields = cardmodel.note_for_question(json.loads(r["fields"]))
+            try:
+                self.update_card_note(r["id"], fields, kind=kind)
+            except cardmodel.NoteError:
+                pass
 
     def _migrate_cards_to_notes(self) -> None:
         """Cards from before decks and notes: each becomes a quiz note in its book's deck. The
@@ -788,11 +796,11 @@ class Database:
         """A new card for a quiz question, in the book's deck; None if the question has one already."""
         if message_id is not None and self.card_for(message_id, quiz, question) is not None:
             return None
-        fields = json.loads(data)
+        kind, fields = cardmodel.note_for_question(json.loads(data))
         with self.conn:
             deck_id = self.book_deck(book_id)
-            note_id = self._insert_note("quiz", fields, "", now)
-            return self._insert_card(note_id, 0, deck_id, "quiz", fields, now, book_id=book_id, message_id=message_id,
+            note_id = self._insert_note(kind, fields, "", now)
+            return self._insert_card(note_id, 0, deck_id, kind, fields, now, book_id=book_id, message_id=message_id,
                                      quiz=quiz, question=question, title=title, page=page)
 
     def card(self, card_id: int) -> sqlite3.Row | None:
