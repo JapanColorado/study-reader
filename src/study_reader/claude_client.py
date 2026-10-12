@@ -153,6 +153,12 @@ class ClaudeError(RuntimeError):
     pass
 
 
+def image_block(path: Path, media_type: str = "image/png") -> dict:
+    """An image file as a Messages-API content block."""
+    data = base64.standard_b64encode(Path(path).read_bytes()).decode()
+    return {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}}
+
+
 def build_blocks(question: str, snippets: list[Snippet], extra_context: str = "") -> list[dict]:
     """Turn a question plus its snippets into Messages-API content blocks."""
     blocks: list[dict] = [{"type": "text", "text": READER_INSTRUCTIONS}]
@@ -160,11 +166,8 @@ def build_blocks(question: str, snippets: list[Snippet], extra_context: str = ""
         blocks.append({"type": "text", "text": extra_context})
     for s in snippets:
         if s.kind == "image":
-            data = base64.standard_b64encode(Path(s.image_path).read_bytes()).decode()
             blocks.append({"type": "text", "text": f"Screenshot from page {s.page + 1}:"})
-            blocks.append(
-                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}}
-            )
+            blocks.append(image_block(s.image_path))
         else:
             blocks.append(
                 {"type": "text", "text": f"Selected passage from page {s.page + 1}:\n<passage>\n{s.text}\n</passage>"}

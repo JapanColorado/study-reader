@@ -15,6 +15,7 @@ from . import claude_client as cc
 from .document import Document
 
 PARTIAL_CONTEXT_CHARS = 200_000
+CONVERSIONS_AT_ONCE = 3  # Claude Conversion requests running at the same time
 
 
 @dataclass
@@ -29,7 +30,7 @@ class BookRef:
 @dataclass
 class Job:
     chat_id: int
-    book: BookRef
+    book: BookRef | None  # None: not about a book (a review card from none), asked in a fresh session
     chat_session_id: str | None
     question: str
     snippets: list[cc.Snippet] = field(default_factory=list)
@@ -76,14 +77,16 @@ class ChatService:
     status(book_id, text), base(book_id, session_id, mode), delta(chat_id, text),
     done(chat_id, session_id, text, message_uuid), failed(chat_id, message),
     for quiz grading graded(answer_id, text), gradeFailed(answer_id, message), and for grading
-    a card in review cardGraded(card_id, text), cardGradeFailed(card_id, message), and
-    titled(chat_id, title) when a chat's auto-title is ready."""
+    a card in review cardGraded(card_id, text), cardGradeFailed(card_id, message),
+    titled(chat_id, title) when a chat's auto-title is ready, and for Claude Conversion
+    converted(batch_id, text), convertFailed(batch_id, message)."""
 
     def __init__(self, emit: Callable[..., None], sessions_dir: str | Path):
         self.emit = emit
         self.sessions_dir = Path(sessions_dir)
         self._locks: dict[int, asyncio.Lock] = {}
         self._base: dict[int, tuple[str | None, str]] = {}
+        self._conversions: asyncio.Semaphore | None = None  # made on the worker's loop
 
     def forget_base(self, book_id: int) -> None:
         """Drop the cached base session, e.g. after the book's file was replaced."""
@@ -164,7 +167,22 @@ class ChatService:
         if title:
             self.emit("titled", chat_id, title)
 
+    async def convert(self, batch_id: int, blocks: list[dict], model: str, system_prompt: str) -> None:
+        """Ask Claude to rewrite a batch of review cards (convert.py), in a fresh bookless session."""
+        if self._conversions is None:
+            self._conversions = asyncio.Semaphore(CONVERSIONS_AT_ONCE)
+        try:
+            async with self._conversions:
+                res = await cc.run_turn(blocks, cwd=self.sessions_dir / "convert", model=model,
+                                        system_prompt=system_prompt)
+            self.emit("converted", batch_id, res.text)
+        except Exception as e:
+            self.emit("convertFailed", batch_id, str(e) or type(e).__name__)
+
     async def _turn(self, job: Job, chat_session_id: str | None, on_delta) -> cc.TurnResult:
+        if job.book is None:
+            blocks = cc.build_blocks(job.question, job.snippets, job.context)
+            return await cc.run_turn(blocks, cwd=self.sessions_dir / "cards", model=job.model, on_delta=on_delta)
         cwd = self.cwd(job.book.id)
         extra: list[str] = []
         resume_at = None
@@ -203,6 +221,8 @@ class ChatWorker(QObject):
     cardGraded = Signal(int, str)
     cardGradeFailed = Signal(int, str)
     titled = Signal(int, str)
+    converted = Signal(int, str)
+    convertFailed = Signal(int, str)
 
     def __init__(self, sessions_dir: str | Path, parent: QObject | None = None):
         super().__init__(parent)
@@ -228,6 +248,9 @@ class ChatWorker(QObject):
 
     def submit_title(self, chat_id: int, question: str, passage: str, reply: str) -> None:
         asyncio.run_coroutine_threadsafe(self.service.title(chat_id, question, passage, reply), self.loop)
+
+    def submit_conversion(self, batch_id: int, blocks: list[dict], model: str, system_prompt: str) -> None:
+        asyncio.run_coroutine_threadsafe(self.service.convert(batch_id, blocks, model, system_prompt), self.loop)
 
     def shutdown(self) -> None:
         self.loop.call_soon_threadsafe(self.loop.stop)

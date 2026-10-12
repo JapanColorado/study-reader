@@ -1,0 +1,217 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="viz/chart.umd.min.js"></script>
+<style>
+  /* Fallbacks; the app sets these from theme.py. */
+  :root { --surface:#fbfaf8; --raised:#ffffff; --fg:#1f1e1c; --muted:#6b6862; --faint:#a19d95; --border:#dedad2;
+          --hover:#ebe8e1; --accent:#b8562f; --accent-fg:#ffffff; --accent-soft:#f4e2d8; --code:#f1eee8; --scroll:#cfcac1;
+          --user:#efece6; --error:#c0392b; --success:#3a8f5c; --warning:#b8860b; }
+  html, body { margin:0; background:var(--surface); color:var(--fg); font:14.5px/1.6 system-ui, sans-serif; }
+  ::-webkit-scrollbar { width:11px; height:11px; }
+  ::-webkit-scrollbar-thumb { background:var(--scroll); border-radius:3px; border:3px solid transparent; background-clip:padding-box; }
+  ::-webkit-scrollbar-thumb:hover { background-color:var(--faint); }
+  #root { max-width:1100px; margin:0 auto; padding:10px 16px 32px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(420px, 1fr)); gap:14px; }
+  .card { background:var(--raised); border:1px solid var(--border); border-radius:12px; padding:12px 14px 14px; min-width:0; }
+  .card.wide { grid-column:1 / -1; }
+  h2 { font-size:1em; margin:0 0 8px; font-weight:650; }
+  .sub { font-size:12px; color:var(--muted); margin:-6px 0 8px; }
+  .tiles { display:flex; flex-wrap:wrap; gap:8px; }
+  .tile { flex:1; min-width:90px; padding:4px 2px; }
+  .tile .n { font-size:1.5em; font-weight:650; line-height:1.2; font-variant-numeric:tabular-nums; }
+  .tile .l { font-size:12px; color:var(--muted); }
+  .tile.accent .n { color:var(--accent); } .tile.good .n { color:var(--success); } .tile.bad .n { color:var(--error); }
+  .bar { display:flex; height:16px; border-radius:5px; overflow:hidden; background:var(--hover); margin:6px 0 10px; }
+  .bar span { display:block; height:100%; }
+  .legend { display:flex; flex-wrap:wrap; gap:4px 14px; font-size:12.5px; color:var(--muted); }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:5px; vertical-align:-1px; }
+  .legend b { color:var(--fg); font-weight:600; font-variant-numeric:tabular-nums; }
+  .chart { position:relative; height:200px; }
+  .heat { overflow-x:auto; }
+  .heat svg { display:block; }
+  .heat rect { rx:2px; }
+  .heat-meta { display:flex; gap:18px; font-size:12.5px; color:var(--muted); margin-top:6px; flex-wrap:wrap; }
+  .heat-meta b { color:var(--fg); }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; font-variant-numeric:tabular-nums; }
+  th, td { text-align:right; padding:4px 8px; border-bottom:1px solid var(--border); }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--muted); font-weight:600; font-size:12px; }
+  td .of { color:var(--faint); font-size:11.5px; margin-left:4px; }
+  .muted { color:var(--muted); }
+  .empty { color:var(--muted); text-align:center; margin:60px auto; }
+  #tip { position:fixed; pointer-events:none; background:var(--raised); border:1px solid var(--border); border-radius:6px;
+         padding:2px 7px; font-size:12px; display:none; z-index:10; box-shadow:0 2px 8px rgba(0,0,0,.12); }
+</style>
+</head>
+<body>
+<div id="root"><div class="empty">Loading…</div></div>
+<div id="tip"></div>
+<script>
+// The app computes everything (stats.py) and calls showStats(data); setTheme recolors.
+let DATA = null;
+const CHARTS = [];
+
+function setTheme(colors, dark) {
+  const root = document.documentElement;
+  root.dataset.theme = dark ? "dark" : "light";
+  for (const [k, v] of Object.entries(colors)) root.style.setProperty(`--${k.replace(/_/g, "-")}`, v);
+  if (DATA) showStats(DATA);
+}
+
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(`--${name}`).trim();
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const pct = x => x === null || x === undefined ? "—" : `${(x * 100).toFixed(1).replace(/\.0$/, "")}%`;
+const num = n => n.toLocaleString();
+const shortDate = iso => new Date(iso + "T12:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
+// Series colors that read in both themes, keyed by meaning.
+function palette() {
+  return {
+    new: "#5b8def", learning: css("warning"), relearning: css("error"), young: "#7cc49a",
+    mature: css("success"), suspended: css("faint"), again: css("error"), passed: css("success"),
+    first: "#5b8def", accent: css("accent"), muted: css("muted"), border: css("border"), fg: css("fg"),
+  };
+}
+
+function tile(n, label, cls = "") { return `<div class="tile ${cls}"><div class="n">${n}</div><div class="l">${label}</div></div>`; }
+
+function showStats(data) {
+  DATA = data;
+  CHARTS.splice(0).forEach(c => c.destroy());
+  const root = document.getElementById("root");
+  const c = data.counts;
+  if (!c.total) {
+    root.innerHTML = `<div class="empty">No cards here yet.</div>`;
+    return;
+  }
+  const P = palette(), t = data.today;
+  let html = `<div class="grid">`;
+
+  html += `<div class="card"><h2>Today</h2><div class="tiles">`
+    + tile(num(t.reviews), t.reviews === 1 ? "review" : "reviews", "accent")
+    + tile(t.minutes ? `${t.minutes}` : "0", "minutes")
+    + tile(num(t.new), "new cards", "good")
+    + tile(num(t.again), "again", t.again ? "bad" : "")
+    + tile(pct(t.pass_rate), "passed") + `</div></div>`;
+
+  const est = data.estimated, s = data.settings;
+  html += `<div class="card"><h2>Memory</h2><div class="tiles">`
+    + tile(pct(est.average_retrievability), "average retrievability now", "accent")
+    + tile(`${num(est.remembered)}<span class="muted" style="font-size:.55em"> / ${num(est.scheduled)}</span>`, "cards you'd recall now")
+    + tile(pct(s.desired_retention), "desired retention")
+    + `</div><div class="sub" style="margin:8px 0 0">${s.custom_parameters ? "Using custom FSRS parameters" : "Using FSRS's default parameters"}`
+    + ` · ${num(s.total_reviews)} reviews here, ${num(s.optimizable_reviews)} usable for optimizing (${num(s.min_optimize_reviews)} needed)</div></div>`;
+
+  const parts = [["new", "New"], ["learning", "Learning"], ["relearning", "Relearning"], ["young", "Young"], ["mature", "Mature"], ["suspended", "Suspended"]];
+  html += `<div class="card wide"><h2>Cards</h2><div class="sub">${num(c.total)} in all · young: interval under 21 days</div><div class="bar">`
+    + parts.map(([k]) => c[k] ? `<span style="width:${100 * c[k] / c.total}%;background:${P[k]}" title="${k}: ${c[k]}"></span>` : "").join("")
+    + `</div><div class="legend">` + parts.map(([k, l]) => `<span><i style="background:${P[k]}"></i>${l} <b>${num(c[k])}</b></span>`).join("") + `</div></div>`;
+
+  const cal = data.calendar;
+  html += `<div class="card wide"><h2>Review calendar</h2><div class="heat" id="heat"></div><div class="heat-meta">`
+    + `<span>Current streak <b>${cal.streak} day${cal.streak === 1 ? "" : "s"}</b></span>`
+    + `<span>Longest <b>${cal.longest} day${cal.longest === 1 ? "" : "s"}</b></span>`
+    + `<span>Studied <b>${cal.studied}</b> of ${cal.span} days (${pct(cal.studied_pct)})</span></div></div>`;
+
+  html += `<div class="card"><h2>Reviews</h2><div class="sub">Last 30 days</div><div class="chart"><canvas id="reviews"></canvas></div></div>`;
+  html += `<div class="card"><h2>Forecast</h2><div class="sub">Cards due over the next 30 days (overdue counted today)</div><div class="chart"><canvas id="forecast"></canvas></div></div>`;
+
+  const r = data.retention, periods = [["today", "Today"], ["week", "Last 7 days"], ["month", "Last 30 days"], ["year", "Last year"]];
+  const cell = x => x.total ? `${pct(x.rate)}<span class="of">${x.passed}/${x.total}</span>` : `<span class="muted">—</span>`;
+  html += `<div class="card"><h2>True retention</h2><div class="sub">Reviews passed (Hard, Good or Easy) among cards last seen on an earlier day</div>`
+    + `<table><tr><th></th><th>Young</th><th>Mature</th><th>All</th></tr>`
+    + periods.map(([k, l]) => `<tr><td>${l}</td><td>${cell(r[k].young)}</td><td>${cell(r[k].mature)}</td><td>${cell(r[k].all)}</td></tr>`).join("")
+    + `</table></div>`;
+  html += `<div class="card"><h2>Added</h2><div class="sub">New cards, last 30 days</div><div class="chart"><canvas id="added"></canvas></div></div>`;
+
+  const dists = [["interval", "Intervals", "Days between a card's last review and when it's due"],
+    ["stability", "Stability", "Days until recall falls to 90%"],
+    ["difficulty", "Difficulty", "FSRS difficulty, 1 (easy) to 10 (hard)"],
+    ["retrievability", "Retrievability", "Chance of recalling each scheduled card now"]];
+  for (const [k, title, sub] of dists) html += `<div class="card"><h2>${title}</h2><div class="sub">${sub}</div><div class="chart"><canvas id="d-${k}"></canvas></div></div>`;
+  html += `</div>`;
+  root.innerHTML = html;
+
+  heatmap(document.getElementById("heat"), cal, P);
+  const labels30 = data.reviews.map(d => shortDate(d.date));
+  bars("reviews", labels30, [
+    { label: "New", data: data.reviews.map(d => d.first), backgroundColor: P.first },
+    { label: "Passed", data: data.reviews.map(d => d.passed), backgroundColor: P.passed },
+    { label: "Again", data: data.reviews.map(d => d.again), backgroundColor: P.again },
+  ], { stacked: true, legend: true, footer: items => {
+    const m = data.reviews[items[0].dataIndex].minutes;
+    return m ? `${m} min` : "";
+  } });
+  bars("forecast", data.forecast.map(d => d.day === 0 ? "Today" : shortDate(d.date)), [
+    { label: "Due", data: data.forecast.map(d => d.count), backgroundColor: P.accent }]);
+  bars("added", data.added.map(d => shortDate(d.date)), [
+    { label: "Added", data: data.added.map(d => d.count), backgroundColor: P.first }]);
+  for (const [k] of dists) {
+    const rows = data.distributions[k];
+    bars(`d-${k}`, rows.map(x => x.label), [{ label: "Cards", data: rows.map(x => x.count), backgroundColor: P.accent }]);
+  }
+}
+
+function bars(id, labels, datasets, opts = {}) {
+  const P = palette();
+  const el = document.getElementById(id);
+  if (!el || typeof Chart === "undefined") return;
+  CHARTS.push(new Chart(el, {
+    type: "bar",
+    data: { labels, datasets: datasets.map(d => ({ borderRadius: 3, maxBarThickness: 28, ...d })) },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: {
+        legend: { display: !!opts.legend, labels: { color: P.muted, boxWidth: 10, boxHeight: 10 } },
+        tooltip: { callbacks: opts.footer ? { footer: opts.footer } : {} },
+      },
+      scales: {
+        x: { stacked: !!opts.stacked, ticks: { color: P.muted, maxRotation: 0, autoSkip: true, autoSkipPadding: 8 }, grid: { display: false } },
+        y: { stacked: !!opts.stacked, beginAtZero: true, ticks: { color: P.muted, precision: 0 }, grid: { color: P.border } },
+      },
+    },
+  }));
+}
+
+// A year of days as weekly columns, shaded by how many reviews each had.
+function heatmap(el, cal, P) {
+  const counts = Object.fromEntries(cal.days.map(d => [d.date, d.count]));
+  const max = Math.max(1, ...cal.days.map(d => d.count));
+  const start = new Date(cal.start + "T12:00"), end = new Date(cal.end + "T12:00");
+  const first = new Date(start); first.setDate(first.getDate() - first.getDay());  // back to Sunday
+  const size = 12, gap = 3, top = 16, left = 26;
+  let cells = "", months = "", x = 0, lastMonth = -1;
+  for (let week = new Date(first); week <= end; week.setDate(week.getDate() + 7), x++) {
+    if (week.getMonth() !== lastMonth) {
+      lastMonth = week.getMonth();
+      months += `<text x="${left + x * (size + gap)}" y="11" font-size="10" fill="${P.muted}">${week.toLocaleDateString(undefined, { month: "short" })}</text>`;
+    }
+    for (let d = 0; d < 7; d++) {
+      const day = new Date(week); day.setDate(day.getDate() + d);
+      if (day < start || day > end) continue;
+      const iso = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+      const n = counts[iso] || 0;
+      const fill = n ? P.accent : P.border;
+      const opacity = n ? (0.25 + 0.75 * Math.sqrt(n / max)).toFixed(2) : 0.55;
+      cells += `<rect x="${left + x * (size + gap)}" y="${top + d * (size + gap)}" width="${size}" height="${size}" fill="${fill}"`
+        + ` fill-opacity="${opacity}" data-tip="${esc(day.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" }))}: ${n} review${n === 1 ? "" : "s"}"/>`;
+    }
+  }
+  const days = ["", "Mon", "", "Wed", "", "Fri", ""].map((l, d) => l ? `<text x="0" y="${top + d * (size + gap) + 10}" font-size="10" fill="${P.muted}">${l}</text>` : "").join("");
+  el.innerHTML = `<svg width="${left + x * (size + gap)}" height="${top + 7 * (size + gap)}">${months}${days}${cells}</svg>`;
+}
+
+const tip = document.getElementById("tip");
+document.addEventListener("mousemove", ev => {
+  const t = ev.target.closest && ev.target.closest("[data-tip]");
+  if (!t) { tip.style.display = "none"; return; }
+  tip.textContent = t.dataset.tip;
+  tip.style.display = "block";
+  const x = Math.min(ev.clientX + 12, window.innerWidth - tip.offsetWidth - 6);
+  tip.style.left = `${x}px`; tip.style.top = `${ev.clientY + 14}px`;
+});
+</script>
+</body>
+</html>

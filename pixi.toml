@@ -17,6 +17,10 @@ numpy = ">=2.5.3, <3"
 readability-lxml = ">=0.9, <0.10"
 lxml = ">=6.1.3, <7"
 fsrs = ">=6.3, <7"
+# The FSRS optimizer ("Optimize parameters"); CPU-only torch keeps the download small.
+torch = { version = ">=2.5", index = "https://download.pytorch.org/whl/cpu" }
+pandas = ">=2.2"
+tqdm = "*"
 
 [activation.env]
 PYTHONPATH = "$PIXI_PROJECT_ROOT/src"

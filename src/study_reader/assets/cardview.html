@@ -1,0 +1,142 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="katex/katex.min.css">
+<link rel="stylesheet" href="quiz.css">
+<script src="katex/katex.min.js"></script>
+<script src="markdown-it.min.js"></script>
+<script src="markdown.js"></script>
+<script src="quiz.js"></script>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<style>
+  /* Fallbacks; the app sets these from theme.py. */
+  :root { --surface:#fbfaf8; --raised:#ffffff; --fg:#1f1e1c; --muted:#6b6862; --faint:#a19d95; --border:#dedad2;
+          --hover:#ebe8e1; --accent:#b8562f; --accent-fg:#ffffff; --accent-soft:#f4e2d8; --code:#f1eee8; --scroll:#cfcac1;
+          --user:#efece6; --error:#c0392b; --success:#3a8f5c; --warning:#b8860b; }
+  html, body { margin:0; background:var(--surface); color:var(--fg); font:14px/1.55 system-ui, sans-serif; }
+  ::selection { background:var(--accent-soft); }
+  ::-webkit-scrollbar { width:11px; height:11px; }
+  ::-webkit-scrollbar-thumb { background:var(--scroll); border-radius:3px; border:3px solid transparent; background-clip:padding-box; }
+  #root { padding:10px 12px 24px; overflow-wrap:anywhere; }
+  .empty { color:var(--faint); text-align:center; margin-top:40px; }
+  .side { background:var(--raised); border:1px solid var(--border); border-radius:10px; margin-bottom:10px; overflow:hidden; }
+  .side .label { font-size:11px; font-weight:650; color:var(--muted); padding:6px 12px 0; text-transform:uppercase; letter-spacing:.04em; }
+  .side .q { border-bottom:none; }
+  .side .q .choice { cursor:default; }
+  .side .q .choice:hover { border-color:var(--border); background:var(--raised); }
+  .side .q .choice.right { border-color:var(--success); }
+  /* Claude Conversion proposals */
+  .pair { border:1px solid var(--border); border-radius:12px; margin-bottom:14px; background:var(--surface); }
+  .pair.decided { opacity:0.6; }
+  .pair .head { display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--border); font-size:12.5px; }
+  .pair .head .deck { color:var(--muted); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pair .head .status { font-weight:650; font-size:11.5px; padding:1px 7px; border-radius:9px; background:var(--hover); color:var(--muted); }
+  .pair .head .status.proposed { background:var(--accent-soft); color:var(--accent); }
+  .pair .head .status.accepted { color:var(--success); }
+  .pair .head .status.error { color:var(--error); }
+  .pair .reason { padding:6px 12px 0; font-size:12.5px; color:var(--muted); font-style:italic; }
+  .pair .cols { display:grid; grid-template-columns:1fr 1fr; gap:10px; padding:10px 12px; }
+  @media (max-width: 760px) { .pair .cols { grid-template-columns:1fr; } }
+  .pair .col h3 { margin:0 0 6px; font-size:11.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .pair .actions { display:flex; gap:8px; justify-content:flex-end; padding:0 12px 10px; }
+  .spinner { display:inline-block; width:11px; height:11px; border:2px solid var(--border); border-top-color:var(--accent);
+             border-radius:50%; animation:spin .8s linear infinite; vertical-align:-1px; margin-right:6px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="root"><div class="empty">No card selected.</div></div>
+<script>
+// Read-only card rendering for the card browser's preview and the Claude Conversion review.
+let bridge = null;
+if (typeof qt !== "undefined") new QWebChannel(qt.webChannelTransport, channel => { bridge = channel.objects.view || null; });
+
+function setTheme(colors, dark) {
+  const root = document.documentElement;
+  root.dataset.theme = dark ? "dark" : "light";
+  for (const [k, v] of Object.entries(colors)) root.style.setProperty(`--${k.replace(/_/g, "-")}`, v);
+}
+
+// The answer side of a question, as if it had just been answered right (or revealed).
+function backHtml(q) {
+  if (q.type === "numeric") {
+    const unit = q.unit ? ` <span class="unit">${mdq(q, q.unit, true)}</span>` : "";
+    let html = `<div class="q-text">${mdq(q, q.question)}</div><div class="expected"><span class="label">Answer</span>${tex(q.answer_latex || String(q.answer))}${unit}</div>`;
+    if (q.tolerance !== undefined) html += `<div class="submit-row">± ${esc(String(q.tolerance))}</div>`;
+    if (q.explanation) html += `<div class="explain">${mdq(q, q.explanation)}</div>`;
+    return `<div class="q answered">${html}</div>`;
+  }
+  if (q.type === "free") {
+    let html = `<div class="q-text">${mdq(q, q.question)}</div>`;
+    if (q.answer) html += `<div class="model-answer"><span class="label">Model answer</span><div>${mdq(q, q.answer)}</div></div>`;
+    if (q.rubric) html += `<div class="model-answer"><span class="label">Rubric</span><div>${mdq(q, q.rubric)}</div></div>`;
+    if (q.explanation) html += `<div class="explain">${mdq(q, q.explanation)}</div>`;
+    return `<div class="q answered">${html}</div>`;
+  }
+  const response = q.type === "choice" ? { choice: q.answer } : q.type === "truefalse" ? { value: q.answer } : {};
+  return questionHtml(q, { response, status: "done", verdict: null, feedback: "" }, { openAnswer: true });
+}
+
+function frontHtml(q) {
+  return questionHtml(q, undefined, {}).replace(/<div class="submit-row">[\s\S]*?<\/div>(?=<\/div>$)/, "");
+}
+
+function sides(q, which = "both") {
+  let html = "";
+  if (which !== "back") html += `<div class="side"><div class="label">Front</div>${frontHtml(q)}</div>`;
+  if (which !== "front") html += `<div class="side"><div class="label">Back</div>${backHtml(q)}</div>`;
+  return html;
+}
+
+function afterRender(root) {
+  for (const el of root.querySelectorAll("button, textarea, math-field")) {
+    if (!el.dataset.decide) el.setAttribute("disabled", "");
+  }
+}
+
+// From the app: a card's question (null for none), and which sides to show.
+function showPreview(q, which) {
+  const root = document.getElementById("root");
+  if (!q) { root.innerHTML = `<div class="empty">No card selected.</div>`; return; }
+  try { root.innerHTML = sides(q, which); }
+  catch (e) { root.innerHTML = `<div class="empty">Can't show this card: ${esc(String(e))}</div>`; }
+  afterRender(root);
+}
+
+const STATUS_LABELS = { pending: "Converting…", proposed: "Proposed", kept: "Keep as is", error: "Error",
+                        accepted: "Accepted", rejected: "Rejected" };
+
+// From the app: Claude Conversion results: [{id, status, deck, reason, before, after}].
+function showProposals(items) {
+  const root = document.getElementById("root");
+  if (!items.length) { root.innerHTML = `<div class="empty">Nothing to review.</div>`; return; }
+  root.innerHTML = items.map(c => {
+    const decided = c.status === "accepted" || c.status === "rejected";
+    const status = c.status === "pending" ? `<span class="spinner"></span>${STATUS_LABELS.pending}` : STATUS_LABELS[c.status];
+    let html = `<div class="pair${decided ? " decided" : ""}" data-id="${c.id}"><div class="head">`
+      + `<span class="deck" title="${esc(c.deck)}">${esc(c.deck)}</span><span class="status ${c.status}">${status}</span></div>`;
+    if (c.reason) html += `<div class="reason">${esc(c.reason)}</div>`;
+    let before = "", after = "";
+    try { before = backHtml(c.before); } catch (e) { before = esc(String(e)); }
+    if (c.after) { try { after = sides(c.after); } catch (e) { after = esc(String(e)); } }
+    else after = `<div class="empty" style="margin:20px 0">${c.status === "pending" ? "Waiting for Claude…" : c.status === "error" ? "No proposal." : "No change."}</div>`;
+    html += `<div class="cols"><div class="col"><h3>Now</h3><div class="side">${before}</div></div>`
+      + `<div class="col"><h3>Proposed</h3>${after}</div></div>`;
+    if (c.status === "proposed") html += `<div class="actions"><button class="qbtn quiet" data-decide="reject">Reject</button>`
+      + `<button class="qbtn" data-decide="accept">Accept</button></div>`;
+    else if (c.status === "error" || c.status === "kept") html += `<div class="actions"><button class="qbtn quiet" data-decide="dismiss">Dismiss</button></div>`;
+    return html + `</div>`;
+  }).join("");
+  afterRender(root);
+}
+
+document.addEventListener("click", ev => {
+  const b = ev.target.closest("[data-decide]");
+  if (b && bridge) bridge.decide(+b.closest(".pair").dataset.id, b.dataset.decide);
+  const a = ev.target.closest("a[href]");
+  if (a && a.getAttribute("href").startsWith("#")) ev.preventDefault();
+});
+</script>
+</body>
+</html>

@@ -50,6 +50,19 @@
   .card .q-meta .book { color:var(--fg); }
   .card .q-meta .src { white-space:nowrap; }
   .keys { font-size:11.5px; color:var(--faint); margin-top:6px; text-align:center; }
+  .decks { background:var(--raised); border:1px solid var(--border); border-radius:10px; margin:0 0 14px; padding:4px; }
+  .deck { display:flex; align-items:center; gap:6px; padding:3px 8px; border-radius:6px; cursor:pointer; font-size:13.5px; }
+  .deck:hover { background:var(--hover); }
+  .deck.sel { background:var(--accent-soft); }
+  .deck .tw { width:14px; flex:none; color:var(--muted); text-align:center; font-size:10px; }
+  .deck .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .deck .n { width:44px; text-align:right; font-variant-numeric:tabular-nums; color:var(--faint); }
+  .deck .n.due { color:var(--accent); } .deck .n.new { color:var(--success); }
+  .deck .n.zero { color:var(--faint); opacity:0.5; }
+  .deck-head { display:flex; gap:6px; padding:2px 8px 4px; font-size:11px; color:var(--muted); font-weight:600; }
+  .deck-head .name { flex:1; } .deck-head .n { width:44px; text-align:right; }
+  .links { display:flex; gap:12px; justify-content:center; margin-top:10px; font-size:12.5px; }
+  .links a { color:var(--muted); text-decoration:none; } .links a:hover { color:var(--accent); }
 </style>
 </head>
 <body>
@@ -70,6 +83,28 @@ function setTheme(colors, dark) {
 }
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const OPEN_DECKS = new Set();  // deck ids expanded in the overview's list
+
+// Every deck, with its own and its subdecks' counts; clicking one picks what to review.
+function decksHtml(o) {
+  const byParent = {};
+  for (const d of o.decks) (byParent[d.parent ?? 0] ||= []).push(d);
+  const num = (n, cls) => `<span class="n ${cls}${n ? "" : " zero"}">${n}</span>`;
+  const row = (d, depth) => {
+    const kids = byParent[d.id] || [];
+    const open = OPEN_DECKS.has(d.id);
+    let html = `<div class="deck${o.deck === d.id ? " sel" : ""}" data-act="deck" data-deck="${d.id}" title="${esc(d.path)}"`
+      + ` style="padding-left:${8 + depth * 16}px">`
+      + `<span class="tw" data-act="twist" data-deck="${d.id}">${kids.length ? (open ? "▾" : "▸") : ""}</span>`
+      + `<span class="name">${esc(d.name)}</span>${num(d.due, "due")}${num(d.new, "new")}</div>`;
+    if (open) for (const k of kids) html += row(k, depth + 1);
+    return html;
+  };
+  return `<div class="decks"><div class="deck-head"><span class="tw"></span><span class="name">Deck</span><span class="n">Due</span><span class="n">New</span></div>`
+    + `<div class="deck${o.deck === null ? " sel" : ""}" data-act="deck" data-deck="0"><span class="tw"></span><span class="name">All decks</span>`
+    + `${num(o.all_due, "due")}${num(o.all_new, "new")}</div>`
+    + (byParent[0] || []).map(d => row(d, 0)).join("") + `</div>`;
+}
 
 function showOverview(o) {
   CARD = null;
@@ -83,7 +118,9 @@ function showOverview(o) {
       + `<div class="hint">${how}</div>`;
     return;
   }
-  let html = `<h1>${o.all ? "Review all books" : "Review"}</h1><div class="stats">`
+  let html = `<h1>${o.all ? (o.deck_name ? esc(o.deck_name) : "Review all decks") : "Review"}</h1>`;
+  if (o.all && o.decks && o.decks.length) html += decksHtml(o);
+  html += `<div class="stats">`
     + `<div class="stat due"><div class="n">${o.due}</div><div class="l">due</div></div>`
     + `<div class="stat new"><div class="n">${o.new}</div><div class="l">new today${o.new_total > o.new ? ` · ${o.new_total} waiting` : ""}</div></div>`
     + `<div class="stat"><div class="n">${o.total}</div><div class="l">cards${o.suspended ? ` · ${o.suspended} suspended` : ""}</div></div></div>`;
@@ -92,6 +129,7 @@ function showOverview(o) {
     + `<div class="keys"><kbd>Space</kbd> to start</div>`;
   else html += `<div class="msg">All caught up${o.next ? ` — the next card is due ${esc(o.next)}` : ""}.`
     + (o.new_total > o.new ? `<br>Today's ${o.new_per_day} new cards are done; more tomorrow.` : "") + `</div>`;
+  html += `<div class="links"><a href="#" data-act="browse">Browse cards</a><a href="#" data-act="stats">Statistics</a></div>`;
   root.innerHTML = html + `<div class="hint">${how}</div>`;
 }
 
@@ -101,7 +139,7 @@ function showCard(c) {
   const meta = [
     c.new ? `<span class="tag">New</span>` : "",
     c.book ? `<span class="book">${esc(c.book)}</span>` : "",
-    `<span>${esc(c.title)}</span>`,
+    `<span title="${esc(c.deck)}">${esc(c.title || c.deck.split("::").pop())}</span>`,
     c.page !== null ? `<a class="src" href="#" data-act="source" title="Show this page in the book">p. ${c.page + 1}</a>` : "",
     c.chat ? `<a class="src" href="#" data-act="chat" title="Open the chat the quiz is in">Open chat</a>` : "",
   ].filter(Boolean).join("<span>·</span>");
@@ -110,6 +148,7 @@ function showCard(c) {
   let html = `<div class="bar"><a href="#" data-act="stop" title="Back to the overview">← Overview</a><span class="grow"></span>`
     + `<span class="count"><span class="due">${c.remaining.due}</span> due · <span class="new">${c.remaining.new}</span> new</span>`
     + `<a href="#" data-act="skip" title="Show another card first">Skip</a>`
+    + `<a href="#" data-act="edit" title="Open this card in the browser to edit it">Edit</a>`
     + `<a href="#" data-act="suspend" title="Leave this card out of review (the quiz's “In review” toggle brings it back)">Suspend</a>`
     + `<a href="#" data-act="delete" title="Delete this card and its history">Delete</a></div>`;
   html += `<div class="card">${questionHtml(q, a || undefined, { meta, freeActions, openAnswer: true })}`;
@@ -117,7 +156,7 @@ function showCard(c) {
   if (c.previews) {
     html += `<div class="submit-row" style="margin-top:12px">How well did you know it?</div>${ratingRow(c.previews, c.suggested)}`
       + `<div class="keys"><kbd>1</kbd>–<kbd>4</kbd> to rate · <kbd>Space</kbd> for ${RATING_LABELS[c.suggested || 3]}</div>`;
-  } else if (q.type === "flashcard" && !a) {
+  } else if (SELF_RATED.includes(q.type) && !a) {
     html += `<div class="keys"><kbd>Space</kbd> to show the answer</div>`;
   }
   const root = document.getElementById("root");
@@ -164,9 +203,17 @@ document.addEventListener("click", ev => {
   const act = target.dataset.act;
   if (act === "start") bridge.start();
   else if (act === "stop") bridge.stop();
+  else if (act === "twist") {
+    ev.stopPropagation();
+    const id = +target.dataset.deck;
+    OPEN_DECKS.has(id) ? OPEN_DECKS.delete(id) : OPEN_DECKS.add(id);
+    bridge.refresh();
+  }
+  else if (act === "deck") bridge.chooseDeck(+target.dataset.deck);
+  else if (act === "browse" || act === "stats") bridge.open(act);
   else if (!CARD) return;
   else if (act === "rate") bridge.rate(CARD.id, +target.dataset.k);
-  else if (["source", "chat", "skip", "suspend", "delete"].includes(act)) bridge.act(CARD.id, act);
+  else if (["source", "chat", "skip", "suspend", "delete", "edit"].includes(act)) bridge.act(CARD.id, act);
   else answer(act, target.closest(".q"), target);
 });
 
@@ -188,7 +235,7 @@ document.addEventListener("keydown", ev => {
   if (CARD.previews && "1234".includes(ev.key) && ev.key.length === 1) { go(); bridge.rate(CARD.id, +ev.key); }
   else if (ev.key === " " || ev.key === "Enter") {
     if (CARD.previews) { go(); bridge.rate(CARD.id, CARD.suggested || 3); }
-    else if (CARD.question.type === "flashcard" && !CARD.answer) { go(); bridge.check(CARD.id, "{}"); }
+    else if (SELF_RATED.includes(CARD.question.type) && !CARD.answer) { go(); bridge.check(CARD.id, "{}"); }
   }
 });
 </script>

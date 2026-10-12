@@ -9,31 +9,25 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QColor, QDesktopServices
+from PySide6.QtGui import QColor
 from PySide6.QtWebChannel import QWebChannel
-from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QMessageBox, QVBoxLayout, QWidget
 
-from . import quiz, srs
+from . import cardmodel, quiz, srs
 from .chat_service import BookRef, ChatWorker, Job
-from .db import Database
+from .db import Database, media_url
+from .notes import LocalPage
 from .theme import theme
 
 ASSETS = Path(__file__).parent / "assets"
+# Longer than this on one card counts as this long (the reviewer probably stepped away).
+MAX_REVIEW_SECONDS = 120
 
 
 def when(t: float, now: float) -> str:
     """'in 5m', 'in 3d' …"""
     return f"in {srs.format_interval(t - now)}"
-
-
-class _Page(QWebEnginePage):
-    def acceptNavigationRequest(self, url: QUrl, nav_type, is_main_frame: bool) -> bool:
-        if url.scheme() in ("http", "https", "mailto"):
-            QDesktopServices.openUrl(url)
-            return False
-        return url.isLocalFile()
 
 
 class _Bridge(QObject):
@@ -67,6 +61,18 @@ class _Bridge(QObject):
     def act(self, card_id: int, action: str) -> None:
         self.panel.act(card_id, action)
 
+    @Slot(int)
+    def chooseDeck(self, deck_id: int) -> None:
+        self.panel.choose_deck(deck_id or None)
+
+    @Slot()
+    def refresh(self) -> None:
+        self.panel.refresh()
+
+    @Slot(str)
+    def open(self, what: str) -> None:
+        (self.panel.browseRequested if what == "browse" else self.panel.statsRequested).emit()
+
 
 class ReviewPanel(QWidget):
     """An overview of what is due, then one card at a time: answer it (graded where it can be),
@@ -75,6 +81,9 @@ class ReviewPanel(QWidget):
     sourceRequested = Signal(int, int)  # book id, 0-based page (-1 if unknown)
     chatRequested = Signal(int, int)  # book id, chat id
     countsChanged = Signal()  # a card was reviewed, suspended or deleted
+    browseRequested = Signal()
+    statsRequested = Signal()
+    editRequested = Signal(int)  # card id, to open in the browser
 
     def __init__(self, db: Database, worker: ChatWorker, all_books: bool = False, parent=None):
         super().__init__(parent)
@@ -82,14 +91,16 @@ class ReviewPanel(QWidget):
         self.worker = worker
         self.all_books = all_books
         self.book_id: int | None = None
+        self.deck_id: int | None = None  # all_books: the deck (and its subdecks) to review; None for all
         self.card_id: int | None = None  # the card on display; None for the overview
+        self._shown_at = 0.0  # when the card on display was first shown (monotonic), for its review time
         self._answer: dict | None = None  # its answer so far: {response, status, verdict, feedback}
         self._grading: dict[int, str] = {}  # card id -> the free response Claude is grading
         self._skip: list[int] = []  # cards just answered or skipped, not to be shown again right away
         self._reviewed = 0  # cards reviewed since the session started
 
         self.view = QWebEngineView()
-        self.view.setPage(_Page(self.view))
+        self.view.setPage(LocalPage(self.view))
         self.view.page().setBackgroundColor(QColor(theme().colors["surface"]))
         self.channel = QWebChannel(self.view.page())
         self.channel.registerObject("review", _Bridge(self))
@@ -127,6 +138,7 @@ class ReviewPanel(QWidget):
 
     def _on_loaded(self, ok: bool) -> None:
         self._ready = True
+        self.view.page().runJavaScript(f"setMedia({json.dumps(media_url())})")
         for js in self._pending:
             self.view.page().runJavaScript(js)
         self._pending.clear()
@@ -150,7 +162,15 @@ class ReviewPanel(QWidget):
         self.stop()
 
     def counts(self) -> dict:
-        return srs.counts(self.db, self.scope)
+        return srs.counts(self.db, self.scope, deck=self.deck)
+
+    @property
+    def deck(self) -> int | None:
+        return self.deck_id if self.all_books else None
+
+    def choose_deck(self, deck_id: int | None) -> None:
+        self.deck_id = deck_id  # the overview drops it if the deck is gone
+        self.stop()
 
     def refresh(self) -> None:
         """Redraw: the card on display (unless it is gone) or the overview."""
@@ -165,16 +185,40 @@ class ReviewPanel(QWidget):
             self._js("showOverview", {"disabled": True})
             return
         now = time.time()
-        c = srs.counts(self.db, self.scope, now)
-        upcoming = srs.next_due(self.db, self.scope, now)
-        self._js("showOverview", {
+        if self.deck_id is not None and self.db.deck(self.deck_id) is None:
+            self.deck_id = None
+        c = srs.counts(self.db, self.scope, now, deck=self.deck)
+        upcoming = srs.next_due(self.db, self.scope, now, deck=self.deck)
+        overview = {
             **c,
             "all": self.all_books,
-            "ready": srs.next_card(self.db, self.scope, now) is not None,
+            "ready": srs.next_card(self.db, self.scope, now, deck=self.deck) is not None,
             "next": when(upcoming, now) if upcoming else "",
             "reviewed": self._reviewed,
             "new_per_day": srs.new_per_day(self.db),
-        })
+        }
+        if self.all_books:
+            overview.update(self._decks_overview(now, c if self.deck is None else None))
+        self._js("showOverview", overview)
+
+    def _decks_overview(self, now: float, everything: dict | None = None) -> dict:
+        """The deck list for picking what to review: each deck with its parent and counts.
+        everything: srs.counts over all decks, if already known."""
+        counts = srs.deck_counts(self.db, now)
+        decks = [d for d in self.db.decks() if counts[d["id"]]["total"]]
+        by_name = {d["name"]: d["id"] for d in decks}
+        left = srs.new_left_today(self.db, now)
+        everything = everything or srs.counts(self.db, None, now)
+        deck = self.db.deck(self.deck_id) if self.deck_id is not None else None
+        return {
+            "decks": [{
+                "id": d["id"], "name": d["name"].rsplit("::", 1)[-1], "path": d["name"],
+                "parent": by_name.get(d["name"].rsplit("::", 1)[0]) if "::" in d["name"] else None,
+                "due": counts[d["id"]]["due"], "new": min(counts[d["id"]]["new"], left),
+            } for d in decks],
+            "deck": self.deck_id, "deck_name": deck["name"].replace("::", " › ") if deck else "",
+            "all_due": everything["due"], "all_new": everything["new"],
+        }
 
     # -- the session ---------------------------------------------------------------------
     def start(self) -> None:
@@ -187,9 +231,10 @@ class ReviewPanel(QWidget):
         self._show_overview()
 
     def _next(self) -> None:
-        card = srs.next_card(self.db, self.scope, skip=self._skip)
+        card = srs.next_card(self.db, self.scope, skip=self._skip, deck=self.deck)
         self.card_id = card["id"] if card else None
         self._answer = None
+        self._shown_at = time.monotonic()
         if card is None:
             self._show_overview()
         else:
@@ -201,18 +246,20 @@ class ReviewPanel(QWidget):
         a = self._answer
         if a is None and card["id"] in self._grading:  # still being graded, e.g. after a refresh
             a = {"response": {"text": self._grading[card["id"]]}, "status": "pending", "verdict": None, "feedback": ""}
-        c = srs.counts(self.db, self.scope, now)
-        book = self.db.book(card["book_id"])
+        c = srs.counts(self.db, self.scope, now, deck=self.deck)
+        book = self.db.book(card["book_id"]) if card["book_id"] is not None else None
+        deck = self.db.deck(card["deck_id"])
         self._js("showCard", {
             "id": card["id"],
             "question": srs.question(card),
             "title": card["title"],
-            "book": book["title"] if self.all_books else "",
-            "page": card["page"],
+            "deck": deck["name"] if deck else "",
+            "book": book["title"] if self.all_books and book else "",
+            "page": card["page"] if book else None,
             "chat": card["message_id"] is not None,
             "new": srs.is_new(card),
             "answer": a,
-            "previews": srs.previews(card, now) if a and a["status"] != "pending" else None,
+            "previews": srs.previews(card, now, self.db) if a and a["status"] != "pending" else None,
             "suggested": srs.suggested_rating(a["verdict"]) if a else None,
             "remaining": {"due": c["due"], "new": c["new"]},
         })
@@ -224,7 +271,7 @@ class ReviewPanel(QWidget):
             return
         q = srs.question(card)
         verdict = None
-        if q["type"] not in ("flashcard", "free"):
+        if q["type"] not in (*cardmodel.SELF_RATED, "free"):
             try:
                 verdict = quiz.grade(q, response)
             except quiz.AnswerError as e:
@@ -251,12 +298,16 @@ class ReviewPanel(QWidget):
         if message:
             history = [(m["role"], m["text"]) for m in self.db.messages(chat["id"])
                        if m["id"] <= message["id"] and m["role"] != "error"]
-        book = self.db.book(card["book_id"])
+        book = self.db.book(card["book_id"]) if card["book_id"] is not None else None
+        deck = self.db.deck(card["deck_id"])
+        title = card["title"] if message else (deck["name"] if deck else "")
         return Job(
             chat_id=chat["id"] if chat else 0,
-            book=BookRef(book["id"], book["path"], book["title"], book["base_session_id"], book["context_mode"]),
+            # A card from no book (made in the browser, or migrated) is graded in a fresh session.
+            book=BookRef(book["id"], book["path"], book["title"], book["base_session_id"], book["context_mode"])
+            if book else None,
             chat_session_id=message["session_id"] if message else None,
-            question=quiz.review_grading_prompt(card["title"], card["question"], srs.question(card), text),
+            question=quiz.review_grading_prompt(title, card["question"] if message else None, srs.question(card), text),
             history=history,
             page=card["page"] or 0,
             model=(chat["model"] if chat else "") or self.db.get_setting("model") or None,
@@ -282,7 +333,8 @@ class ReviewPanel(QWidget):
         if card_id != self.card_id or rating not in quiz.RATINGS:
             return
         a = self._answer or {}
-        srs.review(self.db, card_id, rating, response=a.get("response"), verdict=a.get("verdict"))
+        duration = int(min(time.monotonic() - self._shown_at, MAX_REVIEW_SECONDS) * 1000)
+        srs.review(self.db, card_id, rating, response=a.get("response"), verdict=a.get("verdict"), duration=duration)
         self._grading.pop(card_id, None)
         self._reviewed += 1
         self._skip = [card_id]  # skipped cards may come back now
@@ -299,6 +351,8 @@ class ReviewPanel(QWidget):
             message = self.db.message(card["message_id"]) if card["message_id"] is not None else None
             if message:
                 self.chatRequested.emit(card["book_id"], message["chat_id"])
+        elif action == "edit":
+            self.editRequested.emit(card_id)
         elif action == "skip":
             self._skip.append(card_id)
             self._next()

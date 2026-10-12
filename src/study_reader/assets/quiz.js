@@ -4,6 +4,12 @@ const LETTERS = "ABCDEFGHIJ";
 const VERDICT_LABELS = { correct: "✓ Correct", partial: "◐ Partly right", incorrect: "✗ Not quite" };
 const RATING_LABELS = { 1: "Again", 2: "Hard", 3: "Good", 4: "Easy" };
 
+// Types the reviewer rates on their own once the answer is showing.
+const SELF_RATED = ["flashcard", "cloze", "occlusion"];
+
+// A question's Markdown; cards from the browser or Anki (q.html) may hold HTML.
+function mdq(q, text, inline = false) { return renderMarkdown(text, inline, !!q.html); }
+
 function tex(latex) {
   try { return katex.renderToString(latex, { throwOnError: false }); } catch (e) { return esc(latex); }
 }
@@ -15,20 +21,24 @@ function tex(latex) {
 // response's model answer outright rather than folded away).
 function questionHtml(q, a, opts = {}) {
   const draft = opts.draft || "";
-  let html = (opts.meta ? `<div class="q-meta">${opts.meta}</div>` : "") + `<div class="q-text">${renderMarkdown(q.question)}</div>`;
+  const showing = !!(a || opts.revealed);  // the answer side of a self-rated card
+  const front = q.type === "cloze" && showing ? q.answer : q.question;
+  let html = (opts.meta ? `<div class="q-meta">${opts.meta}</div>` : "")
+    + (front || q.type !== "occlusion" ? `<div class="q-text">${mdq(q, front)}</div>` : "");
+  if (q.type === "occlusion") html += occlusionHtml(q, showing);
   const r = a ? a.response || {} : {};
   const option = (label, k, value, chosen) => {
     let cls = "choice";
     if (a) cls += value === q.answer ? " right" : chosen ? " wrong" : " dim";
     return `<button class="${cls}" data-act="choose" data-k="${k}"${a ? " disabled" : ""}>`
-      + (label ? `<span class="letter">${label}</span>` : "") + `<span class="c-text">${value === true ? "True" : value === false ? "False" : renderMarkdown(q.choices[k], true)}</span></button>`;
+      + (label ? `<span class="letter">${label}</span>` : "") + `<span class="c-text">${value === true ? "True" : value === false ? "False" : mdq(q, q.choices[k], true)}</span></button>`;
   };
   if (q.type === "choice") {
     html += `<div class="choices">${q.choices.map((_, k) => option(LETTERS[k], k, k, r.choice === k)).join("")}</div>`;
   } else if (q.type === "truefalse") {
     html += `<div class="choices tf">${[true, false].map((v, k) => option("", k, v, r.value === v)).join("")}</div>`;
   } else if (q.type === "numeric") {
-    const unit = q.unit ? ` <span class="unit">${renderMarkdown(q.unit, true)}</span>` : "";
+    const unit = q.unit ? ` <span class="unit">${mdq(q, q.unit, true)}</span>` : "";
     if (a) {
       html += `<div class="given"><span class="label">Your answer</span>${tex(r.latex || "")}${unit}</div>`;
       if (a.verdict !== "correct") html += `<div class="expected"><span class="label">Answer</span>${tex(q.answer_latex)}${unit}</div>`;
@@ -37,9 +47,10 @@ function questionHtml(q, a, opts = {}) {
         + `<button class="qbtn" data-act="numeric">Check</button></div>`
         + `<div class="submit-row">Enter to check · / for a fraction, ^ for a power</div><div class="q-error"></div>`;
     }
-  } else if (q.type === "flashcard") {
+  } else if (SELF_RATED.includes(q.type)) {
     if (!a && opts.revealed) {
-      html += `<div class="back">${renderMarkdown(q.answer)}</div>`;
+      if (q.type === "flashcard") html += `<div class="back">${mdq(q, q.answer)}</div>`;
+      else if (q.explanation) html += `<div class="explain">${mdq(q, q.explanation)}</div>`;
       if (opts.rate) html += `<div class="submit-row">How well did you know it?</div>${ratingRow()}`;
     } else if (!a) {
       html += `<div class="submit-row"><span class="grow">Recall the answer, then reveal it</span>`
@@ -63,20 +74,42 @@ function resultHtml(q, a, opts = {}) {
       + ` <button class="qbtn quiet" data-act="regrade">Try again</button></div>`;
   let html = "";
   const rating = a.response && a.response.rating;
-  if (q.type === "flashcard") {
-    html += `<div class="back">${renderMarkdown(q.answer)}</div>`;
+  if (SELF_RATED.includes(q.type)) {
+    if (q.type === "flashcard") html += `<div class="back">${mdq(q, q.answer)}</div>`;
     if (rating) html += `<div class="verdict ${a.verdict || "none"}">You rated it ${RATING_LABELS[rating]}</div>`;
   } else if (a.verdict || a.feedback) {
     html += `<div class="verdict ${a.verdict || "none"}">${VERDICT_LABELS[a.verdict] || "Feedback"}</div>`;
   }
   if (a.feedback) html += `<div class="feedback">${renderMarkdown(a.feedback)}</div>`;
-  if (q.explanation) html += `<div class="explain">${renderMarkdown(q.explanation)}</div>`;
+  if (q.explanation) html += `<div class="explain">${mdq(q, q.explanation)}</div>`;
   if (q.type === "free" && q.answer) {
     html += opts.openAnswer
-      ? `<div class="model-answer"><span class="label">Model answer</span><div>${renderMarkdown(q.answer)}</div></div>`
-      : `<details><summary>Model answer</summary>${renderMarkdown(q.answer)}</details>`;
+      ? `<div class="model-answer"><span class="label">Model answer</span><div>${mdq(q, q.answer)}</div></div>`
+      : `<details><summary>Model answer</summary>${mdq(q, q.answer)}</details>`;
   }
   return html;
+}
+
+// An image with shapes masked over it (Anki's image occlusion). The card's own shapes (q.active)
+// are hidden until the answer shows, then outlined; the others stay covered if they were made
+// "hide all, guess one" (oi), else aren't drawn.
+function occlusionHtml(q, showing) {
+  const shapes = (q.shapes || []).map(s => {
+    const mine = s.ord === q.active;
+    if (!mine && !s.oi) return "";
+    const cls = mine ? (showing ? "occ mine shown" : "occ mine") : "occ other";
+    if (s.shape === "ellipse") {
+      const rx = (s.rx ?? s.width / 2), ry = (s.ry ?? s.height / 2);
+      return `<ellipse class="${cls}" cx="${s.left + rx}" cy="${s.top + ry}" rx="${rx}" ry="${ry}"/>`;
+    }
+    if (s.shape === "polygon" && s.points) {
+      return `<polygon class="${cls}" points="${s.points.map(p => p.join(",")).join(" ")}"/>`;
+    }
+    if (s.shape === "text") return "";
+    return `<rect class="${cls}" x="${s.left}" y="${s.top}" width="${s.width}" height="${s.height}"/>`;
+  }).join("");
+  return `<div class="occlusion"><img src="${esc(mediaUrl(q.image || ""))}">`
+    + `<svg viewBox="0 0 1 1" preserveAspectRatio="none">${shapes}</svg></div>`;
 }
 
 // Again / Hard / Good / Easy. previews: {rating: "10m"} for when each brings the card back;

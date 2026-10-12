@@ -113,6 +113,7 @@ class LibraryView(QWidget):
     webRequested = Signal()
     refetchRequested = Signal(int)  # a web snapshot to replace with a fresh copy
     reviewRequested = Signal()  # review every book's cards
+    cardsRequested = Signal()  # the card browser
 
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
@@ -134,12 +135,17 @@ class LibraryView(QWidget):
         top.addWidget(self.count)
         self.review = QPushButton("Review")
         self.review.setIcon(icon("cards"))
-        self.review.setToolTip("Review the cards from every book's quizzes")
+        self.review.setToolTip("Review your cards: every deck, or pick one")
         self.review.clicked.connect(self.reviewRequested)
+        self.cards = QPushButton("Browse cards")
+        self.cards.setIcon(icon("search"))
+        self.cards.setToolTip("Browse, search and edit every review card (Ctrl+Shift+B)")
+        self.cards.clicked.connect(self.cardsRequested)
         web = QPushButton("Open web page…")
         web.setIcon(icon("globe"))
         web.clicked.connect(self.webRequested)
         top.addStretch()
+        top.addWidget(self.cards)
         top.addWidget(self.review)
         top.addWidget(web)
         top.addWidget(browse)

@@ -124,6 +124,13 @@ def _validate(data, title: str) -> dict:
     return {"title": title or str(data.get("title") or "Quiz"), "questions": questions}
 
 
+def validate_question(raw: dict) -> dict:
+    """One question as a card holds it (no page). Raises ValueError, TypeError or KeyError if unusable."""
+    (q,) = _validate({"questions": [raw]}, "")["questions"]
+    q.pop("page", None)
+    return q
+
+
 def scopes(toc: list[tuple[int, str, int]], page: int, page_count: int) -> list[tuple[int, int, int, str]]:
     """The nested contents entries around `page`, outermost first, as (level, first page, last page,
     title), all 0-based. toc: (level, title, first page) as Document.toc() gives it."""
@@ -253,10 +260,15 @@ def grading_prompt(quiz: dict, index: int, response_text: str) -> str:
     return _grading_prompt(intro, quiz["questions"][index], response_text)
 
 
-def review_grading_prompt(title: str, index: int, question: dict, response_text: str) -> str:
-    """Grading a free response given when the question came back in review."""
-    intro = (f"I'm reviewing question {index + 1} of your quiz \"{title}\" again, in spaced-repetition "
-             "review. Grade my answer.")
+def review_grading_prompt(title: str, index: int | None, question: dict, response_text: str) -> str:
+    """Grading a free response given when the question came back in review. index None: the
+    question isn't from a quiz in a chat; title is then its deck."""
+    if index is None:
+        deck = f" (deck \"{title}\")" if title else ""
+        intro = f"I'm reviewing this question from my spaced-repetition deck{deck}. Grade my answer."
+    else:
+        intro = (f"I'm reviewing question {index + 1} of your quiz \"{title}\" again, in spaced-repetition "
+                 "review. Grade my answer.")
     return _grading_prompt(intro, question, response_text)
 
 

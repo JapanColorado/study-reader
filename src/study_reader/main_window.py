@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer
+import threading
+
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
@@ -17,6 +20,7 @@ from . import quiz, srs
 from .calculator import CalculatorPanel
 from .chat_panel import MODELS, ChatPanel
 from .chat_service import ChatWorker
+from .convert_dialog import ConversionManager
 from .db import Database, data_dir
 from .document import Document, file_hash
 from .library_view import LibraryView
@@ -37,6 +41,11 @@ class MainWindow(QMainWindow):
         theme().configure(self.db.get_setting("theme", "system"), self.db.get_setting("dark_pages") == "1")
         self.worker = ChatWorker(data_dir() / "sessions", self)
         srs.backfill(self.db)  # once: cards for quizzes from before there were cards
+        self.conversions = ConversionManager(self.db, self.worker, self)  # Claude Conversion of cards
+        self.conversions.cardsChanged.connect(lambda: self._on_cards_changed())
+        self.browser = None  # browser.CardBrowser, made when first opened
+        self.stats_window = None  # stats_view.StatsWindow, likewise
+        self._optimizer: _Optimizer | None = None
         self.doc: Document | None = None
         self.book_id: int | None = None
 
@@ -82,6 +91,7 @@ class MainWindow(QMainWindow):
         self.library.webRequested.connect(self.ask_url)
         self.library.refetchRequested.connect(self.refetch)
         self.library.reviewRequested.connect(self.show_review_all)
+        self.library.cardsRequested.connect(self.show_browser)
         self.web = WebImporter(data_dir() / "web", self)
         self.web.status.connect(lambda text: self._web_progress and self._web_progress.setLabelText(text))
         self.web.finished.connect(self._on_web_done)
@@ -104,6 +114,9 @@ class MainWindow(QMainWindow):
             panel.countsChanged.connect(self._on_cards_changed)
             panel.sourceRequested.connect(self._review_source)
             panel.chatRequested.connect(self._review_chat)
+            panel.browseRequested.connect(self.show_browser)
+            panel.statsRequested.connect(lambda p=panel: self.show_stats(p.deck, None if p.all_books else p.book_id))
+            panel.editRequested.connect(lambda card_id: self.show_browser().show_card(card_id))
         theme().changed.connect(self._on_theme_changed)
         self._on_theme_changed()
 
@@ -230,7 +243,18 @@ class MainWindow(QMainWindow):
             a.setChecked(self.chat.default_model() == value)
             a.triggered.connect(lambda _=False, v=value: self.chat.set_default_model(v))
             group.addAction(a)
-        menu.addAction(icon("cards"), "New review cards per day…").triggered.connect(self._set_new_per_day)
+        menu.addSeparator()
+        browse = menu.addAction(icon("search"), "Browse cards…")
+        browse.setShortcut(QKeySequence("Ctrl+Shift+B"))
+        browse.triggered.connect(self.show_browser)
+        self.addAction(browse)
+        menu.addAction(icon("chart"), "Statistics…").triggered.connect(lambda: self.show_stats())
+        menu.addAction(icon("import"), "Migrate from Anki…").triggered.connect(self.migrate_from_anki)
+        review_menu = menu.addMenu(icon("cards"), "Review settings")
+        review_menu.addAction("New cards per day…").triggered.connect(self._set_new_per_day)
+        review_menu.addAction("Desired retention…").triggered.connect(self._set_retention)
+        review_menu.addAction("Optimize FSRS parameters…").triggered.connect(self._optimize)
+        review_menu.addAction("Use default FSRS parameters").triggered.connect(self._reset_parameters)
         settings = QToolButton()
         settings.setIcon(icon("settings"))
         settings.setToolTip("Settings")
@@ -597,9 +621,12 @@ class MainWindow(QMainWindow):
 
     def _on_cards_changed(self) -> None:
         for panel in (self.review, self.review_all):
-            if panel.card_id is None:  # a card being answered stays put
+            # A card being answered stays put; a hidden panel refreshes when it is shown.
+            if panel.card_id is None and panel.isVisible():
                 panel.refresh()
         self._update_review_counts()
+        if self.stats_window is not None and self.stats_window.isVisible():
+            self.stats_window.refresh()
 
     def _update_review_counts(self) -> None:
         c = srs.counts(self.db, self.book_id) if self.book_id is not None else None
@@ -629,6 +656,121 @@ class MainWindow(QMainWindow):
             self._warn("Could not open book", f"The book's file is missing:\n{book['path'] if book else book_id}")
             return False
         return self.open_book(book["path"], remember_dir=False)
+
+    # -- cards: browser, statistics, Anki --------------------------------------------
+    def show_browser(self):
+        """The card browser window (made on first use)."""
+        if self.browser is None:
+            from .browser import CardBrowser
+            self.browser = CardBrowser(self.db, self.conversions, self)
+            self.browser.cardsChanged.connect(self._on_cards_changed)
+            self.browser.bookRequested.connect(self._browser_book)
+            self.browser.reviewDeckRequested.connect(self._review_deck)
+            self.browser.statsRequested.connect(lambda deck: self.show_stats(deck or None))
+            self.browser.migrateRequested.connect(self.migrate_from_anki)
+        else:
+            self.browser.refresh()
+        self.browser.show()
+        self.browser.raise_()
+        self.browser.activateWindow()
+        return self.browser
+
+    def show_stats(self, deck_id: int | None = None, book_id: int | None = None) -> None:
+        if self.stats_window is None:
+            from .stats_view import StatsWindow
+            self.stats_window = StatsWindow(self.db, self)
+            self.stats_window.setWindowFlag(Qt.WindowType.Window)
+        self.stats_window.show_scope(deck_id=deck_id, book_id=book_id)
+        self.stats_window.show()
+        self.stats_window.raise_()
+        self.stats_window.activateWindow()
+
+    def migrate_from_anki(self) -> None:
+        from .anki_dialog import AnkiImportDialog
+        dialog = AnkiImportDialog(self.db, self.browser if self.browser and self.browser.isActiveWindow() else self)
+        if dialog.exec():
+            self._on_migrated(dialog.query)
+
+    def _on_migrated(self, query: str) -> None:
+        self._on_cards_changed()
+        if query:
+            self.show_browser().set_search(query)
+        elif self.browser is not None:
+            self.browser.refresh()
+
+    def _browser_book(self, book_id: int, page: int) -> None:
+        if book_id != self.book_id and not self._open_book_id(book_id):
+            return
+        self.raise_()
+        self.activateWindow()
+        if page >= 0:
+            self.reader.go_to(page)
+
+    def _review_deck(self, deck_id: int) -> None:
+        self.show_review_all()
+        self.review_all.choose_deck(deck_id)
+        self.raise_()
+        self.activateWindow()
+
+    def _set_retention(self) -> None:
+        r, ok = QInputDialog.getDouble(
+            self, "Desired retention", "How likely you want to be to remember a card when it comes back (0.70–0.99).\n"
+            "Higher means shorter intervals and more reviews.", srs.desired_retention(self.db), 0.7, 0.99, 2)
+        if ok:
+            self.db.set_setting(srs.RETENTION_SETTING, f"{r:.2f}")
+            self._on_cards_changed()
+
+    def _optimize(self) -> None:
+        n = srs.optimizable_reviews(self.db)
+        if n < srs.MIN_OPTIMIZE_REVIEWS:
+            self._warn("Optimize FSRS parameters",
+                       f"There are {n} reviews to learn from; optimizing needs at least {srs.MIN_OPTIMIZE_REVIEWS} "
+                       "(reviews of cards after their first). Until then the current parameters are a better bet.",
+                       QMessageBox.Icon.Information)
+            return
+        if self._optimizer is not None:
+            return
+        if importlib.util.find_spec("torch") is None:  # the optimizer's; importing it here would stall the GUI
+            self._warn("Optimize FSRS parameters", "The optimizer needs PyTorch, which isn't installed.")
+            return
+        progress = QProgressDialog(f"Fitting FSRS to {n} reviews…", None, 0, 0, self)
+        progress.setWindowTitle("Optimize FSRS parameters")
+        progress.setMinimumDuration(0)
+        progress.setMinimumWidth(380)
+        progress.show()
+        self._optimizer = _Optimizer(srs.review_logs(self.db), self)
+        self._optimizer.finished.connect(lambda weights, error: self._optimized(weights, error, progress))
+        self._optimizer.start()
+
+    def _optimized(self, weights: list, error: str, progress: QProgressDialog) -> None:
+        progress.close()
+        self._optimizer = None
+        if error:
+            self._warn("Optimize FSRS parameters", f"Optimizing failed: {error}")
+            return
+        old = srs.parameters(self.db)
+        changed = max(abs(a - b) for a, b in zip(old, weights)) if len(old) == len(weights) else 1
+        if changed < 1e-4:
+            self._warn("Optimize FSRS parameters", "The current parameters already fit your reviews.",
+                       QMessageBox.Icon.Information)
+            return
+        answer = QMessageBox.question(
+            self, "Optimize FSRS parameters",
+            "New parameters fitted to your reviews:\n\n" + ", ".join(f"{w:.4f}" for w in weights)
+            + "\n\nUse them? Cards keep their memory state; future intervals follow the new parameters.")
+        if answer == QMessageBox.StandardButton.Yes:
+            try:
+                srs.set_parameters(self.db, weights)
+            except ValueError as e:
+                self._warn("Optimize FSRS parameters", f"These parameters can't be used: {e}")
+                return
+            self._on_cards_changed()
+
+    def _reset_parameters(self) -> None:
+        if QMessageBox.question(self, "FSRS parameters", "Go back to FSRS's default parameters?") \
+                == QMessageBox.StandardButton.Yes:
+            srs.set_parameters(self.db, None)
+            self._on_cards_changed()
 
     def _set_new_per_day(self) -> None:
         n, ok = QInputDialog.getInt(
@@ -670,8 +812,29 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._save_position()
+        if self.browser is not None:
+            self.browser.save_note()
         self.worker.shutdown()
         super().closeEvent(event)
+
+
+class _Optimizer(QObject):
+    """Fits FSRS parameters on a thread (PyTorch can take a while); finished(weights, error)."""
+
+    finished = Signal(list, str)
+
+    def __init__(self, logs: list, parent=None):
+        super().__init__(parent)
+        self.logs = logs
+
+    def start(self) -> None:
+        threading.Thread(target=self._run, daemon=True, name="fsrs-optimizer").start()
+
+    def _run(self) -> None:
+        try:
+            self.finished.emit(srs.fit(self.logs), "")
+        except Exception as e:  # noqa: BLE001 - reported to the user
+            self.finished.emit([], str(e) or type(e).__name__)
 
 
 class _MinimumSizeKeeper(QObject):

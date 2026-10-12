@@ -48,8 +48,8 @@ def export_name(title: str) -> str:
     return f"{' '.join(stem.split())[:80] or 'Book'} notes.md"
 
 
-class _Page(QWebEnginePage):
-    """Links in a note open in the browser; nothing navigates the page away."""
+class LocalPage(QWebEnginePage):
+    """Links open in the web browser; nothing navigates the page away from local files."""
 
     def acceptNavigationRequest(self, url: QUrl, nav_type, is_main_frame: bool) -> bool:
         if url.scheme() in ("http", "https", "mailto"):
@@ -113,7 +113,7 @@ class NotesPanel(QWidget):
         self.search.textChanged.connect(self.refresh)
 
         self.view = QWebEngineView()
-        self.view.setPage(_Page(self.view))
+        self.view.setPage(LocalPage(self.view))
         self.view.page().setBackgroundColor(QColor(theme().colors["surface"]))
         self.channel = QWebChannel(self.view.page())
         self.channel.registerObject("notes", _Bridge(self))

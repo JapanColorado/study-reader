@@ -72,6 +72,13 @@ ICONS = {
     "help": '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
     "note": '<path d="M15.5 3H5a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2V8.5L15.5 3Z"/><path d="M15 3v6h6"/>',
     "cards": '<rect width="14" height="16" x="7" y="5" rx="2"/><path d="M4 16V5a2 2 0 0 1 2-2h9"/>',
+    "chart": '<path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
+    "sparkles": '<path d="M9.94 15.5A2 2 0 0 0 8.5 14.06l-6.14-1.58a.5.5 0 0 1 0-.96L8.5 9.94A2 2 0 0 0 9.94 8.5l1.58-6.14'
+                'a.5.5 0 0 1 .96 0L14.06 8.5A2 2 0 0 0 15.5 9.94l6.14 1.58a.5.5 0 0 1 0 .96L15.5 14.06a2 2 0 0 0-1.44 1.44'
+                'l-1.58 6.14a.5.5 0 0 1-.96 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/>',
+    "search": '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+    "import": '<path d="M12 3v12"/><path d="m8 11 4 4 4-4"/>'
+              '<path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4"/>',
     "download": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
 }
 
@@ -212,6 +219,31 @@ QLineEdit#urlInput:focus { border-color: $accent; }
 QLineEdit#notesSearch { background: $raised; color: $fg; border: 1px solid $border; border-radius: 7px; padding: 4px 8px;
                         selection-background-color: $accent_soft; selection-color: $fg; }
 QLineEdit#notesSearch:focus { border-color: $accent; }
+QLineEdit#browserSearch, QLineEdit#tagsInput, QPlainTextEdit#fieldEdit, QWidget#browser QLineEdit, QDialog QLineEdit,
+QDialog QPlainTextEdit, QDoubleSpinBox {
+    background: $raised; color: $fg; border: 1px solid $border; border-radius: 7px; padding: 4px 7px;
+    selection-background-color: $accent_soft; selection-color: $fg; }
+QLineEdit#browserSearch:focus, QLineEdit#tagsInput:focus, QPlainTextEdit#fieldEdit:focus, QWidget#browser QLineEdit:focus,
+QDialog QLineEdit:focus, QDialog QPlainTextEdit:focus, QDoubleSpinBox:focus { border-color: $accent; }
+QLineEdit#browserSearch { padding: 6px 9px; }
+QWidget#browser { background: $window; }
+QTableView { background: $surface; alternate-background-color: $hover; color: $fg; border: 1px solid $border;
+             border-radius: 6px; gridline-color: $border; outline: 0;
+             selection-background-color: $accent_soft; selection-color: $fg; }
+QTableView::item { padding: 0 6px; border: none; }
+QTableView::item:selected { background: $accent_soft; color: $fg; }
+QHeaderView { background: transparent; }
+QHeaderView::section { background: $window; color: $muted; border: none; border-bottom: 1px solid $border;
+                       border-right: 1px solid $border; padding: 4px 6px; font-weight: 600; }
+QHeaderView::section:hover { color: $fg; }
+QTableCornerButton::section { background: $window; border: none; }
+QCheckBox { color: $fg; spacing: 7px; }
+QMenuBar { background: $window; color: $fg; border-bottom: 1px solid $border; }
+QMenuBar::item { padding: 4px 10px; background: transparent; border-radius: 5px; }
+QMenuBar::item:selected { background: $hover; }
+QStatusBar { background: $window; color: $muted; }
+QScrollArea { background: transparent; border: none; }
+QScrollArea > QWidget > QWidget { background: transparent; }
 
 QSpinBox { background: $surface; color: $fg; border: 1px solid $border; border-radius: 6px; padding: 3px 4px; }
 QSpinBox:focus { border-color: $accent; }

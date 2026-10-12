@@ -11,6 +11,15 @@ PAGES = [
 
 
 @pytest.fixture
+def db(tmp_path, monkeypatch):
+    """An empty database, with the data folder (media) in tmp_path too."""
+    from study_reader.db import Database
+
+    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    return Database(tmp_path / "t.db")
+
+
+@pytest.fixture
 def pdf_path(tmp_path):
     doc = pymupdf.open()
     for i, text in enumerate(PAGES):
@@ -65,10 +74,12 @@ def chat_panel(tmp_path, monkeypatch):
         graded, gradeFailed = Signal(int, str), Signal(int, str)
         cardGraded, cardGradeFailed = Signal(int, str), Signal(int, str)
         titled = Signal(int, str)
+        converted, convertFailed = Signal(int, str), Signal(int, str)
 
         def __init__(self):
             super().__init__()
             self.jobs, self.gradings, self.card_gradings, self.titles = [], [], [], []
+            self.conversions = []
 
         def submit(self, job):
             self.jobs.append(job)
@@ -81,6 +92,9 @@ def chat_panel(tmp_path, monkeypatch):
 
         def submit_title(self, chat_id, question, passage, reply):
             self.titles.append((chat_id, question, passage, reply))
+
+        def submit_conversion(self, batch_id, blocks, model, system_prompt):
+            self.conversions.append((batch_id, blocks, model, system_prompt))
 
     QApplication.instance() or QApplication([])
     db = Database(tmp_path / "t.db")

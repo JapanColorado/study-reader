@@ -129,8 +129,11 @@ def test_deleting_messages_keeps_only_reviewed_cards(tmp_path):
     srs.add_quiz_cards(db, book_id, reply2, CARDS, now=NOW)
     db.delete_chat(chat)
     assert [c["id"] for c in db.cards(book_id)] == [kept]
-    db.delete_book(book_id)
-    assert db.cards() == []
+    reply3 = db.add_message(db.create_chat(book_id, "Again"), "assistant", CARDS)
+    srs.add_quiz_cards(db, book_id, reply3, CARDS, now=NOW)
+    db.delete_book(book_id)  # reviewed cards stay in their deck; unreviewed ones go with the chats
+    (card,) = db.cards()
+    assert card["id"] == kept and card["book_id"] is None
 
 
 def test_backfill_makes_cards_for_earlier_quizzes(tmp_path):
