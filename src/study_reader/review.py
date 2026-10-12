@@ -14,7 +14,7 @@ from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QMessageBox, QVBoxLayout, QWidget
 
-from . import cardmodel, quiz, srs
+from . import cardmodel, gamify, quiz, srs
 from .chat_service import BookRef, ChatWorker, Job
 from .db import Database, media_url
 from .notes import LocalPage
@@ -37,9 +37,9 @@ class _Bridge(QObject):
         super().__init__(panel)
         self.panel = panel
 
-    @Slot()
-    def start(self) -> None:
-        self.panel.start()
+    @Slot(str)
+    def start(self, limit: str) -> None:
+        self.panel.start(limit)
 
     @Slot()
     def stop(self) -> None:
@@ -97,7 +97,8 @@ class ReviewPanel(QWidget):
         self._answer: dict | None = None  # its answer so far: {response, status, verdict, feedback}
         self._grading: dict[int, str] = {}  # card id -> the free response Claude is grading
         self._skip: list[int] = []  # cards just answered or skipped, not to be shown again right away
-        self._reviewed = 0  # cards reviewed since the session started
+        self._session: gamify.Session | None = None  # the session under way
+        self._summary: dict | None = None  # how the last session went, for the overview
 
         self.view = QWebEngineView()
         self.view.setPage(LocalPage(self.view))
@@ -160,6 +161,7 @@ class ReviewPanel(QWidget):
         self.book_id = book_id
         self.setEnabled(self.all_books or book_id is not None)
         self.stop()
+        self._summary = None
 
     def counts(self) -> dict:
         return srs.counts(self.db, self.scope, deck=self.deck)
@@ -194,8 +196,11 @@ class ReviewPanel(QWidget):
             "all": self.all_books,
             "ready": srs.next_card(self.db, self.scope, now, deck=self.deck) is not None,
             "next": when(upcoming, now) if upcoming else "",
-            "reviewed": self._reviewed,
+            "reviewed": self._summary["reviewed"] if self._summary else 0,
+            "summary": self._summary,
             "new_per_day": srs.new_per_day(self.db),
+            "game": gamify.status(self.db, now) if gamify.enabled(self.db) else None,
+            "quick": {"cards": gamify.QUICK_CARDS, "minutes": gamify.QUICK_SECONDS // 60},
         }
         if self.all_books:
             overview.update(self._decks_overview(now, c if self.deck is None else None))
@@ -221,24 +226,48 @@ class ReviewPanel(QWidget):
         }
 
     # -- the session ---------------------------------------------------------------------
-    def start(self) -> None:
-        self._reviewed = 0
+    def start(self, limit: str = "") -> None:
+        """Start a session: until nothing is left, or (limit "cards" or "time") a quick one."""
+        self._session = gamify.Session(limit if limit in ("cards", "time") else "")
+        self._summary = None
         self._skip = []
         self._next()
 
     def stop(self) -> None:
+        if self._session is not None and self._session.reviewed:
+            self._summary = self._session.summary(caught_up=False)
+        self._session = None
         self.card_id, self._answer = None, None
         self._show_overview()
 
     def _next(self) -> None:
+        if self._session is not None and self._session.over():
+            self._finish(caught_up=False)
+            return
         card = srs.next_card(self.db, self.scope, skip=self._skip, deck=self.deck)
         self.card_id = card["id"] if card else None
         self._answer = None
         self._shown_at = time.monotonic()
         if card is None:
-            self._show_overview()
+            self._finish(caught_up=True)
         else:
             self._show_card()
+
+    def _finish(self, caught_up: bool) -> None:
+        """The session is over: everything is reviewed, or a quick session's time or cards are up."""
+        session, self._session = self._session, None
+        self.card_id, self._answer = None, None
+        if session is None or not session.reviewed:
+            self._show_overview()
+            return
+        self._summary = session.summary(caught_up)
+        events = gamify.finished(self.db, caught_up, self._summary["quick"])
+        self._show_overview()
+        self._celebrate([*events, {"kind": "done", "caught_up": caught_up, "quick": self._summary["quick"]}])
+
+    def _celebrate(self, events: list[dict]) -> None:
+        if events and gamify.enabled(self.db):
+            self._js("celebrate", events)
 
     def _show_card(self) -> None:
         card = self.db.card(self.card_id)
@@ -262,6 +291,8 @@ class ReviewPanel(QWidget):
             "previews": srs.previews(card, now, self.db) if a and a["status"] != "pending" else None,
             "suggested": srs.suggested_rating(a["verdict"]) if a else None,
             "remaining": {"due": c["due"], "new": c["new"]},
+            "session": self._session.progress(c["due"] + c["new"]) if self._session else None,
+            "rewards": gamify.enabled(self.db),
         })
 
     def check(self, card_id: int, response: dict) -> None:
@@ -333,13 +364,20 @@ class ReviewPanel(QWidget):
         if card_id != self.card_id or rating not in quiz.RATINGS:
             return
         a = self._answer or {}
-        duration = int(min(time.monotonic() - self._shown_at, MAX_REVIEW_SECONDS) * 1000)
+        seconds = time.monotonic() - self._shown_at
+        duration = int(min(seconds, MAX_REVIEW_SECONDS) * 1000)
+        before = self.db.card(card_id)
         srs.review(self.db, card_id, rating, response=a.get("response"), verdict=a.get("verdict"), duration=duration)
         self._grading.pop(card_id, None)
-        self._reviewed += 1
+        session = self._session = self._session or gamify.Session()
+        events = session.record(before, self.db.card(card_id), rating, seconds)
+        events = gamify.reviewed(self.db, srs.is_new(before), session.multiplier, combo=session.best,
+                                 session=session.reviewed) + events
+        session.xp += sum(e["xp"] for e in events if e["kind"] == "xp")
         self._skip = [card_id]  # skipped cards may come back now
         self.countsChanged.emit()
         self._next()
+        self._celebrate(events)
 
     def act(self, card_id: int, action: str) -> None:
         card = self.db.card(card_id)

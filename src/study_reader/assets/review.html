@@ -10,6 +10,7 @@
 <script src="mathlive/mathlive.min.js"></script>
 <script src="mathfield.js"></script>
 <script src="quiz.js"></script>
+<script src="confetti.js"></script>
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 <style>
   /* Fallbacks; the app sets these from theme.py. */
@@ -63,6 +64,65 @@
   .deck-head .name { flex:1; } .deck-head .n { width:44px; text-align:right; }
   .links { display:flex; gap:12px; justify-content:center; margin-top:10px; font-size:12.5px; }
   .links a { color:var(--muted); text-decoration:none; } .links a:hover { color:var(--accent); }
+  /* Rewards (gamify.py) */
+  .player { display:flex; gap:8px; margin:0 0 10px; flex-wrap:wrap; }
+  .player > div { background:var(--raised); border:1px solid var(--border); border-radius:10px; padding:8px 10px; }
+  .player .l { font-size:12px; color:var(--muted); }
+  .player .n { font-size:1.4em; font-weight:650; line-height:1.15; font-variant-numeric:tabular-nums; }
+  .player .n small { font-size:0.6em; color:var(--muted); font-weight:500; }
+  .lvl { flex:2 1 190px; }
+  .lvl .top { display:flex; align-items:baseline; gap:8px; }
+  .lvl .badge { font-weight:700; font-size:12px; color:var(--accent-fg); background:var(--accent); border-radius:6px; padding:1px 7px; }
+  .lvl .title { font-weight:650; }
+  .xpbar { height:7px; border-radius:4px; background:var(--hover); overflow:hidden; margin:7px 0 3px; }
+  .xpbar i { display:block; height:100%; border-radius:4px; background:linear-gradient(90deg, var(--accent), var(--warning)); }
+  .streak, .ring { flex:1 1 110px; display:flex; align-items:center; gap:9px; }
+  .streak .flame { font-size:26px; line-height:1; }
+  .streak.off .flame { filter:grayscale(1); opacity:0.45; }
+  .ring svg { width:42px; height:42px; flex:none; transform:rotate(-90deg); }
+  .ring circle { fill:none; stroke-width:5; }
+  .ring .track { stroke:var(--hover); }
+  .ring .fill { stroke:var(--success); stroke-linecap:round; transition:stroke-dashoffset 0.6s; }
+  .nudge { font-size:13px; color:var(--muted); background:var(--accent-soft); border-radius:8px; padding:6px 10px; margin:0 0 12px; }
+  .quick { display:flex; gap:8px; margin-top:8px; }
+  .quick button { flex:1; font:inherit; font-size:13.5px; padding:6px; border-radius:9px; cursor:pointer;
+                  border:1px solid var(--border); background:var(--raised); color:var(--fg); }
+  .quick button:hover { border-color:var(--accent); color:var(--accent); }
+  .box { background:var(--raised); border:1px solid var(--border); border-radius:10px; padding:8px 10px; margin-top:14px; }
+  .box > .head, details.box > summary { font-size:12px; color:var(--muted); font-weight:600; }
+  details.box > summary { cursor:pointer; }
+  .heat { overflow-x:auto; margin-top:6px; }
+  .heat svg { display:block; }
+  .ach-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(170px, 1fr)); gap:4px; margin-top:8px; }
+  .ach { display:flex; gap:8px; align-items:center; padding:4px 6px; border-radius:7px; font-size:12.5px; line-height:1.3; }
+  .ach .i { font-size:20px; flex:none; }
+  .ach .d { color:var(--muted); font-size:11.5px; }
+  .ach.locked { opacity:0.45; } .ach.locked .i { filter:grayscale(1); }
+  .summary { background:var(--raised); border:1px solid var(--border); border-radius:12px; padding:12px 14px; margin:0 0 14px; text-align:center; }
+  .summary h2 { font-size:1.2em; margin:0 0 10px; }
+  .summary .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(90px, 1fr)); gap:8px; }
+  .summary .n { font-size:1.35em; font-weight:650; font-variant-numeric:tabular-nums; }
+  .summary .l { font-size:12px; color:var(--muted); }
+  .prog { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); margin:0 0 8px; }
+  .prog .track { flex:1; height:6px; border-radius:3px; background:var(--hover); overflow:hidden; }
+  .prog .track i { display:block; height:100%; border-radius:3px; background:var(--accent); transition:width 0.4s; }
+  .prog .label { font-variant-numeric:tabular-nums; }
+  .combo { font-weight:700; color:var(--warning); display:inline-block; white-space:nowrap; }
+  .combo.pulse { animation:pulse 0.5s; }
+  #toasts { position:fixed; top:10px; right:10px; z-index:60; display:flex; flex-direction:column; gap:6px; pointer-events:none; }
+  .toast { display:flex; gap:9px; align-items:center; max-width:270px; font-size:13px; line-height:1.35; background:var(--raised);
+           border:1px solid var(--border); border-left:4px solid var(--accent); border-radius:9px; padding:7px 12px;
+           box-shadow:0 4px 16px rgba(0,0,0,0.18); animation:toast-in 0.35s ease-out; }
+  .toast .i { font-size:22px; }
+  .toast .d { color:var(--muted); font-size:12px; }
+  .toast.out { animation:toast-out 0.4s forwards; }
+  .float { position:fixed; left:50%; top:46px; z-index:55; pointer-events:none; font-weight:700; font-size:15px;
+           color:var(--accent); animation:float-up 1.2s ease-out forwards; }
+  @keyframes float-up { from { opacity:1; transform:translate(-50%, 0); } to { opacity:0; transform:translate(-50%, -44px); } }
+  @keyframes toast-in { from { opacity:0; transform:translateX(30px); } to { opacity:1; transform:none; } }
+  @keyframes toast-out { to { opacity:0; transform:translateX(30px); } }
+  @keyframes pulse { 50% { transform:scale(1.35); } }
+  @media (prefers-reduced-motion: reduce) { .toast, .float, .combo.pulse { animation:none; } }
 </style>
 </head>
 <body>
@@ -118,19 +178,155 @@ function showOverview(o) {
       + `<div class="hint">${how}</div>`;
     return;
   }
+  const g = o.game;
   let html = `<h1>${o.all ? (o.deck_name ? esc(o.deck_name) : "Review all decks") : "Review"}</h1>`;
+  if (o.summary) html += summaryHtml(o.summary, !!g);
+  if (g) html += playerHtml(g);
   if (o.all && o.decks && o.decks.length) html += decksHtml(o);
   html += `<div class="stats">`
     + `<div class="stat due"><div class="n">${o.due}</div><div class="l">due</div></div>`
     + `<div class="stat new"><div class="n">${o.new}</div><div class="l">new today${o.new_total > o.new ? ` · ${o.new_total} waiting` : ""}</div></div>`
     + `<div class="stat"><div class="n">${o.total}</div><div class="l">cards${o.suspended ? ` · ${o.suspended} suspended` : ""}</div></div></div>`;
-  if (o.reviewed) html += `<div class="msg"><strong>${plural(o.reviewed, "card")} reviewed.</strong></div>`;
+  if (o.reviewed && !o.summary) html += `<div class="msg"><strong>${plural(o.reviewed, "card")} reviewed.</strong></div>`;
+  const more = o.reviewed ? " more" : "";
   if (o.ready) html += `<button class="start" data-act="start">${o.reviewed ? "Keep going" : "Start review"}</button>`
-    + `<div class="keys"><kbd>Space</kbd> to start</div>`;
+    + `<div class="quick"><button data-act="start" data-limit="cards" title="A short session: just ${o.quick.cards} cards">Just ${o.quick.cards}${more} cards</button>`
+    + `<button data-act="start" data-limit="time" title="A short session: as many cards as fit in ${o.quick.minutes} minutes">${o.quick.minutes}${more} minutes</button></div>`
+    + `<div class="keys"><kbd>Space</kbd> to start · <kbd>5</kbd> for ${o.quick.cards} cards</div>`;
   else html += `<div class="msg">All caught up${o.next ? ` — the next card is due ${esc(o.next)}` : ""}.`
     + (o.new_total > o.new ? `<br>Today's ${o.new_per_day} new cards are done; more tomorrow.` : "") + `</div>`;
   html += `<div class="links"><a href="#" data-act="browse">Browse cards</a><a href="#" data-act="stats">Statistics</a></div>`;
+  if (g) html += extrasHtml(g);
   root.innerHTML = html + `<div class="hint">${how}</div>`;
+  if (g) heatmap(document.getElementById("heat"), g.heat);
+}
+
+// -- rewards (gamify.py) ------------------------------------------------------------------
+let ACH_OPEN = false;  // the achievements list is expanded
+const comma = n => n.toLocaleString();
+
+function playerHtml(g) {
+  const r = 17, C = 2 * Math.PI * r, frac = Math.min(g.today / g.goal, 1);
+  const met = g.goal_met;
+  let html = `<div class="player">`
+    + `<div class="lvl" title="${comma(g.xp)} XP in all: 10 a card, 15 a new one, times your combo multiplier">`
+    + `<div class="top"><span class="badge">Lv ${g.level}</span><span class="title">${esc(g.title)}</span></div>`
+    + `<div class="xpbar"><i style="width:${(100 * g.into / g.need).toFixed(1)}%"></i></div>`
+    + `<div class="l">${comma(g.into)} / ${comma(g.need)} XP to level ${g.level + 1}</div></div>`
+    + `<div class="streak${g.streak ? "" : " off"}" title="Days in a row with at least one review. A streak freeze `
+    + `covers a missed day; you earn one every ${g.freeze_every} days of streak (at most 2).">`
+    + `<span class="flame">🔥</span><div><div class="n">${g.streak}</div>`
+    + `<div class="l">day streak${g.freezes ? ` · ${"❄️".repeat(g.freezes)}` : ""}</div></div></div>`
+    + `<div class="ring" title="Daily goal: ${g.goal} reviews (change it under Settings › Review settings). Reviewing everything due meets it too.">`
+    + `<svg viewBox="0 0 42 42"><circle class="track" cx="21" cy="21" r="${r}"/>`
+    + `<circle class="fill" cx="21" cy="21" r="${r}" stroke-dasharray="${C.toFixed(2)}" stroke-dashoffset="${(C * (1 - (met ? 1 : frac))).toFixed(2)}"/></svg>`
+    + `<div><div class="n">${g.today}<small> / ${g.goal}</small></div><div class="l">${met ? "goal met ✓" : "today's goal"}</div></div></div>`
+    + `</div>`;
+  if (g.at_risk) html += `<div class="nudge">Keep your ${g.streak}-day streak going: even one card today counts.</div>`;
+  else if (g.lapsed) html += `<div class="nudge">A fresh start: one card begins a new streak.</div>`;
+  return html;
+}
+
+function summaryHtml(s, game) {
+  const head = s.caught_up ? "All caught up! 🎉" : s.quick ? "Quick session done! 🍪" : "Session summary";
+  const mins = `${Math.floor(s.seconds / 60)}:${String(s.seconds % 60).padStart(2, "0")}`;
+  const stat = (n, l) => `<div><div class="n">${n}</div><div class="l">${l}</div></div>`;
+  let cells = stat(s.reviewed, s.reviewed === 1 ? "card" : "cards")
+    + stat(`${Math.round(100 * s.passed / s.reviewed)}%`, "recalled")
+    + stat(mins, "time");
+  if (game) cells += stat(`+${comma(s.xp)}`, "XP") + stat(s.best, "best combo");
+  if (s.matured) cells += stat(s.matured, s.matured === 1 ? "card matured" : "cards matured");
+  if (s.stability) cells += stat(`+${comma(s.stability)}d`, "memory stability");
+  return `<div class="summary"><h2>${head}</h2><div class="grid">${cells}</div></div>`;
+}
+
+function extrasHtml(g) {
+  const got = g.achievements.filter(a => a.unlocked).length;
+  const list = g.achievements.map(a => `<div class="ach${a.unlocked ? "" : " locked"}" title="${esc(a.desc)}">`
+    + `<span class="i">${a.icon}</span><div><div>${esc(a.name)}</div><div class="d">${esc(a.desc)}</div></div></div>`).join("");
+  return `<div class="box"><div class="head">Recent weeks</div><div class="heat" id="heat"></div></div>`
+    + `<details class="box" id="ach"${ACH_OPEN ? " open" : ""}><summary>Achievements · ${got} of ${g.achievements.length}</summary>`
+    + `<div class="ach-grid">${list}</div></details>`;
+}
+
+const isoDay = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+// Reviews per day over the recent weeks, a column a week; days a streak freeze covered show a snowflake.
+function heatmap(el, heat) {
+  const counts = Object.fromEntries(heat.days.map(d => [d.date, d.count]));
+  const frozen = new Set(heat.frozen);
+  const max = Math.max(1, ...heat.days.map(d => d.count));
+  const start = new Date(heat.start + "T12:00"), end = new Date(heat.end + "T12:00");
+  const first = new Date(start); first.setDate(first.getDate() - first.getDay());
+  const size = 12, gap = 3, top = 14, left = 26;
+  let cells = "", months = "", x = 0, lastMonth = -1;
+  for (let week = new Date(first); week <= end; week.setDate(week.getDate() + 7), x++) {
+    if (week.getMonth() !== lastMonth) {
+      lastMonth = week.getMonth();
+      months += `<text x="${left + x * (size + gap)}" y="10" font-size="10" style="fill:var(--muted)">${week.toLocaleDateString(undefined, { month: "short" })}</text>`;
+    }
+    for (let d = 0; d < 7; d++) {
+      const day = new Date(week); day.setDate(day.getDate() + d);
+      if (day < start || day > end) continue;
+      const iso = isoDay(day), n = counts[iso] || 0;
+      const px = left + x * (size + gap), py = top + d * (size + gap);
+      const label = day.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+      if (frozen.has(iso)) {
+        cells += `<text x="${px + size / 2}" y="${py + 10}" font-size="11" text-anchor="middle"><title>${esc(label)}: streak freeze</title>❄</text>`;
+        continue;
+      }
+      const opacity = n ? (0.3 + 0.7 * Math.sqrt(n / max)).toFixed(2) : 0.55;
+      const style = `fill:var(${n ? "--accent" : "--border"})${iso === heat.end ? ";stroke:var(--muted)" : ""}`;
+      cells += `<rect x="${px}" y="${py}" width="${size}" height="${size}" rx="2" style="${style}"`
+        + ` fill-opacity="${opacity}"><title>${esc(label)}: ${plural(n, "review")}</title></rect>`;
+    }
+  }
+  const days = ["", "Mon", "", "Wed", "", "Fri", ""].map((l, d) => l ? `<text x="0" y="${top + d * (size + gap) + 10}" font-size="10" style="fill:var(--muted)">${l}</text>` : "").join("");
+  el.innerHTML = `<svg width="${left + x * (size + gap)}" height="${top + 7 * (size + gap)}">${months}${days}${cells}</svg>`;
+}
+
+document.addEventListener("toggle", ev => { if (ev.target.id === "ach") ACH_OPEN = ev.target.open; }, true);
+
+function toast(icon, title, detail) {
+  let box = document.getElementById("toasts");
+  if (!box) { box = document.createElement("div"); box.id = "toasts"; document.body.appendChild(box); }
+  const el = document.createElement("div");
+  el.className = "toast";
+  el.innerHTML = `<span class="i">${icon}</span><div><div><strong>${esc(title)}</strong></div>${detail ? `<div class="d">${esc(detail)}</div>` : ""}</div>`;
+  box.appendChild(el);
+  setTimeout(() => { el.classList.add("out"); setTimeout(() => el.remove(), 450); }, 3800);
+}
+
+function floatText(text) {
+  const el = document.createElement("div");
+  el.className = "float";
+  el.textContent = text;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 1300);
+}
+
+// From the app: what the last review or session earned.
+function celebrate(events) {
+  for (const e of events) {
+    if (e.kind === "xp") floatText(`+${e.xp} XP`);
+    else if (e.kind === "combo") {
+      const el = document.querySelector(".combo");
+      if (el) { el.classList.remove("pulse"); void el.offsetWidth; el.classList.add("pulse"); }
+      confetti({ count: 25, y: 0.05, angle: 270, spread: 120, power: 0.4 });
+    }
+    else if (e.kind === "milestone") { confetti({ count: 70 }); toast("🎉", `${e.n} cards this session!`, "Keep it rolling."); }
+    else if (e.kind === "level") { confetti({ count: 160, power: 1.2 }); toast("⭐", `Level ${e.level}!`, e.title); }
+    else if (e.kind === "goal") { confetti({ count: 120 }); toast("🎯", "Daily goal reached!", "Anything more is a bonus."); }
+    else if (e.kind === "freeze") toast("❄️", "Streak freeze earned", `You have ${e.freezes}. Each one covers a missed day.`);
+    else if (e.kind === "achievement") { confetti({ count: 80 }); toast(e.icon, `Achievement: ${e.name}`, e.desc); }
+    else if (e.kind === "welcome") toast("🤝", "Welcome back!", "Every card counts. Start small.");
+    else if (e.kind === "done") {
+      if (e.caught_up) {
+        confetti({ count: 120, x: 0, y: 0.7, angle: 60, spread: 55, power: 1.3 });
+        confetti({ count: 120, x: 1, y: 0.7, angle: 120, spread: 55, power: 1.3 });
+      } else if (e.quick) confetti({ count: 110 });
+    }
+  }
 }
 
 function showCard(c) {
@@ -151,6 +347,7 @@ function showCard(c) {
     + `<a href="#" data-act="edit" title="Open this card in the browser to edit it">Edit</a>`
     + `<a href="#" data-act="suspend" title="Leave this card out of review (the quiz's “In review” toggle brings it back)">Suspend</a>`
     + `<a href="#" data-act="delete" title="Delete this card and its history">Delete</a></div>`;
+  html += progressHtml(c);
   html += `<div class="card">${questionHtml(q, a || undefined, { meta, freeActions, openAnswer: true })}`;
   html += `</div>`;
   if (c.previews) {
@@ -166,6 +363,33 @@ function showCard(c) {
   const field = root.querySelector("math-field, textarea.free");
   if (field) field.focus();
 }
+
+let CLOCK = null;  // the timer counting down a timed session
+
+function progressHtml(c) {
+  const s = c.session;
+  clearInterval(CLOCK);
+  if (!s) return "";
+  const timed = s.limit === "time";
+  const width = timed ? 100 * (1 - s.left / s.seconds) : s.total ? 100 * s.done / s.total : 0;
+  const label = timed ? `<span id="clock">${clock(s.left)}</span> left` : `${s.done} / ${s.total}`;
+  const combo = c.rewards && s.combo >= 2
+    ? `<span class="combo" title="Cards in a row without a long pause; every 5 raise the XP multiplier">⚡ ${s.combo}${s.multiplier > 1 ? ` · ×${s.multiplier.toFixed(1)}` : ""}</span>` : "";
+  if (timed) {
+    const ends = Date.now() + s.left * 1000;
+    CLOCK = setInterval(() => {
+      const left = Math.max((ends - Date.now()) / 1000, 0);
+      const el = document.getElementById("clock"), bar = document.querySelector(".prog .track i");
+      if (!el) { clearInterval(CLOCK); return; }
+      el.textContent = clock(left);
+      bar.style.width = `${100 * (1 - left / s.seconds)}%`;
+      if (!left) { el.parentElement.textContent = "Time's up: finish this card"; clearInterval(CLOCK); }
+    }, 1000);
+  }
+  return `<div class="prog"><div class="track"><i style="width:${width.toFixed(1)}%"></i></div><span class="label">${label}</span>${combo}</div>`;
+}
+
+const clock = sec => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
 
 function answer(act, qEl, button) {
   if (!CARD || !bridge || qEl.classList.contains("busy")) return;
@@ -201,7 +425,7 @@ document.addEventListener("click", ev => {
   if (!target || target.disabled || !bridge) return;
   if (target.tagName === "A") ev.preventDefault();
   const act = target.dataset.act;
-  if (act === "start") bridge.start();
+  if (act === "start") bridge.start(target.dataset.limit || "");
   else if (act === "stop") bridge.stop();
   else if (act === "twist") {
     ev.stopPropagation();
@@ -229,7 +453,9 @@ document.addEventListener("keydown", ev => {
   }
   const go = () => ev.preventDefault();
   if (!CARD) {
-    if ((ev.key === " " || ev.key === "Enter") && document.querySelector("[data-act=start]")) { go(); bridge.start(); }
+    if (!document.querySelector("[data-act=start]")) return;
+    if (ev.key === " " || ev.key === "Enter") { go(); bridge.start(""); }
+    else if (ev.key === "5") { go(); bridge.start("cards"); }
     return;
   }
   if (CARD.previews && "1234".includes(ev.key) && ev.key.length === 1) { go(); bridge.rate(CARD.id, +ev.key); }

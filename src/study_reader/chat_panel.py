@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import claude_client as cc
-from . import quiz, srs
+from . import gamify, quiz, srs
 from .chat_service import BookRef, ChatWorker, Job
 from .db import Database, data_dir
 from .theme import icon, theme
@@ -500,6 +500,7 @@ class ChatPanel(QWidget):
                 return
             self.db.save_quiz_answer(message_id, index, question, response_json, "done", verdict)
             if srs.answered_in_chat(self.db, message_id, index, question, verdict, response):
+                gamify.reviewed(self.db, new=True)
                 self.cardsChanged.emit()
         self._update_quiz(message_id, index)
 
@@ -563,6 +564,7 @@ class ChatPanel(QWidget):
         if fields.get("verdict") and srs.answered_in_chat(
             self.db, message_id, row["quiz"], row["question"], fields["verdict"], json.loads(row["response"])
         ):
+            gamify.reviewed(self.db, new=True)
             self.cardsChanged.emit()
         message = self.db.message(message_id)
         if message is not None and message["chat_id"] == self.chat_id:

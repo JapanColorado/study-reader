@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import quiz, srs
+from . import gamify, quiz, srs
 from .calculator import CalculatorPanel
 from .chat_panel import MODELS, ChatPanel
 from .chat_service import ChatWorker
@@ -255,6 +255,12 @@ class MainWindow(QMainWindow):
         review_menu.addAction("Desired retention…").triggered.connect(self._set_retention)
         review_menu.addAction("Optimize FSRS parameters…").triggered.connect(self._optimize)
         review_menu.addAction("Use default FSRS parameters").triggered.connect(self._reset_parameters)
+        review_menu.addSeparator()
+        self.rewards_action = review_menu.addAction("Rewards and streaks")
+        self.rewards_action.setCheckable(True)
+        self.rewards_action.setChecked(gamify.enabled(self.db))
+        self.rewards_action.toggled.connect(self._set_rewards)
+        review_menu.addAction("Daily goal…").triggered.connect(self._set_daily_goal)
         settings = QToolButton()
         settings.setIcon(icon("settings"))
         settings.setToolTip("Settings")
@@ -779,6 +785,19 @@ class MainWindow(QMainWindow):
         )
         if ok:
             self.db.set_setting(srs.NEW_PER_DAY_SETTING, str(n))
+            self._on_cards_changed()
+
+    def _set_rewards(self, on: bool) -> None:
+        self.db.set_setting(gamify.ENABLED_SETTING, "1" if on else "0")
+        self._on_cards_changed()
+
+    def _set_daily_goal(self) -> None:
+        n, ok = QInputDialog.getInt(
+            self, "Daily goal", "Reviews a day that meet the daily goal (reviewing everything due meets it too):",
+            gamify.daily_goal(self.db), 1, 9999,
+        )
+        if ok:
+            self.db.set_setting(gamify.GOAL_SETTING, str(n))
             self._on_cards_changed()
 
     def _show_chat(self, then) -> None:
