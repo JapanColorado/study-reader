@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 
-from PySide6.QtCore import QObject, Qt, Signal, Slot
+from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget,
 )
@@ -19,6 +19,7 @@ FILTERS = [("Waiting for you", ("pending", "proposed")), ("Proposed", ("proposed
            ("Errors", ("error",)), ("Everything open", ("pending", "proposed", "kept", "error")),
            ("Accepted", ("accepted",))]
 INSTRUCTIONS_SETTING = "convert_instructions"
+SHOWN = 300  # proposals shown at once
 
 
 class ConversionManager(QObject):
@@ -60,6 +61,14 @@ class ConversionManager(QObject):
 
     def busy(self) -> bool:
         return bool(self._batches)
+
+    def stop(self) -> None:
+        """Cancel the requests still out; their cards are left as if never sent."""
+        self.worker.stop_conversions()
+        for conversions in self._batches.values():
+            self.db.delete_conversions(self._still_pending(conversions).values())
+        self._batches.clear()
+        self.changed.emit()
 
     def _on_converted(self, batch_id: int, text: str) -> None:
         conversions = self._batches.pop(batch_id, None)
@@ -201,29 +210,55 @@ class ConversionDialog(QDialog):
         dismiss.clicked.connect(lambda: self.manager.reject_all(("kept", "error")))
         retry = QPushButton("Retry errors")
         retry.clicked.connect(lambda: self.manager.retry_errors(self.db.get_setting(INSTRUCTIONS_SETTING, "")))
+        self.stop = QPushButton("Stop conversions")
+        self.stop.setToolTip("Cancel the requests still waiting for Claude; finished proposals stay")
+        self.stop.clicked.connect(self.manager.stop)
         top = QHBoxLayout()
         top.addWidget(QLabel("Show"))
         top.addWidget(self.filter)
         top.addWidget(self.summary, 1)
-        for b in (retry, dismiss, reject_all, accept_all):
+        for b in (self.stop, retry, dismiss, reject_all, accept_all):
             top.addWidget(b)
         self.view = CardView(_Bridge(self))
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.addLayout(top)
         layout.addWidget(self.view, 1)
-        manager.changed.connect(self.refresh)
+        # batches land every few seconds while converting; redraw at most once a second
+        self._throttle = QTimer(self, singleShot=True, interval=1000)
+        self._throttle.timeout.connect(self._throttle_over)
+        self._stale = False
+        manager.changed.connect(self._changed)
+
+    def _changed(self) -> None:
+        self.stop.setEnabled(self.manager.busy())
+        if self._throttle.isActive():
+            self._stale = True
+        else:
+            self.refresh()
+            self._throttle.start()
+
+    def _throttle_over(self) -> None:
+        if self._stale:
+            self._stale = False
+            self.refresh()
+            self._throttle.start()
 
     def refresh(self) -> None:
+        self.stop.setEnabled(self.manager.busy())
         if not self.isVisible():
             return
         statuses = FILTERS[self.filter.currentIndex()][1]
-        rows = self.db.conn.execute(  # the latest 300, oldest first
+        marks = ','.join('?' * len(statuses))
+        rows = self.db.conn.execute(  # the latest SHOWN, those still converting last
             "SELECT * FROM (SELECT v.*, c.data AS card_data, d.name AS deck FROM conversions v "
             "JOIN cards c ON c.id=v.card_id LEFT JOIN decks d ON d.id=c.deck_id "
-            f"WHERE v.status IN ({','.join('?' * len(statuses))}) ORDER BY v.id DESC LIMIT 300) ORDER BY id",
-            tuple(statuses),
+            f"WHERE v.status IN ({marks}) ORDER BY v.status='pending', v.id DESC LIMIT ?) "
+            "ORDER BY status='pending', id",
+            (*statuses, SHOWN),
         ).fetchall()
+        total = self.db.conn.execute(f"SELECT COUNT(*) FROM conversions WHERE status IN ({marks})",
+                                     tuple(statuses)).fetchone()[0]
         items = []
         for c in rows:
             accepted = c["status"] == "accepted"
@@ -236,6 +271,8 @@ class ConversionDialog(QDialog):
         parts = [f"{counts['pending']} converting" if counts["pending"] else "",
                  f"{counts['proposed']} proposed" if counts["proposed"] else "",
                  f"{counts['kept']} kept" if counts["kept"] else "", f"{counts['error']} errors" if counts["error"] else ""]
+        if total > len(rows):
+            parts.append(f"showing {len(rows)} of {total}")
         self.summary.setText(" · ".join(p for p in parts if p) or "Nothing waiting.")
         self.view.js("showProposals", items)
 

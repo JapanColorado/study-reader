@@ -519,3 +519,18 @@ def test_clicking_a_row_shows_that_card(db, chat_panel):
     QTest.mouseClick(browser.table.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ControlModifier, rect.center())
     assert len(browser.selected_ids()) == 2 and browser.editor.fields["front"].toPlainText() == browser.model.data(browser.model.index(1, 0))
     browser.close()
+
+
+def test_stopping_conversions(db, chat_panel):
+    from study_reader.convert_dialog import ConversionManager
+
+    _, worker, _, _ = chat_panel
+    deck = db.ensure_deck("D")
+    ids = [c["id"] for n in range(2) for c in db.note_cards(db.add_card_note("basic", {"front": f"q{n}", "back": "a"}, deck))]
+    manager = ConversionManager(db, worker)
+    manager.start(ids)
+    batch_id = worker.conversions[-1][0]
+    manager.stop()
+    assert worker.conversions_stopped and not manager.busy() and db.conversions() == []
+    worker.converted.emit(batch_id, json.dumps({"cards": [{"id": i, "action": "keep"} for i in ids]}))
+    assert db.conversions() == []  # a reply that arrives anyway is ignored

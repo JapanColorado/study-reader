@@ -934,6 +934,10 @@ class Database:
         """How many conversions there are in each status."""
         return {r[0]: r[1] for r in self.conn.execute("SELECT status, COUNT(*) FROM conversions GROUP BY status")}
 
+    def delete_conversions(self, conversion_ids) -> None:
+        with self.conn:
+            self.conn.executemany("DELETE FROM conversions WHERE id=?", [(i,) for i in conversion_ids])
+
     def update_conversion(self, conversion_id: int, **fields) -> None:
         self._update("conversions", conversion_id, fields)
 

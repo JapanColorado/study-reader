@@ -96,6 +96,9 @@ def chat_panel(tmp_path, monkeypatch):
         def submit_conversion(self, batch_id, blocks, model, system_prompt):
             self.conversions.append((batch_id, blocks, model, system_prompt))
 
+        def stop_conversions(self):
+            self.conversions_stopped = True
+
     QApplication.instance() or QApplication([])
     db = Database(tmp_path / "t.db")
     book_id = db.upsert_book("h", "/a.pdf", "A", 3)["id"]

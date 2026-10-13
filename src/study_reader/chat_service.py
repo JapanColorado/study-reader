@@ -87,6 +87,7 @@ class ChatService:
         self._locks: dict[int, asyncio.Lock] = {}
         self._base: dict[int, tuple[str | None, str]] = {}
         self._conversions: asyncio.Semaphore | None = None  # made on the worker's loop
+        self._conversion_tasks: set[asyncio.Task] = set()
 
     def forget_base(self, book_id: int) -> None:
         """Drop the cached base session, e.g. after the book's file was replaced."""
@@ -171,6 +172,8 @@ class ChatService:
         """Ask Claude to rewrite a batch of review cards (convert.py), in a fresh bookless session."""
         if self._conversions is None:
             self._conversions = asyncio.Semaphore(CONVERSIONS_AT_ONCE)
+        task = asyncio.current_task()
+        self._conversion_tasks.add(task)
         try:
             async with self._conversions:
                 res = await cc.run_turn(blocks, cwd=self.sessions_dir / "convert", model=model,
@@ -178,6 +181,13 @@ class ChatService:
             self.emit("converted", batch_id, res.text)
         except Exception as e:
             self.emit("convertFailed", batch_id, str(e) or type(e).__name__)
+        finally:
+            self._conversion_tasks.discard(task)
+
+    def stop_conversions(self) -> None:
+        """Cancel every conversion request, running or waiting its turn; they report nothing."""
+        for task in self._conversion_tasks:
+            task.cancel()
 
     async def _turn(self, job: Job, chat_session_id: str | None, on_delta) -> cc.TurnResult:
         if job.book is None:
@@ -251,6 +261,9 @@ class ChatWorker(QObject):
 
     def submit_conversion(self, batch_id: int, blocks: list[dict], model: str, system_prompt: str) -> None:
         asyncio.run_coroutine_threadsafe(self.service.convert(batch_id, blocks, model, system_prompt), self.loop)
+
+    def stop_conversions(self) -> None:
+        self.loop.call_soon_threadsafe(self.service.stop_conversions)
 
     def shutdown(self) -> None:
         self.loop.call_soon_threadsafe(self.loop.stop)
