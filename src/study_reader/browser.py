@@ -36,7 +36,7 @@ COLUMNS = {
     "lapses": "Lapses", "type": "Type", "note": "Note", "tags": "Tags", "book": "Book", "added": "Created",
     "modified": "Modified", "reviewed": "Last review",
 }
-DEFAULT_COLUMNS = ["question", "answer", "deck", "due", "interval", "retrievability"]
+DEFAULT_COLUMNS = ["question", "answer", "deck", "due", "interval", "retrievability", "added"]
 COLUMNS_SETTING, SORT_SETTING = "browser_columns", "browser_sort"
 # Anki's flag colors.
 FLAGS = {1: ("Red", "#ff6b6b"), 2: ("Orange", "#ffa94d"), 3: ("Green", "#51cf66"), 4: ("Blue", "#4dabf7"),
@@ -218,6 +218,7 @@ class Sidebar(QTreeWidget):
         self.customContextMenuRequested.connect(self._menu)
         self.itemClicked.connect(self._clicked)
         self._expanded: set[str] = {"Today", "Decks"}
+        self._tag_filter = ""
 
     def refresh(self) -> None:
         self._remember_expanded()
@@ -271,6 +272,8 @@ class Sidebar(QTreeWidget):
         tags = self.db.all_tags()
         if tags:
             sec = section("Tags")
+            # Section tags (srs.section_tag) in the order of their books, by their first card's page.
+            pages = {n["tag"].lower(): n["page"] for ns in srs.sections(self.db).values() for n in ns}
             items: dict[str, QTreeWidgetItem] = {}
             for tag in tags:
                 parts = tag.split("::")
@@ -279,9 +282,19 @@ class Sidebar(QTreeWidget):
                     if path.lower() in items:
                         continue
                     parent = items.get("::".join(parts[:i]).lower(), sec)
-                    item = add(parent, parts[i], f'tag:"{_quote(path)}"', "Tags/" + path.lower(), path)
+                    label = parts[i].replace("_", " ") if path.lower() in pages else parts[i]
+                    item = add(parent, label, f'tag:"{_quote(path)}"', "Tags/" + path.lower(), path)
                     item.setData(0, Qt.ItemDataRole.UserRole + 3, path)
                     items[path.lower()] = item
+
+            def order(parent: QTreeWidgetItem) -> None:
+                kids = parent.takeChildren()
+                page = lambda it: pages.get(it.data(0, Qt.ItemDataRole.UserRole + 3).lower())  # noqa: E731
+                kids.sort(key=lambda it: (page(it) is None, page(it) or 0, it.text(0).lower()))
+                parent.addChildren(kids)
+                for k in kids:
+                    order(k)
+            order(sec)
         types = section("Card types")
         for kind in cardmodel.KINDS:
             add(types, cardmodel.KIND_LABELS[kind], f"note:{kind}", f"Types/note/{kind}")
@@ -289,8 +302,43 @@ class Sidebar(QTreeWidget):
             if t not in cardmodel.KINDS:  # cloze and occlusion are listed as note types
                 add(types, f"Question: {label}", f"type:{t}", f"Types/type/{t}")
         self._restore_expanded()
+        self.filter_tags(self._tag_filter)
+
+    def filter_tags(self, text: str) -> None:
+        """Show only the tags containing the text (and the tags above them, expanded so they show)."""
+        was, now = self._tag_filter.strip(), text.strip()
+        if now and not was:
+            self._remember_expanded()  # to put back when the filter is cleared
+        self._tag_filter = text
+        if was and not now:
+            for item in self._items():
+                item.setExpanded(False)
+            self._restore_expanded()
+        needle = now.lower().replace("_", " ")
+        sec = next((self.topLevelItem(i) for i in range(self.topLevelItemCount())
+                    if self.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole + 1) == "Tags"), None)
+        if sec is None:
+            return
+
+        def show(item: QTreeWidgetItem) -> bool:
+            path = item.data(0, Qt.ItemDataRole.UserRole + 3) or ""
+            hit = not needle or needle in path.lower().replace("_", " ")
+            under = False
+            for i in range(item.childCount()):
+                under = show(item.child(i)) or under
+            item.setHidden(not (hit or under))
+            if needle:
+                item.setExpanded(under)
+            return hit or under
+        for i in range(sec.childCount()):
+            show(sec.child(i))
+        if needle:
+            sec.setExpanded(True)
 
     def _remember_expanded(self) -> None:
+        if self._tag_filter.strip():
+            return  # filtering expands tags; keep what was open before
+
         if self.topLevelItemCount() == 0:
             return
         self._expanded = {item.data(0, Qt.ItemDataRole.UserRole + 1) for item in self._items() if item.isExpanded()}
@@ -479,7 +527,16 @@ class CardBrowser(QMainWindow):
 
         split = QSplitter()
         split.setChildrenCollapsible(False)
-        split.addWidget(self.sidebar)
+        self.tag_filter = QLineEdit(objectName="tagFilter", placeholderText="Filter tags…")
+        self.tag_filter.setClearButtonEnabled(True)
+        self.tag_filter.textChanged.connect(self.sidebar.filter_tags)
+        side = QWidget()
+        side_layout = QVBoxLayout(side)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.setSpacing(4)
+        side_layout.addWidget(self.tag_filter)
+        side_layout.addWidget(self.sidebar, 1)
+        split.addWidget(side)
         split.addWidget(center)
         split.addWidget(right)
         split.setStretchFactor(1, 1)

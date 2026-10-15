@@ -250,6 +250,17 @@ def split_tags(text: str) -> list[str]:
     return list(dict.fromkeys(t for t in re.split(r"[\s,]+", text or "") if t))
 
 
+def tag_part(title: str) -> str:
+    """Text as one part of a tag: no spaces, commas or '::' (which would split it)."""
+    part = re.sub(r"[\s,]+", "_", str(title).strip()).replace("::", ":")
+    return re.sub(r"_+", "_", part).strip("_:")[:80]
+
+
+def clean_tag(tag: str) -> str:
+    """A tag as written (by Claude, say) made storable: each Parent::child part a tag_part."""
+    return "::".join(p for p in (tag_part(x) for x in str(tag).split("::")) if p)
+
+
 def join_tags(tags) -> str:
     """Stored as ' a b c ' so a tag can be found with LIKE '% tag %'."""
     tags = list(dict.fromkeys(tags))

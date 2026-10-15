@@ -143,27 +143,61 @@ function setTheme(colors, dark) {
 }
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
-const OPEN_DECKS = new Set();  // deck ids expanded in the overview's list
+const OPEN = new Set();  // rows expanded in the overview's lists: "d<deck id>", "b<book id>", "s<section tag>"
+const num = (n, cls) => `<span class="n ${cls}${n ? "" : " zero"}">${n}</span>`;
+const twist = (key, has) => `<span class="tw" data-act="twist" data-key="${esc(key)}">${has ? (OPEN.has(key) ? "▾" : "▸") : ""}</span>`;
 
 // Every deck, with its own and its subdecks' counts; clicking one picks what to review.
 function decksHtml(o) {
   const byParent = {};
   for (const d of o.decks) (byParent[d.parent ?? 0] ||= []).push(d);
-  const num = (n, cls) => `<span class="n ${cls}${n ? "" : " zero"}">${n}</span>`;
   const row = (d, depth) => {
     const kids = byParent[d.id] || [];
-    const open = OPEN_DECKS.has(d.id);
     let html = `<div class="deck${o.deck === d.id ? " sel" : ""}" data-act="deck" data-deck="${d.id}" title="${esc(d.path)}"`
-      + ` style="padding-left:${8 + depth * 16}px">`
-      + `<span class="tw" data-act="twist" data-deck="${d.id}">${kids.length ? (open ? "▾" : "▸") : ""}</span>`
+      + ` style="padding-left:${8 + depth * 16}px">${twist(`d${d.id}`, kids.length)}`
       + `<span class="name">${esc(d.name)}</span>${num(d.due, "due")}${num(d.new, "new")}</div>`;
-    if (open) for (const k of kids) html += row(k, depth + 1);
+    if (OPEN.has(`d${d.id}`)) for (const k of kids) html += row(k, depth + 1);
     return html;
   };
   return `<div class="decks"><div class="deck-head"><span class="tw"></span><span class="name">Deck</span><span class="n">Due</span><span class="n">New</span></div>`
-    + `<div class="deck${o.deck === null ? " sel" : ""}" data-act="deck" data-deck="0"><span class="tw"></span><span class="name">All decks</span>`
+    + `<div class="deck${o.deck === null && o.book === null ? " sel" : ""}" data-act="deck" data-deck="0"><span class="tw"></span><span class="name">All decks</span>`
     + `${num(o.all_due, "due")}${num(o.all_new, "new")}</div>`
     + (byParent[0] || []).map(d => row(d, 0)).join("") + `</div>`;
+}
+
+// A book's sections (srs.sections) as rows under it; clicking one reviews just that section.
+function sectionRows(sections, bookId, selected, depth) {
+  const byParent = {};
+  for (const s of sections) (byParent[s.parent ?? ""] ||= []).push(s);
+  const row = (s, depth) => {
+    const kids = byParent[s.tag] || [];
+    let html = `<div class="deck${selected === s.tag ? " sel" : ""}" data-act="section" data-book="${bookId}" data-tag="${esc(s.tag)}"`
+      + ` title="${esc(s.tag.split("::").slice(1).join(" › ").replace(/_/g, " "))}" style="padding-left:${8 + depth * 16}px">`
+      + `${twist(`s${s.tag}`, kids.length)}<span class="name">${esc(s.name)}</span>${num(s.due, "due")}${num(s.new, "new")}</div>`;
+    if (OPEN.has(`s${s.tag}`)) for (const k of kids) html += row(k, depth + 1);
+    return html;
+  };
+  return (byParent[""] || []).map(s => row(s, depth)).join("");
+}
+
+// Every book with cards (all_books), each opening onto its sections.
+function booksHtml(o) {
+  return `<div class="decks"><div class="deck-head"><span class="tw"></span><span class="name">Book</span><span class="n">Due</span><span class="n">New</span></div>`
+    + o.books.map(b => {
+      const key = `b${b.id}`;
+      let html = `<div class="deck${o.book === b.id && !o.section ? " sel" : ""}" data-act="book" data-book="${b.id}" title="${esc(b.title)}">`
+        + `${twist(key, b.sections.length)}<span class="name">${esc(b.title)}</span>${num(b.due, "due")}${num(b.new, "new")}</div>`;
+      if (OPEN.has(key)) html += sectionRows(b.sections, b.id, o.book === b.id ? o.section : null, 1);
+      return html;
+    }).join("") + `</div>`;
+}
+
+// The open book's sections, to review just one.
+function sectionsHtml(o) {
+  return `<div class="decks"><div class="deck-head"><span class="tw"></span><span class="name">Section</span><span class="n">Due</span><span class="n">New</span></div>`
+    + `<div class="deck${o.section ? "" : " sel"}" data-act="section" data-book="0" data-tag=""><span class="tw"></span><span class="name">Whole book</span>`
+    + `${num(o.whole_due, "due")}${num(o.whole_new, "new")}</div>`
+    + sectionRows(o.sections, 0, o.section, 0) + `</div>`;
 }
 
 function showOverview(o) {
@@ -179,10 +213,12 @@ function showOverview(o) {
     return;
   }
   const g = o.game;
-  let html = `<h1>${o.all ? (o.deck_name ? esc(o.deck_name) : "Review all decks") : "Review"}</h1>`;
+  let html = `<h1>${o.title ? esc(o.title) : o.all ? "Review all decks" : "Review"}</h1>`;
   if (o.summary) html += summaryHtml(o.summary, !!g);
   if (g) html += playerHtml(g);
-  if (o.all && o.decks && o.decks.length) html += decksHtml(o);
+  if (o.all && (o.decks?.length || o.books?.length)) html += decksHtml(o);
+  if (o.all && o.books && o.books.length) html += booksHtml(o);
+  if (!o.all && o.sections && o.sections.length) html += sectionsHtml(o);
   html += `<div class="stats">`
     + `<div class="stat due"><div class="n">${o.due}</div><div class="l">due</div></div>`
     + `<div class="stat new"><div class="n">${o.new}</div><div class="l">new today${o.new_total > o.new ? ` · ${o.new_total} waiting` : ""}</div></div>`
@@ -429,11 +465,13 @@ document.addEventListener("click", ev => {
   else if (act === "stop") bridge.stop();
   else if (act === "twist") {
     ev.stopPropagation();
-    const id = +target.dataset.deck;
-    OPEN_DECKS.has(id) ? OPEN_DECKS.delete(id) : OPEN_DECKS.add(id);
+    const key = target.dataset.key;
+    OPEN.has(key) ? OPEN.delete(key) : OPEN.add(key);
     bridge.refresh();
   }
   else if (act === "deck") bridge.chooseDeck(+target.dataset.deck);
+  else if (act === "book") bridge.chooseBook(+target.dataset.book);
+  else if (act === "section") bridge.chooseSection(+target.dataset.book, target.dataset.tag);
   else if (act === "browse" || act === "stats") bridge.open(act);
   else if (!CARD) return;
   else if (act === "rate") bridge.rate(CARD.id, +target.dataset.k);

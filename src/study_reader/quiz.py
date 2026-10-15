@@ -11,6 +11,7 @@ import re
 
 from .calc_latex import LatexError, expr_to_latex, latex_to_expr
 from .calculator import CalcError, Calculator
+from .cardmodel import clean_tag
 
 TYPES = {
     "choice": "choice", "multiple_choice": "choice", "mc": "choice",
@@ -118,16 +119,41 @@ def _validate(data, title: str) -> dict:
             out["answer"] = _text(answer)
         else:
             out.update(answer=_text(answer), rubric=_text(q.get("rubric")))
+        raw_tags = q.get("tags")
+        tags = [clean_tag(t) for t in (raw_tags.split() if isinstance(raw_tags, str) else raw_tags or [])
+                if isinstance(t, str)]
+        if any(tags):
+            out["tags"] = list(dict.fromkeys(t for t in tags if t))
+        if isinstance(q.get("revises"), int) and not isinstance(q["revises"], bool) and q["revises"] >= 1:
+            out["revises"] = q["revises"]  # its 1-based number in the quiz this one revises
         questions.append(out)
     if not questions:
         raise ValueError("the quiz has no questions")
-    return {"title": title or str(data.get("title") or "Quiz"), "questions": questions}
+    out = {"title": title or str(data.get("title") or "Quiz"), "questions": questions}
+    if isinstance(data.get("revises"), str) and data["revises"].strip():
+        out["revises"] = data["revises"].strip()  # the title of the earlier quiz it revises
+    return out
+
+
+def revised_quiz(earlier: list[tuple[int, int, dict]], title: str) -> tuple[int, int] | None:
+    """Which earlier quiz a revision replaces: the latest with that title (or, with none, the
+    latest). earlier: (message id, index, quiz) in chat order."""
+    readable = [(m, i, q) for m, i, q in earlier if "questions" in q]
+    key = " ".join(title.split()).lower()
+    match = [x for x in readable if " ".join(x[2]["title"].split()).lower() == key] or readable
+    return (match[-1][0], match[-1][1]) if match else None
+
+
+def revise_request(title: str, change: str) -> str:
+    """The question asking Claude to revise one of its quizzes."""
+    return f"Revise your quiz “{title}”: {change.strip()}"
 
 
 def validate_question(raw: dict) -> dict:
     """One question as a card holds it (no page). Raises ValueError, TypeError or KeyError if unusable."""
     (q,) = _validate({"questions": [raw]}, "")["questions"]
-    q.pop("page", None)
+    for key in ("page", "tags", "revises"):
+        q.pop(key, None)
     return q
 
 

@@ -65,6 +65,14 @@ class _Bridge(QObject):
     def chooseDeck(self, deck_id: int) -> None:
         self.panel.choose_deck(deck_id or None)
 
+    @Slot(int)
+    def chooseBook(self, book_id: int) -> None:
+        self.panel.choose_book(book_id or None)
+
+    @Slot(int, str)
+    def chooseSection(self, book_id: int, tag: str) -> None:
+        self.panel.choose_section(book_id or None, tag or None)
+
     @Slot()
     def refresh(self) -> None:
         self.panel.refresh()
@@ -92,6 +100,8 @@ class ReviewPanel(QWidget):
         self.all_books = all_books
         self.book_id: int | None = None
         self.deck_id: int | None = None  # all_books: the deck (and its subdecks) to review; None for all
+        self.picked_book: int | None = None  # all_books: the book to review instead, if any
+        self.section: str | None = None  # the section (tag, srs.section_tag) of the book to review, if any
         self.card_id: int | None = None  # the card on display; None for the overview
         self._shown_at = 0.0  # when the card on display was first shown (monotonic), for its review time
         self._answer: dict | None = None  # its answer so far: {response, status, verdict, feedback}
@@ -155,16 +165,17 @@ class ReviewPanel(QWidget):
     @property
     def scope(self) -> int | None:
         """The book whose cards are reviewed, or None for all books."""
-        return None if self.all_books else self.book_id
+        return self.picked_book if self.all_books else self.book_id
 
     def set_book(self, book_id: int | None) -> None:
         self.book_id = book_id
+        self.section = None
         self.setEnabled(self.all_books or book_id is not None)
         self.stop()
         self._summary = None
 
     def counts(self) -> dict:
-        return srs.counts(self.db, self.scope, deck=self.deck)
+        return srs.counts(self.db, self.scope, deck=self.deck, tag=self.section)
 
     @property
     def deck(self) -> int | None:
@@ -172,6 +183,19 @@ class ReviewPanel(QWidget):
 
     def choose_deck(self, deck_id: int | None) -> None:
         self.deck_id = deck_id  # the overview drops it if the deck is gone
+        self.picked_book, self.section = None, None
+        self.stop()
+
+    def choose_book(self, book_id: int | None) -> None:
+        """all_books: review one book's cards (whatever their decks)."""
+        self.deck_id, self.picked_book, self.section = None, book_id, None
+        self.stop()
+
+    def choose_section(self, book_id: int | None, tag: str | None) -> None:
+        """Review one section of a book (of the open one, unless all_books); None for the whole book."""
+        if self.all_books:
+            self.deck_id, self.picked_book = None, book_id
+        self.section = tag
         self.stop()
 
     def refresh(self) -> None:
@@ -189,12 +213,18 @@ class ReviewPanel(QWidget):
         now = time.time()
         if self.deck_id is not None and self.db.deck(self.deck_id) is None:
             self.deck_id = None
-        c = srs.counts(self.db, self.scope, now, deck=self.deck)
-        upcoming = srs.next_due(self.db, self.scope, now, deck=self.deck)
+        if self.picked_book is not None and self.db.book(self.picked_book) is None:
+            self.picked_book, self.section = None, None
+        if self.section is not None and not self.db.count_cards(self.scope, tag=self.section):
+            self.section = None  # its cards are gone (or retagged)
+        c = srs.counts(self.db, self.scope, now, deck=self.deck, tag=self.section)
+        upcoming = srs.next_due(self.db, self.scope, now, deck=self.deck, tag=self.section)
         overview = {
             **c,
             "all": self.all_books,
-            "ready": srs.next_card(self.db, self.scope, now, deck=self.deck) is not None,
+            "title": self._scope_title(),
+            "section": self.section,
+            "ready": srs.next_card(self.db, self.scope, now, deck=self.deck, tag=self.section) is not None,
             "next": when(upcoming, now) if upcoming else "",
             "reviewed": self._summary["reviewed"] if self._summary else 0,
             "summary": self._summary,
@@ -203,25 +233,64 @@ class ReviewPanel(QWidget):
             "quick": {"cards": gamify.QUICK_CARDS, "minutes": gamify.QUICK_SECONDS // 60},
         }
         if self.all_books:
-            overview.update(self._decks_overview(now, c if self.deck is None else None))
+            overview.update(self._decks_overview(now, c if self.scope is None and self.deck is None else None))
+            overview.update(self._books_overview(now))
+        elif self.book_id is not None:
+            left = srs.new_left_today(self.db, now)
+            whole = srs.counts(self.db, self.book_id, now) if self.section else c
+            overview["sections"] = [{**n, "new": min(n["new"], left)}
+                                    for n in srs.sections(self.db, self.book_id, now).get(self.book_id, [])]
+            overview.update(whole_due=whole["due"], whole_new=whole["new"])
         self._js("showOverview", overview)
+
+    def _scope_title(self) -> str:
+        """What is being reviewed, for the overview's heading ('' for everything, or the whole open book)."""
+        section = " › ".join(p.replace("_", " ") for p in self.section.split("::")[1:]) if self.section else ""
+        if not self.all_books:
+            return section
+        if self.picked_book is not None:
+            book = self.db.book(self.picked_book)
+            return " › ".join(t for t in (book["title"] if book else "", section) if t)
+        deck = self.db.deck(self.deck_id) if self.deck_id is not None else None
+        return deck["name"].replace("::", " › ") if deck else ""
+
+    def _books_overview(self, now: float) -> dict:
+        """all_books: the books with cards, each with its counts and sections, for picking what to review."""
+        left = srs.new_left_today(self.db, now)
+        rows = self.db.conn.execute(
+            f"SELECT c.book_id, b.title, SUM({srs.due_sql('c.')}) AS due, SUM(c.suspended=0 AND c.stage=0) AS new "
+            "FROM cards c JOIN books b ON b.id=c.book_id GROUP BY c.book_id ORDER BY b.title COLLATE NOCASE",
+            (srs.next_day(now), now),
+        ).fetchall()
+        sections = srs.sections(self.db, None, now)
+        return {
+            "books": [{
+                "id": r["book_id"], "title": r["title"], "due": r["due"] or 0, "new": min(r["new"] or 0, left),
+                "sections": [{**n, "new": min(n["new"], left)} for n in sections.get(r["book_id"], [])],
+            } for r in rows],
+            "book": self.picked_book,
+        }
 
     def _decks_overview(self, now: float, everything: dict | None = None) -> dict:
         """The deck list for picking what to review: each deck with its parent and counts.
         everything: srs.counts over all decks, if already known."""
         counts = srs.deck_counts(self.db, now)
-        decks = [d for d in self.db.decks() if counts[d["id"]]["total"]]
+        # Books' own decks are left out (books have their own list), unless other decks are under them.
+        book_decks = {r[0] for r in self.db.conn.execute("SELECT deck_id FROM books WHERE deck_id IS NOT NULL")}
+        all_decks = [d for d in self.db.decks() if counts[d["id"]]["total"]]
+        shown = {d["name"] for d in all_decks if d["id"] not in book_decks}
+        keep = {"::".join(n.split("::")[:i]) for n in shown for i in range(1, n.count("::") + 2)}
+        decks = [d for d in all_decks if d["name"] in keep]
         by_name = {d["name"]: d["id"] for d in decks}
         left = srs.new_left_today(self.db, now)
         everything = everything or srs.counts(self.db, None, now)
-        deck = self.db.deck(self.deck_id) if self.deck_id is not None else None
         return {
             "decks": [{
                 "id": d["id"], "name": d["name"].rsplit("::", 1)[-1], "path": d["name"],
                 "parent": by_name.get(d["name"].rsplit("::", 1)[0]) if "::" in d["name"] else None,
                 "due": counts[d["id"]]["due"], "new": min(counts[d["id"]]["new"], left),
             } for d in decks],
-            "deck": self.deck_id, "deck_name": deck["name"].replace("::", " › ") if deck else "",
+            "deck": self.deck_id,
             "all_due": everything["due"], "all_new": everything["new"],
         }
 
@@ -244,7 +313,7 @@ class ReviewPanel(QWidget):
         if self._session is not None and self._session.over():
             self._finish(caught_up=False)
             return
-        card = srs.next_card(self.db, self.scope, skip=self._skip, deck=self.deck)
+        card = srs.next_card(self.db, self.scope, skip=self._skip, deck=self.deck, tag=self.section)
         self.card_id = card["id"] if card else None
         self._answer = None
         self._shown_at = time.monotonic()
@@ -275,7 +344,7 @@ class ReviewPanel(QWidget):
         a = self._answer
         if a is None and card["id"] in self._grading:  # still being graded, e.g. after a refresh
             a = {"response": {"text": self._grading[card["id"]]}, "status": "pending", "verdict": None, "feedback": ""}
-        c = srs.counts(self.db, self.scope, now, deck=self.deck)
+        c = srs.counts(self.db, self.scope, now, deck=self.deck, tag=self.section)
         book = self.db.book(card["book_id"]) if card["book_id"] is not None else None
         deck = self.db.deck(card["deck_id"])
         self._js("showCard", {

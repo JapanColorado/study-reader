@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 from fsrs import Card, Rating, Scheduler, State
 
-from . import quiz
+from . import cardmodel, quiz
 from .db import Database
 
 VERDICT_RATINGS = {"correct": 3, "partial": 2, "incorrect": 1}
@@ -108,27 +108,181 @@ def scheduler(db: Database | None = None) -> Scheduler:
 
 # -- cards ---------------------------------------------------------------------------------
 def add_quiz_cards(db: Database, book_id: int, message_id: int, text: str, now: float | None = None) -> list[int]:
-    """Cards for every question of the quizzes in a reply (those it doesn't have yet)."""
+    """Cards for every question of the quizzes in a reply (those it doesn't have yet), tagged
+    with the tags Claude gives and the section of the book they draw on: that of the page Claude
+    gives, else the section holding all the pages the quiz was asked about.
+
+    A quiz that revises an earlier one (quiz.revised_quiz) takes over the cards of the questions
+    it carries over, which keep their schedules and history with the new content; the earlier
+    quiz's other cards go unless they were reviewed. Returns the cards added or taken over."""
     now = time.time() if now is None else now
-    page = _asked_page(db, message_id)
+    first, last = _asked_pages(db, message_id)
+    book = db.book(book_id)
+    toc = json.loads(book["toc"]) if book and book["toc"] else []
     added = []
     for qi, q in enumerate(quiz.quizzes(text)):
+        old = _revised(db, message_id, q["revises"]) if q.get("revises") and "questions" in q else None
         for i, question in enumerate(q.get("questions", [])):
-            p = question["page"] - 1 if question.get("page") else page
-            card_id = db.add_card(book_id, message_id, qi, i, q["title"], json.dumps(question), p, now)
+            question = dict(question)
+            tags = question.pop("tags", [])
+            n = question.pop("revises", None)
+            p, to = (question["page"] - 1,) * 2 if question.get("page") else (first, last)
+            tag = section_tag(book["title"], toc, p, to) if book else None
+            tags = [*tags, tag] if tag else tags
+            card = db.card_for(old[0], old[1], n - 1) if old and n else None
+            if card is not None and db.card_for(message_id, qi, i) is None:
+                db.relink_card(card["id"], message_id, qi, i, q["title"], p, now)
+                kind, fields = cardmodel.note_for_question(question)
+                note = db.card_note(card["note_id"])
+                db.update_card_note(card["note_id"], fields, [*note["tags"].split(), *tags], kind, now)
+                added.append(card["id"])
+                continue
+            card_id = db.add_card(book_id, message_id, qi, i, q["title"], json.dumps(question), p, now, tags=tags)
             if card_id is not None:
                 added.append(card_id)
+        if old:
+            db.drop_new_quiz_cards(*old)
     return added
 
 
-def _asked_page(db: Database, message_id: int) -> int | None:
-    """The page of the passage the quiz was asked about, if any."""
+def _revised(db: Database, message_id: int, title: str) -> tuple[int, int] | None:
+    """The earlier quiz in the reply's chat that a quiz of it revises: (message id, index)."""
+    rows = db.conn.execute(
+        "SELECT m.id, m.text FROM messages m JOIN messages r ON r.chat_id=m.chat_id AND r.id=? "
+        "WHERE m.role='assistant' AND m.id<r.id ORDER BY m.id", (message_id,),
+    ).fetchall()
+    return quiz.revised_quiz([(r["id"], i, q) for r in rows for i, q in enumerate(quiz.quizzes(r["text"]))], title)
+
+
+def _asked_pages(db: Database, message_id: int) -> tuple[int | None, int | None]:
+    """The first and last pages the quiz was asked about: the passage's, or the part of the
+    book a quiz request covers; (None, None) if unknown."""
     row = db.conn.execute(
-        "SELECT s.page FROM messages q JOIN messages r ON r.chat_id=q.chat_id AND r.id=? "
-        "JOIN snippets s ON s.message_id=q.id WHERE q.role='user' AND q.id<r.id ORDER BY q.id DESC, s.id LIMIT 1",
-        (message_id,),
+        "SELECT * FROM (SELECT q.id, s.id AS s, s.page AS first, s.page AS last FROM messages q "
+        "JOIN messages r ON r.chat_id=q.chat_id AND r.id=? JOIN snippets s ON s.message_id=q.id "
+        "WHERE q.role='user' AND q.id<r.id "
+        "UNION ALL SELECT q.id, 0, q.page_from, q.page_to FROM messages q JOIN messages r ON r.chat_id=q.chat_id AND r.id=? "
+        "WHERE q.role='user' AND q.id<r.id AND q.page_from IS NOT NULL) ORDER BY id DESC, s LIMIT 1",
+        (message_id, message_id),
     ).fetchone()
-    return row["page"] if row else None
+    return (row["first"], row["last"]) if row else (None, None)
+
+
+# -- sections ------------------------------------------------------------------------------
+# A quiz card is tagged with the section of its book it draws on, from the book's contents:
+# Book::Chapter::Section (tag parts have no spaces or commas, see tag_part).
+tag_part = cardmodel.tag_part
+
+
+def section_path(toc, page: int | None) -> list[str]:
+    """The titles of the contents entries holding a 0-based page, outermost first: the entry
+    starting last at or before the page, and its parents."""
+    if page is None:
+        return []
+    best = None
+    for i, (_, _, p) in enumerate(toc):
+        if p <= page and (best is None or p >= toc[best][2]):
+            best = i
+    if best is None:
+        return []
+    path, level = [toc[best][1]], toc[best][0]
+    for lvl, title, _ in reversed(toc[:best]):
+        if lvl < level:
+            path.insert(0, title)
+            level = lvl
+    return path
+
+
+def section_tag(book_title: str, toc, page: int | None, last: int | None = None) -> str | None:
+    """The tag of the section holding a page (or all of pages page…last)."""
+    path = section_path(toc, page)
+    if last is not None and last != page:
+        end = section_path(toc, last)
+        n = 0
+        while n < min(len(path), len(end)) and path[n] == end[n]:
+            n += 1
+        path = path[:n]
+    parts = [tag_part(t) for t in path]
+    parts = [p for p in parts if p]
+    return "::".join([tag_part(book_title) or "Book", *parts]) if parts else None
+
+
+def learn_toc(db: Database, book_id: int, toc) -> int:
+    """Remember a book's contents. The first time they are known, the book's quiz cards made
+    before get their section tags. Returns how many were tagged."""
+    book = db.book(book_id)
+    if book is None:
+        return 0
+    toc = [[lvl, title, page] for lvl, title, page in toc]
+    first = book["toc"] is None
+    db.update_book(book_id, toc=json.dumps(toc, ensure_ascii=False))
+    if not first or not toc:
+        return 0
+    tagged = 0
+    for card in db.cards(book_id, "quiz IS NOT NULL AND page IS NOT NULL"):
+        tag = section_tag(book["title"], toc, card["page"])
+        if tag:
+            db.add_tags([card["note_id"]], [tag])
+            tagged += 1
+    return tagged
+
+
+MAX_TAGS_IN_CONTEXT = 300
+
+
+def concept_tags(db: Database) -> list[str]:
+    """The user's tags other than section tags (and 'marked'), for Claude to reuse in quizzes."""
+    roots = {section_root(b).lower() for b in db.conn.execute("SELECT title FROM books")}
+    return [t for t in db.all_tags() if t.split("::")[0].lower() not in roots and t.lower() != "marked"]
+
+
+def tags_context(db: Database) -> str:
+    tags = concept_tags(db)[:MAX_TAGS_IN_CONTEXT]
+    if not tags:
+        return ""
+    return ("Tags already in the user's review deck (reuse these for quiz questions where they fit):\n"
+            f"<existing_tags>{' '.join(tags)}</existing_tags>")
+
+
+def section_root(book) -> str:
+    return tag_part(book["title"]) or "Book"
+
+
+def sections(db: Database, book_id: int | None = None, now: float | None = None) -> dict[int, list[dict]]:
+    """For every book (or one), the sections its cards are tagged with, as a tree in reading
+    order: {book id: [{tag, name, parent (tag or None), due, new, total}]}. A section's counts
+    include those of the sections in it; new: cards waiting, not capped by today's allowance."""
+    now = time.time() if now is None else now
+    roots = {b["id"]: section_root(b) for b in db.conn.execute("SELECT id, title FROM books")}
+    scope = "AND c.book_id=?" if book_id is not None else ""
+    rows = db.conn.execute(
+        f"SELECT c.book_id, c.page, n.tags, {due_sql('c.')} AS due, c.suspended=0 AND c.stage=0 AS new "
+        f"FROM cards c JOIN card_notes n ON n.id=c.note_id WHERE c.book_id IS NOT NULL AND n.tags!='' {scope}",
+        (next_day(now), now, *(() if book_id is None else (book_id,))),
+    )
+    nodes: dict[int, dict[str, dict]] = {}
+    for r in rows:
+        root = roots.get(r["book_id"])
+        if root is None:
+            continue
+        prefix = root.lower() + "::"
+        tags = set()
+        for t in r["tags"].split():
+            if t.lower().startswith(prefix):
+                parts = t.split("::")
+                tags.update("::".join(parts[:i]) for i in range(2, len(parts) + 1))
+        book_nodes = nodes.setdefault(r["book_id"], {})
+        for t in tags:
+            n = book_nodes.setdefault(t, {"tag": t, "name": t.rsplit("::", 1)[-1].replace("_", " "),
+                                          "parent": t.rsplit("::", 1)[0] if t.count("::") > 1 else None,
+                                          "due": 0, "new": 0, "total": 0, "page": r["page"]})
+            n["due"] += r["due"] or 0
+            n["new"] += r["new"] or 0
+            n["total"] += 1
+            if r["page"] is not None and (n["page"] is None or r["page"] < n["page"]):
+                n["page"] = r["page"]
+    return {b: sorted(ns.values(), key=lambda n: (n["page"] is None, n["page"] or 0, n["tag"].count("::"), n["tag"]))
+            for b, ns in nodes.items()}
 
 
 def question(card) -> dict:
@@ -267,17 +421,18 @@ def new_left_today(db: Database, now: float) -> int:
     return max(new_per_day(db) - db.new_cards_reviewed_since(day_start(now)), 0)
 
 
-def counts(db: Database, book_id: int | None, now: float | None = None, deck: int | None = None) -> dict:
-    """What there is to review in a book or deck (or everywhere, with neither): due cards, new
-    cards that can be introduced today, and the total."""
+def counts(db: Database, book_id: int | None, now: float | None = None, deck: int | None = None,
+           tag: str | None = None) -> dict:
+    """What there is to review in a book, deck or tag (a section; or everywhere, with none): due
+    cards, new cards that can be introduced today, and the total."""
     now = time.time() if now is None else now
-    new = db.count_cards(book_id, NEW, deck_id=deck)
+    new = db.count_cards(book_id, NEW, deck_id=deck, tag=tag)
     return {
-        "due": db.count_cards(book_id, DUE, (next_day(now), now), deck_id=deck),
+        "due": db.count_cards(book_id, DUE, (next_day(now), now), deck_id=deck, tag=tag),
         "new": min(new, new_left_today(db, now)),
         "new_total": new,
-        "total": db.count_cards(book_id, deck_id=deck),
-        "suspended": db.count_cards(book_id, "suspended=1", deck_id=deck),
+        "total": db.count_cards(book_id, deck_id=deck, tag=tag),
+        "suspended": db.count_cards(book_id, "suspended=1", deck_id=deck, tag=tag),
     }
 
 
@@ -305,7 +460,8 @@ def deck_counts(db: Database, now: float | None = None) -> dict[int, dict]:
     return out
 
 
-def next_card(db: Database, book_id: int | None, now: float | None = None, skip=(), deck: int | None = None):
+def next_card(db: Database, book_id: int | None, now: float | None = None, skip=(), deck: int | None = None,
+              tag: str | None = None):
     """The card to review next: due learning and review cards first (most overdue first),
     then new ones while today's allowance lasts, then learning cards due within LEARN_AHEAD.
     skip: ids of cards not to show again yet (just answered, or skipped), unless nothing else is left."""
@@ -316,17 +472,18 @@ def next_card(db: Database, book_id: int | None, now: float | None = None, skip=
     tiers.append(("suspended=0 AND stage IN (1,3) AND due<=?", (now + LEARN_AHEAD,), "due, id"))
     fallback = None
     for where, args, order in tiers:
-        for card in db.cards(book_id, where, args, order=order, limit=len(skip) + 1, deck_id=deck):
+        for card in db.cards(book_id, where, args, order=order, limit=len(skip) + 1, deck_id=deck, tag=tag):
             if card["id"] not in skip:
                 return card
             fallback = fallback or card
     return fallback
 
 
-def next_due(db: Database, book_id: int | None, now: float | None = None, deck: int | None = None) -> float | None:
+def next_due(db: Database, book_id: int | None, now: float | None = None, deck: int | None = None,
+             tag: str | None = None) -> float | None:
     """When the next card that isn't due yet will be."""
     now = time.time() if now is None else now
-    row = db.cards(book_id, "suspended=0 AND stage>0 AND due>?", (now,), order="due", limit=1, deck_id=deck)
+    row = db.cards(book_id, "suspended=0 AND stage>0 AND due>?", (now,), order="due", limit=1, deck_id=deck, tag=tag)
     return row[0]["due"] if row else None
 
 

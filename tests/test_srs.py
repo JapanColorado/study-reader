@@ -146,6 +146,49 @@ def test_backfill_makes_cards_for_earlier_quizzes(tmp_path):
     assert db.reviews(cards[0]["id"])[0]["rating"] == 1
 
 
+# -- sections ------------------------------------------------------------------------------
+TOC = [[1, "Part I", 0], [2, "Chapter 1: Rinsing, mostly", 0], [2, "Chapter 2", 2], [3, "2.1 Storage", 2], [1, "Index", 9]]
+
+
+def test_section_tags_from_the_contents():
+    assert srs.section_path(TOC, 1) == ["Part I", "Chapter 1: Rinsing, mostly"]
+    assert srs.section_path(TOC, 2) == ["Part I", "Chapter 2", "2.1 Storage"]
+    assert srs.section_path(TOC, None) == [] and srs.section_path([[1, "Late", 3]], 1) == []
+    assert srs.section_tag("A Book, Vol. 1", TOC, 0) == "A_Book_Vol._1::Part_I::Chapter_1:_Rinsing_mostly"
+    assert srs.section_tag("A", [], 0) is None
+    assert srs.section_tag("A", TOC, 2, 3) == "A::Part_I::Chapter_2::2.1_Storage"
+    assert srs.section_tag("A", TOC, 0, 3) == "A::Part_I" and srs.section_tag("A", TOC, 0, 9) is None
+
+
+def test_quiz_cards_are_tagged_with_their_section(tmp_path):
+    db, book_id, chat, reply = setup(tmp_path)
+    srs.add_quiz_cards(db, book_id, reply, QUIZ)
+    assert all(db.card_note(c["note_id"])["tags"] == "" for c in db.quiz_cards(reply, 0))
+    # The first time the book's contents are known, the cards made before get tagged.
+    assert srs.learn_toc(db, book_id, TOC) == 4 and srs.learn_toc(db, book_id, TOC) == 0
+    tags = [db.card_note(c["note_id"])["tags"] for c in db.quiz_cards(reply, 0)]
+    assert tags[0] == " A::Part_I::Chapter_1:_Rinsing_mostly " and tags[1] == " A::Part_I::Chapter_2::2.1_Storage "
+
+    later = db.add_message(chat, "assistant", CARDS)
+    srs.add_quiz_cards(db, book_id, later, CARDS)
+    assert db.card_note(db.card_for(later, 0, 0)["note_id"])["tags"] == " A::Part_I::Chapter_1:_Rinsing_mostly "
+    assert db.card_note(db.card_for(later, 0, 1)["note_id"])["tags"] == " A::Part_I::Chapter_2::2.1_Storage "
+
+    # Reviewing one section (or the part holding it).
+    assert srs.counts(db, book_id, NOW, tag="A::Part_I::Chapter_2")["total"] == 4
+    assert srs.counts(db, None, NOW, tag="A::Part_I")["total"] == 6
+    assert srs.counts(db, book_id, NOW, tag="A::Part_I::Chapter_")["total"] == 0  # whole parts only
+    card = srs.next_card(db, book_id, NOW, tag="A::Part_I::Chapter_1:_Rinsing_mostly")
+    assert card["id"] == db.card_for(reply, 0, 0)["id"]
+
+    tree = srs.sections(db, book_id, NOW)[book_id]
+    assert [(n["tag"], n["parent"], n["total"]) for n in tree] == [
+        ("A::Part_I", None, 6), ("A::Part_I::Chapter_1:_Rinsing_mostly", "A::Part_I", 2),
+        ("A::Part_I::Chapter_2", "A::Part_I", 4), ("A::Part_I::Chapter_2::2.1_Storage", "A::Part_I::Chapter_2", 4),
+    ]
+    assert tree[2]["name"] == "Chapter 2" and tree[0]["new"] == 6
+
+
 # -- the chat panel ------------------------------------------------------------------------
 def test_chat_quizzes_feed_the_deck(chat_panel):
     panel, worker, db, book_id = chat_panel
@@ -235,6 +278,52 @@ def test_reviewing_cards(chat_panel):
     assert shown[-1][0] == "showOverview" and shown[-1][1][0]["reviewed"] == 2
 
 
+def test_reviewing_one_book_or_section(chat_panel):
+    from study_reader.review import ReviewPanel
+
+    panel, worker, db, book_id = chat_panel
+    srs.learn_toc(db, book_id, TOC)
+    panel.start_quiz("Quiz me on pages 1-4.", "Quiz", 0, last=3)  # spans chapters 1 and 2
+    worker.done.emit(panel.chat_id, "s1", QUIZ, "u1")
+    reply = db.messages(panel.chat_id)[1]["id"]
+    # A question with no page of its own goes into the section holding all the quizzed pages.
+    tags = [db.card_note(c["note_id"])["tags"] for c in db.quiz_cards(reply, 0)]
+    assert tags[0] == " A::Part_I::Chapter_1:_Rinsing_mostly " and set(tags[1:]) == {" A::Part_I "}
+    assert db.quiz_cards(reply, 0)[1]["page"] == 0
+    other = db.upsert_book("h2", "/b.pdf", "B", 3)["id"]
+    db.add_card_note("basic", {"front": "q", "back": "a"}, db.book_deck(other), book_id=other)
+
+    review = ReviewPanel(db, worker)
+    review.set_book(book_id)
+    shown = []
+    review._js = lambda fn, *args: shown.append((fn, args))
+    review.refresh()
+    o = shown[-1][1][0]
+    assert [s["name"] for s in o["sections"]] == ["Part I", "Chapter 1: Rinsing mostly"] and o["section"] is None
+    review.choose_section(0, "A::Part_I::Chapter_1:_Rinsing_mostly")
+    o = shown[-1][1][0]
+    assert o["total"] == 1 and o["title"] == "Part I › Chapter 1: Rinsing mostly" and o["whole_new"] == 4
+    review.start()
+    assert review.card_id == db.card_for(reply, 0, 0)["id"]
+    review.set_book(book_id)
+    assert review.section is None
+
+    everything = ReviewPanel(db, worker, all_books=True)
+    everything._js = lambda fn, *args: shown.append((fn, args))
+    everything.refresh()
+    o = shown[-1][1][0]
+    assert [b["title"] for b in o["books"]] == ["A", "B"] and o["total"] == 5
+    assert o["decks"] == []  # books' own decks are listed as books
+    assert o["books"][0]["sections"][0]["tag"] == "A::Part_I"
+    everything.choose_book(other)
+    assert shown[-1][1][0]["total"] == 1 and shown[-1][1][0]["title"] == "B"
+    everything.choose_section(book_id, "A::Part_I")
+    o = shown[-1][1][0]
+    assert o["total"] == 4 and o["book"] == book_id and o["title"] == "A › Part I"
+    everything.choose_deck(None)
+    assert shown[-1][1][0]["total"] == 5 and everything.picked_book is None
+
+
 def test_main_window_review_panel(pdf_path, tmp_path, monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
@@ -263,3 +352,89 @@ def test_main_window_review_panel(pdf_path, tmp_path, monkeypatch):
     win._review_chat(db.book_by_hash(db.recent_books()[0]["hash"])["id"], chat)
     assert win.center.currentWidget() is win.reader and win.chat.chat_id == chat
     win.close()
+
+
+# -- Claude's tags and revisions -----------------------------------------------------------
+TAGGED = r'''```quiz Zorblatts
+{"questions": [
+  {"type": "truefalse", "question": "Store it near a window?", "answer": false, "page": 1, "tags": ["Storage Rules", "care::light"]},
+  {"type": "free", "question": "Why rinse?", "answer": "To calibrate.", "tags": "rinsing"}
+]}
+```'''
+
+REVISED = r'''Here it is, harder.
+```quiz Zorblatts, harder
+{"revises": "Zorblatts", "questions": [
+  {"type": "free", "question": "Why rinse, and why in tea?", "answer": "To calibrate; tea is neutral.", "revises": 4},
+  {"type": "flashcard", "question": "Rinse time?", "answer": "41 s", "revises": 1},
+  {"type": "truefalse", "question": "Zorblatts have seven legs.", "answer": true}
+]}
+```'''
+
+
+def test_claude_tags_its_quiz_questions(tmp_path):
+    db, book_id, chat, reply = setup(tmp_path, TAGGED)
+    srs.learn_toc(db, book_id, TOC)
+    (q,) = quiz.quizzes(TAGGED)
+    assert q["questions"][0]["tags"] == ["Storage_Rules", "care::light"] and q["questions"][1]["tags"] == ["rinsing"]
+    srs.add_quiz_cards(db, book_id, reply, TAGGED)
+    first, second = db.quiz_cards(reply, 0)
+    assert db.card_note(first["note_id"])["tags"] == " Storage_Rules care::light A::Part_I::Chapter_1:_Rinsing_mostly "
+    assert "tags" not in json.loads(first["data"])
+    # Claude is shown the user's tags (not section tags) to reuse.
+    assert srs.concept_tags(db) == ["care::light", "rinsing", "Storage_Rules"]
+    assert "<existing_tags>care::light rinsing Storage_Rules</existing_tags>" in srs.tags_context(db)
+
+
+def test_a_revised_quiz_takes_over_the_cards_it_keeps(tmp_path):
+    db, book_id, chat, reply = setup(tmp_path)
+    srs.add_quiz_cards(db, book_id, reply, QUIZ, now=NOW)
+    old = db.quiz_cards(reply, 0)
+    srs.review(db, old[0]["id"], 3, now=NOW)
+    srs.review(db, old[1]["id"], 3, now=NOW)  # reviewed, and left out of the revision
+    db.add_message(chat, "user", "Revise your quiz “Zorblatts”: harder")
+    revision = db.add_message(chat, "assistant", REVISED)
+    srs.add_quiz_cards(db, book_id, revision, REVISED, now=NOW + 60)
+
+    free, card, new = db.quiz_cards(revision, 0)
+    assert free["id"] == old[3]["id"] and json.loads(free["data"])["question"] == "Why rinse, and why in tea?"
+    assert card["id"] == old[0]["id"] and card["reps"] == 1 and len(db.reviews(card["id"])) == 1
+    assert db.card_note(card["note_id"])["kind"] == "basic" and card["title"] == "Zorblatts, harder"
+    assert new["reps"] == 0 and new["id"] not in [c["id"] for c in old]
+    # The old quiz keeps only its reviewed card that wasn't carried over.
+    assert [c["id"] for c in db.quiz_cards(reply, 0)] == [old[1]["id"]] and db.card(old[2]["id"]) is None
+    assert quiz.revised_quiz([(reply, 0, quiz.quizzes(QUIZ)[0])], "nothing like it") == (reply, 0)
+
+
+def test_chat_panel_revises_quizzes_and_shares_tags(chat_panel):
+    panel, worker, db, book_id = chat_panel
+    panel.start_quiz("Quiz me.", "Quiz", 0)
+    worker.done.emit(panel.chat_id, "s1", TAGGED, "u1")
+    reply = db.messages(panel.chat_id)[1]["id"]
+    first = db.quiz_cards(reply, 0)[0]["id"]
+    panel.revise_quiz(reply, 0, "make it harder")
+    job = worker.jobs[-1]
+    assert job.question == "Revise your quiz “Zorblatts”: make it harder" and "<existing_tags>" in job.context
+    worker.done.emit(panel.chat_id, "s1", REVISED, "u2")
+    revision = db.messages(panel.chat_id)[-1]["id"]
+    assert panel._revisions(db.messages(panel.chat_id)) == {(reply, 0): revision}
+    assert db.quiz_cards(revision, 0)[1]["id"] == first and not db.quiz_cards(reply, 0)
+
+
+def test_browser_sidebar_orders_and_filters_tags(chat_panel):
+    from study_reader.browser import Sidebar
+
+    _, _, db, book_id = chat_panel
+    deck = db.book_deck(book_id)
+    for tag, page in (("A::Ch_10::Late_part", 5), ("A::Ch_2", 1), ("zebra", None), ("apple", None)):
+        db.add_card_note("basic", {"front": tag, "back": "x"}, deck, tags=[tag], book_id=book_id, page=page)
+    bar = Sidebar(db)
+    bar.refresh()
+    tags = next(bar.topLevelItem(i) for i in range(bar.topLevelItemCount()) if bar.topLevelItem(i).text(0) == "Tags")
+    labels = lambda item: [item.child(i).text(0) for i in range(item.childCount()) if not item.child(i).isHidden()]  # noqa: E731
+    assert labels(tags) == ["A", "apple", "zebra"]
+    assert labels(tags.child(0)) == ["Ch 2", "Ch 10"]  # reading order, underscores as spaces
+    bar.filter_tags("late part")
+    assert labels(tags) == ["A"] and labels(tags.child(0)) == ["Ch 10"] and tags.child(0).child(1).isExpanded()
+    bar.filter_tags("")
+    assert labels(tags) == ["A", "apple", "zebra"] and not tags.child(0).isExpanded()

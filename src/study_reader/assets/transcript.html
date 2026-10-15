@@ -79,6 +79,13 @@
                      background:transparent; border:1px solid var(--border); }
   .quiz-head .deck.on { color:var(--success); border-color:var(--success); }
   .quiz-head .deck:hover { background:var(--accent-soft); }
+  .quiz-head .revise { font:inherit; font-size:11px; padding:1px 7px; border-radius:5px; cursor:pointer; color:var(--muted);
+                       background:transparent; border:1px solid var(--border); }
+  .quiz-head .revise:hover { background:var(--accent-soft); color:var(--accent); }
+  .quiz-revised { padding:6px 12px; font-size:12.5px; color:var(--muted); border-bottom:1px solid var(--border); }
+  .quiz-revised button { font:inherit; color:var(--accent); background:none; border:0; padding:0; cursor:pointer; }
+  .quiz-revised button:hover { text-decoration:underline; }
+  .quiz-revised ~ * { opacity:0.55; }
   .cursor::after { content:"▍"; color:var(--accent); animation:blink 1s steps(2) infinite; }
   @keyframes blink { 50% { opacity:0; } }
 </style>
@@ -189,7 +196,8 @@ function deckToggle(quiz) {
 }
 
 function quizInner(msg, qi, quiz) {
-  const head = title => `<div class="quiz-head"><span class="title">Quiz · ${esc(quiz.title)}</span>${title}</div>`;
+  const label = quiz.revises ? `Quiz · ${esc(quiz.title)} <span title="Revises the quiz “${esc(quiz.revises)}”">(revised)</span>` : `Quiz · ${esc(quiz.title)}`;
+  const head = title => `<div class="quiz-head"><span class="title">${label}</span>${title}</div>`;
   if (quiz.error)
     return head("") + `<div class="quiz-broken">This quiz couldn't be read (${esc(quiz.error)}). Regenerate the reply for a new one.`
       + `<details><summary>Show its source</summary><pre><code>${esc(quiz.raw)}</code></pre></details></div>`;
@@ -204,7 +212,10 @@ function quizInner(msg, qi, quiz) {
     foot = `<div class="quiz-foot"><span class="score">${text}</span>`
       + `<button class="qbtn quiet" data-act="retake" title="Clear your answers and start again (review scheduling is kept)">Retake</button></div>`;
   }
-  return head(`${deckToggle(quiz)}<span>${answered} / ${qs.length}</span>`)
+  const revise = `<button class="revise" data-act="revise" title="Ask Claude to change this quiz; the questions it keeps keep their review cards">Revise…</button>`;
+  const revised = quiz.revised_by
+    ? `<div class="quiz-revised">Claude revised this quiz in a later reply. <button data-act="goto" data-to="${quiz.revised_by}">Show the revision</button></div>` : "";
+  return head(`${quiz.revised_by ? "" : revise}${deckToggle(quiz)}<span>${answered} / ${qs.length}</span>`) + revised
     + qs.map((q, i) => {
       const key = `${msg}:${qi}:${i}`;
       const page = q.page ? `<a href="page://go/${q.page - 1}" title="Go to page ${q.page}">p. ${q.page}</a>` : "";
@@ -241,6 +252,11 @@ document.addEventListener("click", ev => {
   const act = button.dataset.act, qEl = button.closest(".q");
   const msg = +quiz.dataset.msg, qi = +quiz.dataset.quiz;
   if (act === "retake") bridge.retake(msg, qi);
+  else if (act === "revise") bridge.revise(msg, qi);
+  else if (act === "goto") {
+    const el = document.querySelector(`.quiz[data-msg="${button.dataset.to}"]`);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
   else if (act === "deck") bridge.toggleReview(msg, qi);
   else if (act === "regrade") bridge.regrade(msg, qi, +qEl.dataset.q);
   else if (act === "reveal") {

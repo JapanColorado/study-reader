@@ -41,6 +41,7 @@ class MainWindow(QMainWindow):
         theme().configure(self.db.get_setting("theme", "system"), self.db.get_setting("dark_pages") == "1")
         self.worker = ChatWorker(data_dir() / "sessions", self)
         srs.backfill(self.db)  # once: cards for quizzes from before there were cards
+        self._learn_tocs()  # once a book: section tags for quiz cards from before there were any
         self.conversions = ConversionManager(self.db, self.worker, self)  # Claude Conversion of cards
         self.conversions.cardsChanged.connect(lambda: self._on_cards_changed())
         self.browser = None  # browser.CardBrowser, made when first opened
@@ -471,6 +472,7 @@ class MainWindow(QMainWindow):
         if remember_dir:
             self.db.set_setting("last_dir", str(path).rsplit("/", 1)[0])
         self.setWindowTitle(f"{book['title']} — Study Reader")
+        srs.learn_toc(self.db, self.book_id, doc.toc())
 
         self._fill_toc()
         self.toc_action.setChecked(bool(book["show_toc"]))
@@ -497,6 +499,22 @@ class MainWindow(QMainWindow):
         self._update_review_counts()
         self._refresh_highlights()
         return True
+
+    def _learn_tocs(self) -> None:
+        """The contents of books whose quiz cards have pages but which haven't been opened since
+        cards got section tags, so those cards get them."""
+        for row in self.db.conn.execute(
+            "SELECT id, path FROM books b WHERE toc IS NULL AND EXISTS "
+            "(SELECT 1 FROM cards c WHERE c.book_id=b.id AND c.quiz IS NOT NULL AND c.page IS NOT NULL)"
+        ).fetchall():
+            try:
+                doc = Document(row["path"])
+            except Exception:
+                continue  # missing for now; tagged when it's next opened
+            try:
+                srs.learn_toc(self.db, row["id"], doc.toc())
+            finally:
+                doc.close()
 
     def _fill_toc(self) -> None:
         self.toc.clear()
@@ -572,7 +590,7 @@ class MainWindow(QMainWindow):
         first, last, title = quiz.section_around(self.doc.toc(), page, self.doc.page_count, level)
         whole = (first, last) == (0, self.doc.page_count - 1) and level == quiz.DOCUMENT_LEVEL
         question, chat_title = quiz.request(first, last, title, whole)
-        self._show_chat(lambda: self.chat.start_quiz(question, chat_title, first))
+        self._show_chat(lambda: self.chat.start_quiz(question, chat_title, first, last=last))
 
     def _fill_quiz_menu(self) -> None:
         """The whole document (if short), the contents entries around the page being read, outermost

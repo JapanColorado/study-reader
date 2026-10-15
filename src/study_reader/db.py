@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS books (
     context_mode TEXT,              -- NULL (not prepared) | 'full' | 'partial'
     source_url TEXT,                -- web snapshots: the page they were saved from
     finished_at REAL,               -- NULL while still being read
+    toc TEXT,                       -- JSON [[level, title, 0-based page], …] once known (srs.learn_toc)
     opened_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS chats (
@@ -45,6 +46,8 @@ CREATE TABLE IF NOT EXISTS messages (
     text TEXT NOT NULL,
     session_id TEXT,                -- assistant replies: the Claude session holding the reply,
     session_uuid TEXT,              -- and its last entry, to branch from (regenerate / edit)
+    page_from INTEGER,              -- quiz requests on part of the book: its first and last
+    page_to INTEGER,                -- 0-based pages
     created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS snippets (
@@ -246,6 +249,8 @@ class Database:
             self.conn.execute("ALTER TABLE books ADD COLUMN source_url TEXT")
         if "finished_at" not in book_cols:
             self.conn.execute("ALTER TABLE books ADD COLUMN finished_at REAL")
+        if "toc" not in book_cols:
+            self.conn.execute("ALTER TABLE books ADD COLUMN toc TEXT")
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(chats)")}
         if "model" not in cols:
             # Existing chats keep the model that was selected globally before chats had their own.
@@ -257,6 +262,9 @@ class Database:
         for col in ("session_id", "session_uuid"):
             if col not in msg_cols:
                 self.conn.execute(f"ALTER TABLE messages ADD COLUMN {col} TEXT")
+        for col in ("page_from", "page_to"):
+            if col not in msg_cols:
+                self.conn.execute(f"ALTER TABLE messages ADD COLUMN {col} INTEGER")
         calc_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(calculations)")}
         if "latex" not in calc_cols:
             self.conn.execute("ALTER TABLE calculations ADD COLUMN latex TEXT NOT NULL DEFAULT ''")
@@ -390,14 +398,17 @@ class Database:
     # -- messages ------------------------------------------------------------
     def add_message(
         self, chat_id: int, role: str, text: str, snippets: list[dict] | None = None,
-        session_id: str | None = None, session_uuid: str | None = None,
+        session_id: str | None = None, session_uuid: str | None = None, pages: tuple[int, int] | None = None,
     ) -> int:
-        """snippets: dicts with kind, page, text, image_path, rects."""
+        """snippets: dicts with kind, page, text, image_path, rects. pages: the 0-based first and
+        last pages a quiz request covers."""
         now = time.time()
+        first, last = pages or (None, None)
         with self.conn:
             cur = self.conn.execute(
-                "INSERT INTO messages (chat_id, role, text, session_id, session_uuid, created_at) VALUES (?,?,?,?,?,?)",
-                (chat_id, role, text, session_id, session_uuid, now),
+                "INSERT INTO messages (chat_id, role, text, session_id, session_uuid, page_from, page_to, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (chat_id, role, text, session_id, session_uuid, first, last, now),
             )
             for s in snippets or []:
                 self.conn.execute(
@@ -791,7 +802,7 @@ class Database:
 
     def add_card(
         self, book_id: int, message_id: int | None, quiz: int, question: int, title: str, data: str,
-        page: int | None, now: float,
+        page: int | None, now: float, tags=(),
     ) -> int | None:
         """A new card for a quiz question, in the book's deck; None if the question has one already."""
         if message_id is not None and self.card_for(message_id, quiz, question) is not None:
@@ -799,9 +810,26 @@ class Database:
         kind, fields = cardmodel.note_for_question(json.loads(data))
         with self.conn:
             deck_id = self.book_deck(book_id)
-            note_id = self._insert_note(kind, fields, "", now)
+            note_id = self._insert_note(kind, fields, cardmodel.join_tags(tags), now)
             return self._insert_card(note_id, 0, deck_id, kind, fields, now, book_id=book_id, message_id=message_id,
                                      quiz=quiz, question=question, title=title, page=page)
+
+    def relink_card(self, card_id: int, message_id: int, quiz: int, question: int, title: str,
+                    page: int | None, now: float) -> None:
+        """Hand a quiz question's card to the question that revises it, in another reply."""
+        with self.conn:
+            self.conn.execute(
+                "UPDATE cards SET message_id=?, quiz=?, question=?, title=?, page=COALESCE(?, page), updated_at=? "
+                "WHERE id=?", (message_id, quiz, question, title, page, now, card_id),
+            )
+
+    def drop_new_quiz_cards(self, message_id: int, quiz: int) -> None:
+        """Delete a quiz's cards that were never reviewed (it was revised without them)."""
+        where = "message_id=? AND quiz=? AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.card_id=cards.id)"
+        with self.conn:
+            notes = [r[0] for r in self.conn.execute(f"SELECT DISTINCT note_id FROM cards WHERE {where}", (message_id, quiz))]
+            self.conn.execute(f"DELETE FROM cards WHERE {where}", (message_id, quiz))
+            self._drop_orphan_notes(notes)
 
     def card(self, card_id: int) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM cards WHERE id=?", (card_id,)).fetchone()
@@ -819,25 +847,29 @@ class Database:
             "SELECT * FROM cards WHERE message_id=? AND quiz=? ORDER BY question", (message_id, quiz)
         ).fetchall()
 
-    def _scope(self, book_id: int | None, deck_id: int | None) -> tuple[str, tuple]:
+    def _scope(self, book_id: int | None, deck_id: int | None, tag: str | None = None) -> tuple[str, tuple]:
         sql, args = "", ()
         if book_id is not None:
             sql, args = "book_id=? AND ", (book_id,)
         if deck_id is not None:
             sql, args = sql + f"deck_id IN ({SUBTREE}) AND ", args + (deck_id,)
+        if tag is not None:  # the tag or a tag under it (tag::child)
+            sql += ("note_id IN (SELECT id FROM card_notes WHERE tags LIKE ? ESCAPE '\\' "
+                    "OR tags LIKE ? ESCAPE '\\') AND ")
+            args += (f"% {_like(tag)} %", f"% {_like(tag)}::%")
         return sql, args
 
     def cards(self, book_id: int | None = None, where: str = "1", args: tuple = (), order: str = "id",
-              limit: int = -1, deck_id: int | None = None) -> list[sqlite3.Row]:
-        """Cards of a book or deck (or of every one), filtered by a SQL condition."""
-        scope, scope_args = self._scope(book_id, deck_id)
+              limit: int = -1, deck_id: int | None = None, tag: str | None = None) -> list[sqlite3.Row]:
+        """Cards of a book, deck or tag (or of every one), filtered by a SQL condition."""
+        scope, scope_args = self._scope(book_id, deck_id, tag)
         return self.conn.execute(
             f"SELECT * FROM cards WHERE {scope}({where}) ORDER BY {order} LIMIT ?", scope_args + args + (limit,),
         ).fetchall()
 
     def count_cards(self, book_id: int | None = None, where: str = "1", args: tuple = (),
-                    deck_id: int | None = None) -> int:
-        scope, scope_args = self._scope(book_id, deck_id)
+                    deck_id: int | None = None, tag: str | None = None) -> int:
+        scope, scope_args = self._scope(book_id, deck_id, tag)
         return self.conn.execute(f"SELECT COUNT(*) FROM cards WHERE {scope}({where})", scope_args + args).fetchone()[0]
 
     def record_review(

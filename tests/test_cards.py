@@ -278,7 +278,7 @@ def test_reviewing_cloze_and_bookless_free_cards(db, chat_panel):
     review._js = lambda fn, *args: shown.append((fn, args))
     review.choose_deck(db.deck_by_name("Anki")["id"])
     overview = shown[-1][1][0]
-    assert overview["deck_name"] == "Anki" and [d["path"] for d in overview["decks"]] == ["Anki", "Anki::Physics"]
+    assert overview["title"] == "Anki" and [d["path"] for d in overview["decks"]] == ["Anki", "Anki::Physics"]
 
     review.start()
     card = shown[-1][1][0]

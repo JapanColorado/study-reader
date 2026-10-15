@@ -8,7 +8,7 @@ import uuid
 from PySide6.QtCore import QEvent, QSize, Qt, Signal
 from PySide6.QtGui import QFontMetrics, QTextCursor
 from PySide6.QtWidgets import (
-    QComboBox, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMenu, QPlainTextEdit,
+    QComboBox, QFrame, QHBoxLayout, QInputDialog, QLabel, QListWidget, QListWidgetItem, QMenu, QPlainTextEdit,
     QSplitter, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -112,6 +112,7 @@ class ChatPanel(QWidget):
         self.transcript.quizRetake.connect(self._on_quiz_retake)
         self.transcript.quizRegrade.connect(self._on_quiz_regrade)
         self.transcript.quizReviewToggled.connect(self._on_quiz_review_toggled)
+        self.transcript.quizReviseRequested.connect(self.revise_quiz)
         self.transcript.quizRequested.connect(self.quiz_on_reply)
         self.status = QLabel()
         self.status.setWordWrap(True)
@@ -298,15 +299,17 @@ class ChatPanel(QWidget):
         self.input.setFocus()
         self.highlightsChanged.emit()
 
-    def start_quiz(self, request: str, title: str, page: int, snippet: dict | None = None) -> None:
+    def start_quiz(self, request: str, title: str, page: int, snippet: dict | None = None,
+                   last: int | None = None) -> None:
         """Open a new chat asking Claude for a quiz; the composer's draft is left as it was.
-        snippet: a passage to quiz on, as the reader emits it."""
+        snippet: a passage to quiz on, as the reader emits it; else the quiz covers pages page…last."""
         if self.book_id is None:
             return
         self.new_chat()
         snippets = [_stored(snippet)] if snippet else []
         self.chat_id = self.db.create_chat(self.book_id, " ".join(title.split())[:70], self._draft_model)
-        self.db.add_message(self.chat_id, "user", request, snippets)
+        pages = None if snippets else (page, page if last is None else last)
+        self.db.add_message(self.chat_id, "user", request, snippets, pages=pages)
         self._ask(request, snippets, [], branch=False, page=page)
         self._refresh_list()
         self._refresh_transcript()
@@ -323,6 +326,31 @@ class ChatPanel(QWidget):
             return
         last = reply is next(m for m in reversed(messages) if m["role"] == "assistant")
         question = quiz.reply_request(reply["text"], last)
+        self.db.add_message(self.chat_id, "user", question)
+        self._ask(question, [], messages, branch=False)
+        self._refresh_list()
+        self._refresh_transcript()
+
+    def revise_quiz(self, message_id: int, index: int, change: str | None = None) -> None:
+        """Ask, in the same chat, for a revision of one of its quizzes (asking what to change
+        unless given); Claude's revision takes over the cards of the questions it keeps."""
+        if self.chat_id is None or self.chat_id in self._streams or self._editing is not None:
+            return
+        found = self._quiz_of(message_id, index)
+        if found is None:
+            return
+        title = found[1]["title"]
+        if change is None:
+            change, ok = QInputDialog.getMultiLineText(
+                self, "Revise quiz", f"What should change in “{title}”? (e.g. make question 3 harder, drop question 5, "
+                "add a question on …)",
+            )
+            if not ok:
+                return
+        if not change.strip():
+            return
+        question = quiz.revise_request(title, change)
+        messages = self.db.messages(self.chat_id)
         self.db.add_message(self.chat_id, "user", question)
         self._ask(question, [], messages, branch=False)
         self._refresh_list()
@@ -460,7 +488,8 @@ class ChatPanel(QWidget):
             page=page,
             model=chat["model"] or None,
             resume_at=resume_at,
-            context=quiz.answers_context(prior, self.db.quiz_answers(self.chat_id)),
+            context="\n\n".join(c for c in (quiz.answers_context(prior, self.db.quiz_answers(self.chat_id)),
+                                               srs.tags_context(self.db)) if c),
         ))
         self._streams[self.chat_id] = ""
 
@@ -573,11 +602,29 @@ class ChatPanel(QWidget):
     def _update_quiz(self, message_id: int, index: int) -> None:
         message = self.db.message(message_id)
         rows = self.db.quiz_answers(message["chat_id"]).get(message_id, [])
-        self.transcript.update_quiz(message_id, index, self._quiz_view(quiz.quizzes(message["text"])[index], index, rows, message_id))
+        revised = self._revisions(self.db.messages(message["chat_id"]))
+        self.transcript.update_quiz(message_id, index, self._quiz_view(
+            quiz.quizzes(message["text"])[index], index, rows, message_id, revised.get((message_id, index))))
 
-    def _quiz_view(self, q: dict, index: int, rows, message_id: int) -> dict:
-        """A quiz as transcript.html draws it: with the answers given so far, and whether its
-        questions are in review ("on", "off", or None without cards)."""
+    @staticmethod
+    def _revisions(messages) -> dict[tuple[int, int], int]:
+        """{(message id, quiz index): id of the reply whose quiz revises it}, latest revision winning."""
+        earlier: list[tuple[int, int, dict]] = []
+        out = {}
+        for m in messages:
+            if m["role"] != "assistant":
+                continue
+            quizzes = quiz.quizzes(m["text"])
+            for q in quizzes:
+                if q.get("revises") and (old := quiz.revised_quiz(earlier, q["revises"])):
+                    out[old] = m["id"]
+            earlier += [(m["id"], i, q) for i, q in enumerate(quizzes)]
+        return out
+
+    def _quiz_view(self, q: dict, index: int, rows, message_id: int, revised_by: int | None = None) -> dict:
+        """A quiz as transcript.html draws it: with the answers given so far, whether its
+        questions are in review ("on", "off", or None without cards), and the reply whose quiz
+        revises it, if any."""
         answers = {}
         for r in rows:
             if r["quiz"] != index:
@@ -590,7 +637,7 @@ class ChatPanel(QWidget):
             }
         cards = self.db.quiz_cards(message_id, index) if "questions" in q else []
         review = ("off" if all(c["suspended"] for c in cards) else "on") if cards else None
-        return {**q, "answers": answers, "review": review}
+        return {**q, "answers": answers, "review": review, "revised_by": revised_by}
 
     # -- editing -------------------------------------------------------------------
     def edit_message(self, message_id: int) -> None:
@@ -720,10 +767,12 @@ class ChatPanel(QWidget):
     def _refresh_transcript(self) -> None:
         messages = self.db.messages(self.chat_id) if self.chat_id is not None else []
         answers = self.db.quiz_answers(self.chat_id) if messages else {}
+        revised = self._revisions(messages)
         for m in messages:
             if m["role"] == "assistant":
                 m["text"], quizzes = quiz.split(m["text"])
-                m["quizzes"] = [self._quiz_view(q, i, answers.get(m["id"], []), m["id"]) for i, q in enumerate(quizzes)]
+                m["quizzes"] = [self._quiz_view(q, i, answers.get(m["id"], []), m["id"], revised.get((m["id"], i)))
+                                for i, q in enumerate(quizzes)]
         placeholder = (
             "Select text or capture a region in the book to ask about it." if self.book_id is not None
             else "Open a book to start."
