@@ -34,10 +34,68 @@ function renderMarkdown(src, inline = false, rich = false) {
   if (rich) html = sanitize(html);
   return html.replace(/@@MATH(\d+)@@/g, (m, n) => {
     const { tex, display } = store[+n];
-    const opts = rich ? { ...KATEX_RICH, displayMode: display } : { displayMode: display, throwOnError: false };
-    try { return katex.renderToString(rich ? unescapeHtml(tex) : tex, opts); }
+    const fixed = mathjaxCompat(rich ? unescapeHtml(tex) : tex, display);
+    const mode = { displayMode: display || /\\tag\b/.test(fixed) };  // MathJax allows \tag inline
+    const opts = rich ? { ...KATEX_RICH, ...mode } : { ...mode, throwOnError: false };
+    try { return katex.renderToString(fixed, opts); }
     catch (e) { return esc(tex); }
   });
+}
+
+// Commands that take arguments, by count: after _ or ^, MathJax reads the command with its
+// arguments (x_\vec{a}), where KaTeX wants them braced (x_{\vec{a}}).
+const TEX_ARGS = Object.fromEntries([
+  ..."vec hat bar tilde dot ddot check breve acute grave mathring widehat widetilde overline underline overrightarrow overleftarrow mathbf mathrm mathit mathsf mathtt mathcal mathbb mathfrak mathscr boldsymbol bm pmb text textbf textit textrm operatorname sqrt"
+    .split(" ").map(c => [c, 1]),
+  ..."frac dfrac tfrac cfrac binom dbinom tbinom overset underset stackrel".split(" ").map(c => [c, 2]),
+]);
+
+// The end of the TeX argument starting at i (spaces skipped): a {group}, a \command or one character.
+function texArgEnd(s, i) {
+  while (s[i] === " ") i++;
+  if (s[i] === "{") {
+    for (let depth = 0; i < s.length; i++) {
+      if (s[i] === "\\") { i++; continue; }
+      if (s[i] === "{") depth++;
+      else if (s[i] === "}" && --depth === 0) return i + 1;
+    }
+    return s.length;
+  }
+  if (s[i] === "\\") { const m = /^\\([a-zA-Z]+|.)/.exec(s.slice(i)); return i + (m ? m[0].length : 1); }
+  return Math.min(i + 1, s.length);
+}
+
+// MathJax (Anki's renderer) accepts some TeX that KaTeX doesn't; rewrite it into what KaTeX reads.
+function mathjaxCompat(tex, display) {
+  let s = tex;
+  // x_\vec{a} → x_{\vec{a}}
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === "\\") { i++; continue; }
+    if (s[i] !== "_" && s[i] !== "^") continue;
+    const m = /^\s*\\([a-zA-Z]+)/.exec(s.slice(i + 1));
+    if (!m || !TEX_ARGS[m[1]]) continue;
+    const start = i + 1 + m[0].length - m[1].length - 1;
+    let end = start + m[1].length + 1;
+    if (m[1] === "sqrt" && s.slice(end).trimStart()[0] === "[") end = s.indexOf("]", end) + 1 || s.length;
+    for (let k = 0; k < TEX_ARGS[m[1]]; k++) end = texArgEnd(s, end);
+    s = s.slice(0, i + 1) + "{" + s.slice(start, end) + "}" + s.slice(end);
+  }
+  // \unicode{x222f} → the character
+  s = s.replace(/\\unicode(?:\[[^\]]*\])?\{\s*(x[0-9a-fA-F]+|\d+)\s*\}/g, (m, c) => {
+    const code = c[0] === "x" ? parseInt(c.slice(1), 16) : parseInt(c, 10);
+    try { return String.fromCodePoint(code); } catch (e) { return m; }
+  });
+  // \array{a & b \\ c & d} → a matrix
+  for (let i; (i = s.search(/\\array\s*\{/)) >= 0;) {
+    const open = s.indexOf("{", i), end = texArgEnd(s, open);
+    s = s.slice(0, i) + "\\begin{matrix}" + s.slice(open + 1, end - 1) + "\\end{matrix}" + s.slice(end);
+  }
+  // Display environments inside inline math: their inline forms.
+  if (!display) {
+    s = s.replace(/\\(begin|end)\{(align|alignat|flalign|gather|multline|equation|split)\*?\}/g, (m, which, env) =>
+      env === "equation" ? "" : `\\${which}{${env === "gather" ? "gathered" : env === "alignat" ? "alignedat" : "aligned"}}`);
+  }
+  return s;
 }
 
 // Entities typed inside math in HTML-ish card text (&lt; for <) mean the character.

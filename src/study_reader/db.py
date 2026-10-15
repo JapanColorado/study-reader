@@ -289,6 +289,16 @@ class Database:
                 self.update_card_note(r["id"], fields, kind=kind)
             except cardmodel.NoteError:
                 pass
+        # A }} inside a cloze's math ({{c1::\(\sqrt{LC}}\)}}) once ended the deletion; remake
+        # the cached sides of cards that were cut short.
+        for r in self.conn.execute(r"SELECT c.id, c.ord, c.data, n.fields FROM cards c JOIN card_notes n ON n.id=c.note_id "
+                                   r"WHERE n.kind='cloze' AND n.fields LIKE '%}}%\\)%'").fetchall():
+            try:
+                data = cardmodel.dumps(cardmodel.card_data("cloze", json.loads(r["fields"]), r["ord"]))
+            except cardmodel.NoteError:
+                continue
+            if data != r["data"]:
+                self.conn.execute("UPDATE cards SET data=? WHERE id=?", (data, r["id"]))
 
     def _migrate_cards_to_notes(self) -> None:
         """Cards from before decks and notes: each becomes a quiz note in its book's deck. The

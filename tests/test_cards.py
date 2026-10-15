@@ -28,6 +28,14 @@ def test_cloze_cards_and_sides():
         cardmodel.check("cloze", {"text": "no deletions"})
 
 
+def test_cloze_math_holding_closing_braces():
+    text = r"\(\omega_0\) = {{c1::\(\frac{1}{\sqrt{LC}}\)}}, called {{c2::resonance::what}}"
+    assert cardmodel.card_ords("cloze", {"text": text}) == [0, 1]
+    assert cardmodel.cloze_side(text, 1, True) == (
+        r'\(\omega_0\) = <span class="cloze">\(\frac{1}{\sqrt{LC}}\)</span>, called resonance')
+    assert cardmodel.cloze_side(text, 2, False).endswith(r'\(\frac{1}{\sqrt{LC}}\), called <span class="cloze">[what]</span>')
+
+
 def test_reverse_occlusion_and_tags():
     assert cardmodel.card_ords("reverse", {"front": "a", "back": "b"}) == [0, 1]
     back = cardmodel.card_data("reverse", {"front": "a", "back": "b"}, 1)

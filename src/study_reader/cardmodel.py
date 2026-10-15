@@ -34,8 +34,10 @@ FIELD_LABELS = {"front": "Front", "back": "Back", "extra": "Extra", "text": "Tex
 # Question types a reviewer rates on their own after revealing the answer (nothing is graded).
 SELF_RATED = ("flashcard", "cloze", "occlusion")
 
-# {{c1::answer}} or {{c1::answer::hint}}; like Anki, the deletion ends at the first }}.
-CLOZE = re.compile(r"\{\{c(\d+)::(.*?)(?:::((?:(?!\}\}).)*?))?\}\}", re.DOTALL)
+# {{c1::answer}} or {{c1::answer::hint}}; like Anki, the deletion ends at the first }} that isn't
+# inside math the answer holds ({{c1::\(\sqrt{LC}}\)}}).
+CLOZE = re.compile(r"\{\{c(\d+)::((?:\\\(.*?\\\)|\\\[.*?\\\]|\$\$.*?\$\$|.)*?)(?:::((?:(?!\}\}).)*?))?\}\}",
+                   re.DOTALL)
 # Math as markdown.js finds it: $$..$$, \[..\], \(..\), $..$ (not \$).
 MATH = re.compile(r"\$\$(.+?)\$\$|\\\[(.+?)\\\]|\\\((.+?)\\\)|(?<!\\)\$(?!\s)([^$\n]+?)(?<![\s\\])\$(?!\d)", re.DOTALL)
 TAG = re.compile(r"<[^>]*>")
