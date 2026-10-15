@@ -1,59 +1,53 @@
-// Confetti for the review page's celebrations: bursts of paper drawn on a canvas over the page
-// (by hand, so it works offline). Nothing is drawn when the system asks for reduced motion.
+// Confetti for the review page's celebrations: paper raining down from above the top edge
+// (drawn by hand, so it works offline). Nothing is shown when the system asks for reduced motion.
+// Each piece is a small element moved by the Web Animations API rather than redrawn from script:
+// the page renders without a GPU, and transform animations then run on the compositor, so the
+// fall stays smooth even while the page is busy laying out the next card.
 const confetti = (() => {
   const COLORS = ["#e8590c", "#f2c94c", "#3a8f5c", "#2f80ed", "#bb6bd9", "#eb5757", "#56ccf2"];
-  let canvas = null, ctx = null, parts = [], running = false;
+  const SPEED = [420, 640];   // fall speed range, px/s
+  let layer = null;
 
-  function frame() {
-    const dpr = window.devicePixelRatio || 1;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    parts = parts.filter(p => p.life > 0 && p.y < innerHeight + 30);
-    for (const p of parts) {
-      p.vx *= 0.985;
-      p.vy = p.vy * 0.985 + 0.22;
-      p.x += p.vx + Math.sin(p.tilt) * 0.6;
-      p.y += p.vy;
-      p.rot += p.vr;
-      p.tilt += 0.12;
-      p.life--;
-      const squash = Math.abs(Math.cos(p.tilt));
-      ctx.save();
-      ctx.translate(p.x * dpr, p.y * dpr);
-      ctx.rotate(p.rot);
-      ctx.globalAlpha = Math.min(1, p.life / 30);
-      ctx.fillStyle = p.color;
-      ctx.fillRect(-p.w / 2 * dpr, -p.h / 2 * dpr * squash, p.w * dpr, p.h * dpr * squash);
-      ctx.restore();
-    }
-    if (parts.length) requestAnimationFrame(frame);
-    else { running = false; canvas.style.display = "none"; }
-  }
+  const rand = (a, b) => a + Math.random() * (b - a);
 
-  // x, y: where the burst starts, as fractions of the window; angle: its direction in degrees
-  // (90 is up); spread: how wide it fans out; power: how far it flies.
-  return function ({ count = 100, x = 0.5, y = 0.35, angle = 90, spread = 70, power = 1 } = {}) {
+  // count: how many pieces; spread: over how many ms they start falling.
+  return function ({ count = 100, spread = 700 } = {}) {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    if (!canvas) {
-      canvas = document.createElement("canvas");
-      canvas.style.cssText = "position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:50";
-      document.body.appendChild(canvas);
-      ctx = canvas.getContext("2d");
+    if (!layer) {
+      layer = document.createElement("div");
+      layer.style.cssText = "position:fixed;inset:0;overflow:hidden;pointer-events:none;z-index:50";
+      document.body.appendChild(layer);
     }
-    const dpr = window.devicePixelRatio || 1;
-    if (canvas.width !== innerWidth * dpr || canvas.height !== innerHeight * dpr) {
-      canvas.width = innerWidth * dpr;
-      canvas.height = innerHeight * dpr;
-    }
-    canvas.style.display = "block";
+    const W = innerWidth, H = innerHeight;
     for (let i = 0; i < count; i++) {
-      const a = (angle + (Math.random() - 0.5) * spread) * Math.PI / 180;
-      const v = (5 + Math.random() * 8) * power;
-      parts.push({
-        x: x * innerWidth, y: y * innerHeight, vx: Math.cos(a) * v, vy: -Math.sin(a) * v,
-        w: 5 + Math.random() * 5, h: 8 + Math.random() * 6, rot: Math.random() * 6, vr: (Math.random() - 0.5) * 0.3,
-        tilt: Math.random() * 6, life: 140 + Math.random() * 70, color: COLORS[i % COLORS.length],
-      });
+      const piece = document.createElement("div");
+      const paper = document.createElement("div");
+      const w = rand(5, 10), h = rand(8, 14);
+      piece.style.cssText = "position:absolute;left:0;top:0;will-change:transform";
+      paper.style.cssText = `width:${w}px;height:${h}px;background:${COLORS[i % COLORS.length]}`;
+      piece.appendChild(paper);
+      layer.appendChild(piece);
+
+      // The fall: straight down with a drift and a sway, as keyframes so it runs off the main thread.
+      const x0 = rand(-20, W + 20), y0 = -20 - h, y1 = H + 20;
+      const drift = rand(-60, 60), sway = rand(8, 26), turns = rand(1.5, 3), phase = rand(0, 6.3);
+      const duration = (y1 - y0) / rand(...SPEED) * 1000, steps = 12, frames = [];
+      for (let k = 0; k <= steps; k++) {
+        const t = k / steps;
+        const x = x0 + drift * t + sway * Math.sin(phase + t * turns * 2 * Math.PI);
+        const y = y0 + (y1 - y0) * (0.4 * t + 0.6 * t * t);   // speeding up a little
+        frames.push({ transform: `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)` });
+      }
+      const fall = piece.animate(frames, { duration, delay: rand(0, spread), easing: "linear", fill: "backwards" });
+      fall.onfinish = () => piece.remove();
+
+      // The flutter: spinning while it flips over (scaleY through zero reads as a turn in 3D).
+      const r = rand(0, 360), dir = Math.random() < 0.5 ? -1 : 1;
+      paper.animate([
+        { transform: `rotate(${r}deg) scaleY(1)` },
+        { transform: `rotate(${r + dir * 180}deg) scaleY(-1)` },
+        { transform: `rotate(${r + dir * 360}deg) scaleY(1)` },
+      ], { duration: rand(700, 1300), iterations: Infinity });
     }
-    if (!running) { running = true; requestAnimationFrame(frame); }
   };
 })();
