@@ -204,9 +204,14 @@ class MainWindow(QMainWindow):
         quiz_button.setMenu(self.quiz_menu)
         quiz_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
         new_chat = action("New chat", "Ctrl+N", self.chat.new_chat, "message-plus")
-        # Act on the current selection without reaching for the popup.
-        action("Ask in new chat", "Ctrl+Return", lambda: self.reader.choose(True))
-        action("Add to current chat", "Ctrl+Shift+Return", lambda: self.reader.choose(False))
+        # Act on the current selection without reaching for the popup. Only while the reader has
+        # focus: as window shortcuts they'd swallow Ctrl+Enter in the review, quiz and note pages.
+        for text, shortcut, new in (("Ask in new chat", "Ctrl+Return", True),
+                                    ("Add to current chat", "Ctrl+Shift+Return", False)):
+            a = QAction(text, self.reader, shortcut=QKeySequence(shortcut))
+            a.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            a.triggered.connect(lambda _=False, new=new: self.reader.choose(new))
+            self.reader.addAction(a)
         add_note = action("Add note", "Ctrl+Shift+N", self.reader.choose_note)
         self.book_actions = [
             zoom_out, zoom_in, fit, self.crop_action, self.region_action, self.quiz_action,

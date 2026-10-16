@@ -86,3 +86,34 @@ def test_taking_a_note_highlights_it(pdf_path, tmp_path, monkeypatch):
 
     win.notes.remove(note_id)
     assert not win.reader._marks and win.notes.title.text() == "Notes"
+
+
+def test_ctrl_enter_asks_only_from_the_reader(pdf_path, tmp_path, monkeypatch):
+    """Ctrl+Enter sends the selection only while the reader has focus, so the review, quiz and
+    note pages (and the composer) still get it."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+    from study_reader.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "t.db")
+    win = MainWindow(db)
+    win.show()
+    win.activateWindow()
+    win.open_book(pdf_path)
+    chosen = []
+    win.reader.snippetChosen.connect(lambda snippet, new: chosen.append(new))
+
+    win.reader._selection = {0: win.doc.words(0)[:3]}
+    win.chat.input.setFocus()
+    app.processEvents()
+    QTest.keyClick(win.chat.input, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+    assert chosen == [] and win.reader._selection
+
+    win.reader.setFocus()
+    app.processEvents()
+    QTest.keyClick(win.reader, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+    assert chosen == [True]
