@@ -97,6 +97,7 @@ class NoteEditor(QWidget):
         self.note_id: int | None = None
         self.kind = "basic"
         self._extra: dict = {}  # fields the editor doesn't show (an occlusion's image and shapes)
+        self._varies: bool | None = None  # a quiz question's "varies" (variants.py), which it doesn't show either
         self._loading = False
         self._known_tags: list[str] | None = None  # for completion, read when first needed after a load
 
@@ -269,8 +270,10 @@ class NoteEditor(QWidget):
         self.q_tolerance.setValue(0)
         self.q_correct.setValue(1)
         self._extra = {}
+        self._varies = None
 
     def _load_quiz(self, q: dict) -> None:
+        self._varies = q.get("varies")
         i = self.q_type.findData(q.get("type", "free"))
         self.q_type.setCurrentIndex(max(i, 0))
         self.q_question.setPlainText(str(q.get("question", "")))
@@ -330,6 +333,8 @@ class NoteEditor(QWidget):
         else:
             raw["answer"] = self.q_answer.toPlainText().strip()
             raw["rubric"] = self.q_rubric.toPlainText().strip()
+        if t in ("numeric", "free") and self._varies is not None:
+            raw["varies"] = self._varies
         try:
             return quiz.validate_question(raw)
         except (ValueError, TypeError, KeyError) as e:

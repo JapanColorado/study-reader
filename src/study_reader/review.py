@@ -14,7 +14,7 @@ from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QMessageBox, QVBoxLayout, QWidget
 
-from . import cardmodel, gamify, quiz, srs
+from . import cardmodel, gamify, quiz, srs, variants
 from .chat_service import BookRef, ChatWorker, Job
 from .db import Database, media_url
 from .notes import LocalPage
@@ -28,6 +28,82 @@ MAX_REVIEW_SECONDS = 120
 def when(t: float, now: float) -> str:
     """'in 5m', 'in 3d' …"""
     return f"in {srs.format_interval(t - now)}"
+
+
+def card_job(db: Database, card, question: str) -> Job:
+    """Grading an answer to a card: like a quiz answer in the chat, a detached fork at the quiz's
+    reply, or, if that reply is gone, from the book."""
+    message = db.message(card["message_id"]) if card["message_id"] is not None else None
+    chat = db.chat(message["chat_id"]) if message else None
+    history = []
+    if message:
+        history = [(m["role"], m["text"]) for m in db.messages(chat["id"])
+                   if m["id"] <= message["id"] and m["role"] != "error"]
+    book = db.book(card["book_id"]) if card["book_id"] is not None else None
+    return Job(
+        chat_id=chat["id"] if chat else 0,
+        # A card from no book (made in the browser, or migrated) is graded in a fresh session.
+        book=BookRef(book["id"], book["path"], book["title"], book["base_session_id"], book["context_mode"])
+        if book else None,
+        chat_session_id=message["session_id"] if message else None,
+        question=question,
+        history=history,
+        page=card["page"] or 0,
+        model=(chat["model"] if chat else "") or db.get_setting("model") or None,
+        resume_at=message["session_uuid"] if message else None,
+        detached=True,
+    )
+
+
+def card_title(db: Database, card) -> tuple[str, int | None]:
+    """How to name a card to Claude: (its quiz's title, its index in the quiz), or, if it isn't
+    from a quiz in a chat, (its deck, None)."""
+    if card["message_id"] is not None and db.message(card["message_id"]) is not None:
+        return card["title"], card["question"]
+    deck = db.deck(card["deck_id"])
+    return (deck["name"] if deck else ""), None
+
+
+class VariantMaker(QObject):
+    """After a calculation card is reviewed, has Claude write its next version with new numbers
+    (variants.py, in a fresh bookless session) and keeps it on the card for review to show. Failures are silent: the card
+    shows its last version again."""
+
+    def __init__(self, db: Database, worker: ChatWorker, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.worker = worker
+        self._pending: dict[int, str] = {}  # card id -> its data when asked, to drop answers an edit outdated
+        worker.varied.connect(self._on_varied)
+        worker.variantFailed.connect(lambda card_id, _: self._pending.pop(card_id, None))
+
+    def after_review(self, card_id: int) -> None:
+        card = self.db.card(card_id)
+        if card is None or card_id in self._pending or not variants.wants_variant(card):
+            return
+        self._pending[card_id] = card["data"]
+        last = variants.question(card) if variants.is_varied(card) else None
+        book = self.db.book(card["book_id"]) if card["book_id"] is not None else None
+        title, _ = card_title(self.db, card)
+        message = self.db.message(card["message_id"]) if card["message_id"] is not None else None
+        chat = self.db.chat(message["chat_id"]) if message else None
+        prompt = variants.request(srs.question(card), last, book["title"] if book else "", title)
+        # Without the book: the problem and its solution are enough, and far cheaper to send.
+        self.worker.submit_variant(Job(
+            chat_id=0, book=None, chat_session_id=None, question=prompt,
+            model=(chat["model"] if chat else "") or self.db.get_setting("model") or None,
+        ), card_id)
+
+    def _on_varied(self, card_id: int, text: str) -> None:
+        data = self._pending.pop(card_id, None)
+        card = self.db.card(card_id)
+        if card is None or card["data"] != data:
+            return
+        try:
+            variant = variants.parse(text, srs.question(card))
+        except (ValueError, TypeError, KeyError):
+            return
+        self.db.update_card(card_id, variant=cardmodel.dumps(variant))
 
 
 class _Bridge(QObject):
@@ -84,7 +160,8 @@ class _Bridge(QObject):
 
 class ReviewPanel(QWidget):
     """An overview of what is due, then one card at a time: answer it (graded where it can be),
-    then rate it Again / Hard / Good / Easy. all_books: review every book's cards."""
+    then rate it Again / Hard / Good / Easy. all_books: review every book's cards. variants: asks
+    for the next version of each calculation card reviewed."""
 
     sourceRequested = Signal(int, int)  # book id, 0-based page (-1 if unknown)
     chatRequested = Signal(int, int)  # book id, chat id
@@ -93,10 +170,12 @@ class ReviewPanel(QWidget):
     statsRequested = Signal()
     editRequested = Signal(int)  # card id, to open in the browser
 
-    def __init__(self, db: Database, worker: ChatWorker, all_books: bool = False, parent=None):
+    def __init__(self, db: Database, worker: ChatWorker, all_books: bool = False,
+                 variants: VariantMaker | None = None, parent=None):
         super().__init__(parent)
         self.db = db
         self.worker = worker
+        self.variants = variants
         self.all_books = all_books
         self.book_id: int | None = None
         self.deck_id: int | None = None  # all_books: the deck (and its subdecks) to review; None for all
@@ -104,6 +183,10 @@ class ReviewPanel(QWidget):
         self.section: str | None = None  # the section (tag, srs.section_tag) of the book to review, if any
         self.card_id: int | None = None  # the card on display; None for the overview
         self._shown_at = 0.0  # when the card on display was first shown (monotonic), for its review time
+        # The question on display and the card data it was shown for: kept while the card is up,
+        # so a new version arriving meanwhile doesn't replace it (an edit to the card does).
+        self._question: dict | None = None
+        self._shown_data = ""
         self._answer: dict | None = None  # its answer so far: {response, status, verdict, feedback}
         self._grading: dict[int, str] = {}  # card id -> the free response Claude is grading
         self._skip: list[int] = []  # cards just answered or skipped, not to be shown again right away
@@ -317,6 +400,7 @@ class ReviewPanel(QWidget):
         self.card_id = card["id"] if card else None
         self._answer = None
         self._shown_at = time.monotonic()
+        self._shown_data = ""
         if card is None:
             self._finish(caught_up=True)
         else:
@@ -340,6 +424,8 @@ class ReviewPanel(QWidget):
 
     def _show_card(self) -> None:
         card = self.db.card(self.card_id)
+        if card["data"] != self._shown_data:
+            self._question, self._shown_data = variants.question(card), card["data"]
         now = time.time()
         a = self._answer
         if a is None and card["id"] in self._grading:  # still being graded, e.g. after a refresh
@@ -349,7 +435,8 @@ class ReviewPanel(QWidget):
         deck = self.db.deck(card["deck_id"])
         self._js("showCard", {
             "id": card["id"],
-            "question": srs.question(card),
+            "question": self._question,
+            "varied": self._question != srs.question(card),
             "title": card["title"],
             "deck": deck["name"] if deck else "",
             "book": book["title"] if self.all_books and book else "",
@@ -369,7 +456,7 @@ class ReviewPanel(QWidget):
         card = self.db.card(card_id)
         if card is None or card_id != self.card_id or self._answer is not None:
             return
-        q = srs.question(card)
+        q = self._question
         verdict = None
         if q["type"] not in (*cardmodel.SELF_RATED, "free"):
             try:
@@ -390,30 +477,9 @@ class ReviewPanel(QWidget):
         self._show_card()
 
     def _grading_job(self, card, text: str) -> Job:
-        """Like a quiz answer in the chat: a detached fork at the quiz's reply, or, if that reply
-        is gone, from the book."""
-        message = self.db.message(card["message_id"]) if card["message_id"] is not None else None
-        chat = self.db.chat(message["chat_id"]) if message else None
-        history = []
-        if message:
-            history = [(m["role"], m["text"]) for m in self.db.messages(chat["id"])
-                       if m["id"] <= message["id"] and m["role"] != "error"]
-        book = self.db.book(card["book_id"]) if card["book_id"] is not None else None
-        deck = self.db.deck(card["deck_id"])
-        title = card["title"] if message else (deck["name"] if deck else "")
-        return Job(
-            chat_id=chat["id"] if chat else 0,
-            # A card from no book (made in the browser, or migrated) is graded in a fresh session.
-            book=BookRef(book["id"], book["path"], book["title"], book["base_session_id"], book["context_mode"])
-            if book else None,
-            chat_session_id=message["session_id"] if message else None,
-            question=quiz.review_grading_prompt(title, card["question"] if message else None, srs.question(card), text),
-            history=history,
-            page=card["page"] or 0,
-            model=(chat["model"] if chat else "") or self.db.get_setting("model") or None,
-            resume_at=message["session_uuid"] if message else None,
-            detached=True,
-        )
+        title, index = card_title(self.db, card)
+        varied = self._question != srs.question(card)
+        return card_job(self.db, card, quiz.review_grading_prompt(title, index, self._question, text, varied))
 
     def _on_graded(self, card_id: int, text: str) -> None:
         verdict, feedback = quiz.parse_grade(text)
@@ -438,6 +504,8 @@ class ReviewPanel(QWidget):
         before = self.db.card(card_id)
         srs.review(self.db, card_id, rating, response=a.get("response"), verdict=a.get("verdict"), duration=duration)
         self._grading.pop(card_id, None)
+        if self.variants is not None:
+            self.variants.after_review(card_id)
         session = self._session = self._session or gamify.Session()
         events = session.record(before, self.db.card(card_id), rating, seconds)
         events = gamify.reviewed(self.db, srs.is_new(before), session.multiplier, combo=session.best,

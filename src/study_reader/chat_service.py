@@ -78,7 +78,8 @@ class ChatService:
     done(chat_id, session_id, text, message_uuid), failed(chat_id, message),
     for quiz grading graded(answer_id, text), gradeFailed(answer_id, message), and for grading
     a card in review cardGraded(card_id, text), cardGradeFailed(card_id, message),
-    titled(chat_id, title) when a chat's auto-title is ready, and for Claude Conversion
+    titled(chat_id, title) when a chat's auto-title is ready, varied(card_id, text) and
+    variantFailed(card_id, message) for a card's next version (variants.py), and for Claude Conversion
     converted(batch_id, text), convertFailed(batch_id, message)."""
 
     def __init__(self, emit: Callable[..., None], sessions_dir: str | Path):
@@ -147,7 +148,14 @@ class ChatService:
     async def grade(self, job: Job, answer_id: int, card: bool = False) -> None:
         """Ask Claude to grade a quiz answer, as a detached turn from the quiz's reply.
         card: answer_id is a review card's id, and the events are cardGraded / cardGradeFailed."""
-        graded, failed = ("cardGraded", "cardGradeFailed") if card else ("graded", "gradeFailed")
+        await self._side_turn(job, answer_id, *(("cardGraded", "cardGradeFailed") if card else ("graded", "gradeFailed")))
+
+    async def vary(self, job: Job, card_id: int) -> None:
+        """Ask Claude for a review card's next version with new numbers, as a detached turn like grading."""
+        await self._side_turn(job, card_id, "varied", "variantFailed")
+
+    async def _side_turn(self, job: Job, id: int, done: str, failed: str) -> None:
+        """A detached turn whose reply is reported as done(id, text), or failed(id, message)."""
         try:
             try:
                 res = await self._turn(job, job.chat_session_id, None)
@@ -155,9 +163,9 @@ class ChatService:
                 if not job.chat_session_id:
                     raise
                 res = await self._turn(job, None, None)
-            self.emit(graded, answer_id, res.text)
+            self.emit(done, id, res.text)
         except Exception as e:
-            self.emit(failed, answer_id, str(e) or type(e).__name__)
+            self.emit(failed, id, str(e) or type(e).__name__)
 
     async def title(self, chat_id: int, question: str, passage: str, reply: str) -> None:
         """Name a chat from its first exchange. Failures are ignored: the chat keeps its title."""
@@ -230,6 +238,8 @@ class ChatWorker(QObject):
     gradeFailed = Signal(int, str)
     cardGraded = Signal(int, str)
     cardGradeFailed = Signal(int, str)
+    varied = Signal(int, str)
+    variantFailed = Signal(int, str)
     titled = Signal(int, str)
     converted = Signal(int, str)
     convertFailed = Signal(int, str)
@@ -255,6 +265,9 @@ class ChatWorker(QObject):
 
     def submit_card_grade(self, job: Job, card_id: int) -> None:
         asyncio.run_coroutine_threadsafe(self.service.grade(job, card_id, card=True), self.loop)
+
+    def submit_variant(self, job: Job, card_id: int) -> None:
+        asyncio.run_coroutine_threadsafe(self.service.vary(job, card_id), self.loop)
 
     def submit_title(self, chat_id: int, question: str, passage: str, reply: str) -> None:
         asyncio.run_coroutine_threadsafe(self.service.title(chat_id, question, passage, reply), self.loop)

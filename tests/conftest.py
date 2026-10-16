@@ -73,13 +73,14 @@ def chat_panel(tmp_path, monkeypatch):
         done, failed = Signal(int, str, str, str), Signal(int, str)
         graded, gradeFailed = Signal(int, str), Signal(int, str)
         cardGraded, cardGradeFailed = Signal(int, str), Signal(int, str)
+        varied, variantFailed = Signal(int, str), Signal(int, str)
         titled = Signal(int, str)
         converted, convertFailed = Signal(int, str), Signal(int, str)
 
         def __init__(self):
             super().__init__()
             self.jobs, self.gradings, self.card_gradings, self.titles = [], [], [], []
-            self.conversions = []
+            self.conversions, self.variants = [], []
 
         def submit(self, job):
             self.jobs.append(job)
@@ -89,6 +90,9 @@ def chat_panel(tmp_path, monkeypatch):
 
         def submit_card_grade(self, job, card_id):
             self.card_gradings.append((job, card_id))
+
+        def submit_variant(self, job, card_id):
+            self.variants.append((job, card_id))
 
         def submit_title(self, chat_id, question, passage, reply):
             self.titles.append((chat_id, question, passage, reply))

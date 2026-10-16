@@ -368,6 +368,7 @@ function showCard(c) {
   const q = c.question, a = c.answer;
   const meta = [
     c.new ? `<span class="tag">New</span>` : "",
+    c.varied ? `<span class="tag" title="Claude wrote this version with new numbers after your last review">New numbers</span>` : "",
     c.book ? `<span class="book">${esc(c.book)}</span>` : "",
     `<span title="${esc(c.deck)}">${esc(c.title || c.deck.split("::").pop())}</span>`,
     c.page !== null ? `<a class="src" href="#" data-act="source" title="Show this page in the book">p. ${c.page + 1}</a>` : "",

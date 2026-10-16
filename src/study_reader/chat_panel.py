@@ -50,10 +50,11 @@ class ChatPanel(QWidget):
     highlightsChanged = Signal()  # a chat, or the composer, gained or lost snippets
     cardsChanged = Signal()  # review cards were added, answered or put in or out of review
 
-    def __init__(self, db: Database, worker: ChatWorker, parent=None):
+    def __init__(self, db: Database, worker: ChatWorker, variants=None, parent=None):
         super().__init__(parent)
         self.db = db
         self.worker = worker
+        self.variants = variants  # review.VariantMaker: the next version of calculation cards first answered here
         self.book_id: int | None = None
         self.chat_id: int | None = None
         self.current_page = lambda: 0  # set by the main window
@@ -529,9 +530,16 @@ class ChatPanel(QWidget):
                 return
             self.db.save_quiz_answer(message_id, index, question, response_json, "done", verdict)
             if srs.answered_in_chat(self.db, message_id, index, question, verdict, response):
-                gamify.reviewed(self.db, new=True)
-                self.cardsChanged.emit()
+                self._first_review(message_id, index, question)
         self._update_quiz(message_id, index)
+
+    def _first_review(self, message_id: int, index: int, question: int) -> None:
+        """A quiz question's first answer was its card's first review."""
+        gamify.reviewed(self.db, new=True)
+        card = self.db.card_for(message_id, index, question)
+        if self.variants is not None and card is not None:
+            self.variants.after_review(card["id"])
+        self.cardsChanged.emit()
 
     def _on_quiz_retake(self, message_id: int, index: int) -> None:
         if self._quiz_of(message_id, index) is not None:
@@ -593,8 +601,7 @@ class ChatPanel(QWidget):
         if fields.get("verdict") and srs.answered_in_chat(
             self.db, message_id, row["quiz"], row["question"], fields["verdict"], json.loads(row["response"])
         ):
-            gamify.reviewed(self.db, new=True)
-            self.cardsChanged.emit()
+            self._first_review(message_id, row["quiz"], row["question"])
         message = self.db.message(message_id)
         if message is not None and message["chat_id"] == self.chat_id:
             self._update_quiz(message_id, row["quiz"])

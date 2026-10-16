@@ -26,7 +26,7 @@ from .document import Document, file_hash
 from .library_view import LibraryView
 from .notes import NotesPanel
 from .reader_view import ReaderView
-from .review import ReviewPanel
+from .review import ReviewPanel, VariantMaker
 from .theme import MODES, icon, theme
 from .web_import import WebImportError, normalize_url
 from .web_render import WebImporter
@@ -64,16 +64,17 @@ class MainWindow(QMainWindow):
 
         self.reader = ReaderView()
         self.library = LibraryView(self.db)
-        self.review_all = ReviewPanel(self.db, self.worker, all_books=True)  # every book's cards, from the library
+        self.variants = VariantMaker(self.db, self.worker, self)  # new numbers for reviewed calculation cards
+        self.review_all = ReviewPanel(self.db, self.worker, all_books=True, variants=self.variants)  # every book's cards, from the library
         self.center = QStackedWidget()
         self.center.addWidget(self.library)
         self.center.addWidget(self.reader)
         self.center.addWidget(self.review_all)
-        self.chat = ChatPanel(self.db, self.worker)
+        self.chat = ChatPanel(self.db, self.worker, self.variants)
         self.chat.current_page = self.reader.current_page
         self.calc = CalculatorPanel(self.db)
         self.notes = NotesPanel(self.db)
-        self.review = ReviewPanel(self.db, self.worker)
+        self.review = ReviewPanel(self.db, self.worker, variants=self.variants)
         self.right = QStackedWidget()  # chats, the calculator, notes and review take turns in the same slot
         for w in (self.chat, self.calc, self.notes, self.review):
             self.right.addWidget(w)

@@ -118,6 +118,9 @@ CREATE TABLE IF NOT EXISTS cards (
     question INTEGER,               -- 0-based
     title TEXT NOT NULL DEFAULT '', -- the quiz's title
     data TEXT NOT NULL,             -- JSON: the question review shows, made from the note (cardmodel.card_data)
+    -- JSON: the version of a calculation problem with new numbers Claude wrote for its next review
+    -- (variants.py), {"skip": true} if it has nothing to vary, or '' for none (yet).
+    variant TEXT NOT NULL DEFAULT '',
     page INTEGER,                   -- 0-based page of the book it draws on, if known
     stage INTEGER NOT NULL DEFAULT 0, -- 0 new | fsrs.State: 1 learning, 2 review, 3 relearning
     fsrs TEXT NOT NULL DEFAULT '',  -- JSON fsrs.Card ('' while new)
@@ -281,6 +284,8 @@ class Database:
         card_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(cards)")}
         if "note_id" not in card_cols:
             self._migrate_cards_to_notes()
+        elif "variant" not in card_cols:
+            self.conn.execute("ALTER TABLE cards ADD COLUMN variant TEXT NOT NULL DEFAULT ''")
         # Flashcards were once quiz notes too; they are Basic notes now.
         for r in self.conn.execute("SELECT id, fields FROM card_notes "
                                    "WHERE kind='quiz' AND json_extract(fields, '$.type')='flashcard'").fetchall():
@@ -724,8 +729,9 @@ class Database:
             first = next(iter(cards.values()), None)
             for ord in ords:
                 data = cardmodel.dumps(cardmodel.card_data(kind, fields, ord))
-                if ord in cards:
-                    self.conn.execute("UPDATE cards SET data=?, updated_at=? WHERE id=?", (data, now, cards[ord]["id"]))
+                if ord in cards:  # a version with new numbers of what it was before is out of date
+                    self.conn.execute("UPDATE cards SET variant=CASE WHEN data=? THEN variant ELSE '' END, data=?, "
+                                      "updated_at=? WHERE id=?", (data, data, now, cards[ord]["id"]))
                 elif ord not in before:
                     self._insert_card(
                         note_id, ord, first["deck_id"] if first else self._ensure_deck(DEFAULT_DECK), kind, fields,
@@ -754,7 +760,7 @@ class Database:
         card, note = self.card(card_id), self.card_note(note_id)
         data = cardmodel.dumps(cardmodel.card_data(note["kind"], json.loads(note["fields"]), ord))
         with self.conn:
-            self.conn.execute("UPDATE cards SET note_id=?, ord=?, data=?, updated_at=? WHERE id=?",
+            self.conn.execute("UPDATE cards SET note_id=?, ord=?, data=?, variant='', updated_at=? WHERE id=?",
                               (note_id, ord, data, time.time() if now is None else now, card_id))
             self._drop_orphan_notes([card["note_id"]])
 
