@@ -294,6 +294,12 @@ class Database:
                 self.update_card_note(r["id"], fields, kind=kind)
             except cardmodel.NoteError:
                 pass
+        # Section tags were once made from contents titles padded with NULs, which the review
+        # panel's section list couldn't hand back intact.
+        padded = [r["id"] for r in self.conn.execute(
+            "SELECT id FROM card_notes WHERE instr(CAST(tags AS BLOB), x'00') > 0")]
+        if padded:
+            self._retag(padded, lambda tags: [t for t in map(cardmodel.clean_tag, tags) if t])
         # A }} inside a cloze's math ({{c1::\(\sqrt{LC}}\)}}) once ended the deletion; remake
         # the cached sides of cards that were cut short.
         for r in self.conn.execute(r"SELECT c.id, c.ord, c.data, n.fields FROM cards c JOIN card_notes n ON n.id=c.note_id "

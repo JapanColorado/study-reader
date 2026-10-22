@@ -158,6 +158,19 @@ def test_section_tags_from_the_contents():
     assert srs.section_tag("A", [], 0) is None
     assert srs.section_tag("A", TOC, 2, 3) == "A::Part_I::Chapter_2::2.1_Storage"
     assert srs.section_tag("A", TOC, 0, 3) == "A::Part_I" and srs.section_tag("A", TOC, 0, 9) is None
+    assert srs.section_tag("A", [[1, "Chapter 6 Firms \x00\x00", 0]], 0) == "A::Chapter_6_Firms"
+
+
+def test_migration_cleans_nul_padded_section_tags(tmp_path):
+    db, book_id, chat, reply = setup(tmp_path)
+    srs.add_quiz_cards(db, book_id, reply, QUIZ)
+    note = db.card_note(db.cards(book_id)[0]["note_id"])
+    with db.conn:
+        db.conn.execute("UPDATE card_notes SET tags=? WHERE id=?", (" A::Chapter_6_\x00\x00 a ", note["id"]))
+    db.conn.close()
+    db = Database(tmp_path / "t.db")
+    assert db.card_note(note["id"])["tags"] == " A::Chapter_6 a "
+    assert db.count_cards(tag="A::Chapter_6") == 1
 
 
 def test_quiz_cards_are_tagged_with_their_section(tmp_path):

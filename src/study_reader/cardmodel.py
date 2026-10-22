@@ -253,8 +253,9 @@ def split_tags(text: str) -> list[str]:
 
 
 def tag_part(title: str) -> str:
-    """Text as one part of a tag: no spaces, commas or '::' (which would split it)."""
-    part = re.sub(r"[\s,]+", "_", str(title).strip()).replace("::", ":")
+    """Text as one part of a tag: no spaces, commas, control characters (some PDFs pad their
+    contents' titles with NULs) or '::' (which would split it)."""
+    part = re.sub(r"[\s,\x00-\x1f\x7f]+", "_", str(title).strip()).replace("::", ":")
     return re.sub(r"_+", "_", part).strip("_:")[:80]
 
 

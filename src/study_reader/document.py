@@ -94,8 +94,9 @@ class Document:
         return (self.doc.metadata or {}).get("title") or Path(self.path).stem
 
     def toc(self) -> list[tuple[int, str, int]]:
-        """(level, title, 0-based page)."""
-        return [(lvl, title, max(page - 1, 0)) for lvl, title, page, *_ in self.doc.get_toc()]
+        """(level, title, 0-based page). Titles lose control characters (some PDFs pad them with NULs)."""
+        return [(lvl, re.sub(r"[\x00-\x1f\x7f]+", " ", title).strip(), max(page - 1, 0))
+                for lvl, title, page, *_ in self.doc.get_toc()]
 
     def page_size(self, index: int) -> tuple[float, float]:
         r = self.doc[index].rect
