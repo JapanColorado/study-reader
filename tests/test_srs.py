@@ -202,6 +202,47 @@ def test_quiz_cards_are_tagged_with_their_section(tmp_path):
     assert tree[2]["name"] == "Chapter 2" and tree[0]["new"] == 6
 
 
+# Like many textbooks' contents, Summary and Exercises sit inside the chapter's last section.
+BOOK_TOC = [[1, "Chapter 6 Firms", 0], [2, "6.1 Ownership", 0], [2, "6.4 Long-Run Production", 1],
+            [3, "Isoquants", 1], [2, "6.41 Odd", 2], [2, "6.6 Productivity", 3], [3, "Innovations", 3],
+            [3, "Summary", 4], [3, "Exercises", 5], [1, "Chapter 7 Costs", 6], [2, "6.4 Not this one", 6]]
+
+
+def test_chapter_back_matter_and_named_sections():
+    assert srs.section_path(BOOK_TOC, 3) == ["Chapter 6 Firms", "6.6 Productivity", "Innovations"]
+    assert srs.section_path(BOOK_TOC, 5) == ["Chapter 6 Firms", "Exercises"]
+    assert srs.section_tag("A", BOOK_TOC, 4) == "A::Chapter_6_Firms::Summary"
+    # Not when every section has its own.
+    own = [[1, "Ch 1", 0], [2, "1.1 A", 0], [3, "Exercises", 1], [2, "1.2 B", 2], [3, "Exercises", 3]]
+    assert srs.section_path(own, 3) == ["Ch 1", "1.2 B", "Exercises"]
+    # A section named by number or title; of several, the last starting by the page.
+    assert srs.section_tag("A", BOOK_TOC, 5, 5, "6.4") == "A::Chapter_6_Firms::6.4_Long-Run_Production"
+    assert srs.section_tag("A", BOOK_TOC, 5, None, "long-run production") == "A::Chapter_6_Firms::6.4_Long-Run_Production"
+    assert srs.section_tag("A", BOOK_TOC, 6, None, "6.4") == "A::Chapter_7_Costs::6.4_Not_this_one"
+    assert srs.find_section(BOOK_TOC, "6.41") == 4 and srs.find_section(BOOK_TOC, "Chapter 6") == 0
+    assert srs.section_tag("A", BOOK_TOC, 5, None, "9.9") == "A::Chapter_6_Firms::Exercises"
+
+
+def test_quiz_questions_name_the_section_they_practice(tmp_path):
+    db, book_id, chat, _ = setup(tmp_path)
+    srs.learn_toc(db, book_id, BOOK_TOC)
+    text = """```quiz Exercises
+{"questions": [
+  {"type": "flashcard", "question": "MRTS?", "answer": "Slope of the isoquant.", "page": 6, "section": "6.4"},
+  {"type": "flashcard", "question": "Summary?", "answer": "Firms.", "page": 6}
+]}
+```"""
+    reply = db.add_message(chat, "assistant", text)
+    srs.add_quiz_cards(db, book_id, reply, text, now=NOW)
+    first, second = db.quiz_cards(reply, 0)
+    assert db.card_note(first["note_id"])["tags"] == " A::Chapter_6_Firms::6.4_Long-Run_Production "
+    assert db.card_note(second["note_id"])["tags"] == " A::Chapter_6_Firms::Exercises "
+    assert first["page"] == 5 and "section" not in srs.question(first)
+    # Sections come in the book's order, not that of their cards' pages.
+    tree = srs.sections(db, book_id, NOW)[book_id]
+    assert [n["name"] for n in tree] == ["Chapter 6 Firms", "6.4 Long-Run Production", "Exercises"]
+
+
 # -- the chat panel ------------------------------------------------------------------------
 def test_chat_quizzes_feed_the_deck(chat_panel):
     panel, worker, db, book_id = chat_panel

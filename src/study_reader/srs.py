@@ -4,7 +4,9 @@ chat counts as its first review; after that it comes back in the Review panel. Q
 
 from __future__ import annotations
 
+import functools
 import json
+import re
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -109,8 +111,9 @@ def scheduler(db: Database | None = None) -> Scheduler:
 # -- cards ---------------------------------------------------------------------------------
 def add_quiz_cards(db: Database, book_id: int, message_id: int, text: str, now: float | None = None) -> list[int]:
     """Cards for every question of the quizzes in a reply (those it doesn't have yet), tagged
-    with the tags Claude gives and the section of the book they draw on: that of the page Claude
-    gives, else the section holding all the pages the quiz was asked about.
+    with the tags Claude gives and the section of the book they draw on: the one Claude names
+    (for exercises at a chapter's end), else that of the page Claude gives, else the section
+    holding all the pages the quiz was asked about.
 
     A quiz that revises an earlier one (quiz.revised_quiz) takes over the cards of the questions
     it carries over, which keep their schedules and history with the new content; the earlier
@@ -126,8 +129,9 @@ def add_quiz_cards(db: Database, book_id: int, message_id: int, text: str, now: 
             question = dict(question)
             tags = question.pop("tags", [])
             n = question.pop("revises", None)
+            section = question.pop("section", None)
             p, to = (question["page"] - 1,) * 2 if question.get("page") else (first, last)
-            tag = section_tag(book["title"], toc, p, to) if book else None
+            tag = section_tag(book["title"], toc, p, to, section) if book else None
             tags = [*tags, tag] if tag else tags
             card = db.card_for(old[0], old[1], n - 1) if old and n else None
             if card is not None and db.card_for(message_id, qi, i) is None:
@@ -174,6 +178,11 @@ def _asked_pages(db: Database, message_id: int) -> tuple[int | None, int | None]
 tag_part = cardmodel.tag_part
 
 
+# End-of-chapter matter that some books' contents nest inside the chapter's last section.
+BACK_MATTER = re.compile(r"(chapter )?(summary|review|exercises|problems|questions( and problems)?|review questions"
+                         r"|key (terms|concepts|ideas))|challenge solution\b.*", re.I)
+
+
 def section_path(toc, page: int | None) -> list[str]:
     """The titles of the contents entries holding a 0-based page, outermost first: the entry
     starting last at or before the page, and its parents."""
@@ -183,25 +192,64 @@ def section_path(toc, page: int | None) -> list[str]:
     for i, (_, _, p) in enumerate(toc):
         if p <= page and (best is None or p >= toc[best][2]):
             best = i
-    if best is None:
-        return []
-    path, level = [toc[best][1]], toc[best][0]
-    for lvl, title, _ in reversed(toc[:best]):
-        if lvl < level:
-            path.insert(0, title)
-            level = lvl
-    return path
+    return [] if best is None else _entry_path(toc, best)
 
 
-def section_tag(book_title: str, toc, page: int | None, last: int | None = None) -> str | None:
-    """The tag of the section holding a page (or all of pages page…last)."""
-    path = section_path(toc, page)
-    if last is not None and last != page:
-        end = section_path(toc, last)
-        n = 0
-        while n < min(len(path), len(end)) and path[n] == end[n]:
-            n += 1
-        path = path[:n]
+def _entry_path(toc, i: int) -> list[str]:
+    """The titles of a contents entry and its parents, outermost first. Back matter (a summary,
+    exercises) nested in the last section of a chapter belongs to the chapter, unless the
+    chapter's other sections have their own."""
+    parents, level = [], toc[i][0]
+    for j in range(i - 1, -1, -1):
+        if toc[j][0] < level:
+            parents.insert(0, j)
+            level = toc[j][0]
+    if len(parents) >= 2 and BACK_MATTER.fullmatch(_title_key(toc[i][1])):
+        section, chapter = parents[-1], parents[-2]
+        end = next((k for k in range(section + 1, len(toc)) if toc[k][0] <= toc[section][0]), len(toc))
+        last = end == len(toc) or toc[end][0] <= toc[chapter][0]
+        key = _title_key(toc[i][1])
+        elsewhere = any(_title_key(t) == key and lvl == toc[i][0]
+                        for lvl, t, _ in toc[chapter + 1:section])
+        if last and not elsewhere:
+            parents.pop()
+    return [toc[j][1] for j in parents] + [toc[i][1]]
+
+
+def _title_key(title: str) -> str:
+    return " ".join(title.replace("\x00", "").split()).lower()
+
+
+def find_section(toc, section: str, page: int | None = None) -> int | None:
+    """The contents entry a section names, by its number ("6.4", "Chapter 6") or its title (with
+    or without the number): of several, the last starting at or before the page."""
+    key = _title_key(section).rstrip(".")
+    if not key:
+        return None
+    number = re.compile(re.escape(key) + r"(?!\.?\w)")
+    found = [i for i, (_, title, _) in enumerate(toc)
+             if number.match(t := _title_key(title)) or re.sub(r"^[\d.]+\s+", "", t) == key]
+    if not found:
+        return None
+    before = [i for i in found if page is not None and toc[i][2] <= page]
+    return before[-1] if before else found[0]
+
+
+def section_tag(book_title: str, toc, page: int | None, last: int | None = None,
+                section: str | None = None) -> str | None:
+    """The tag of the section holding a page (or all of pages page…last), or of the section
+    named (find_section), if the contents have it."""
+    named = find_section(toc, section, page) if section else None
+    if named is not None:
+        path = _entry_path(toc, named)
+    else:
+        path = section_path(toc, page)
+        if last is not None and last != page:
+            end = section_path(toc, last)
+            n = 0
+            while n < min(len(path), len(end)) and path[n] == end[n]:
+                n += 1
+            path = path[:n]
     parts = [tag_part(t) for t in path]
     parts = [p for p in parts if p]
     return "::".join([tag_part(book_title) or "Book", *parts]) if parts else None
@@ -281,8 +329,25 @@ def sections(db: Database, book_id: int | None = None, now: float | None = None)
             n["total"] += 1
             if r["page"] is not None and (n["page"] is None or r["page"] < n["page"]):
                 n["page"] = r["page"]
+    # Sections in the book's order: from where they start, else from their first card.
+    for b, ns in nodes.items():
+        starts = _section_starts(roots[b], db.book(b)["toc"])
+        for n in ns.values():
+            n["page"] = starts.get(n["tag"].lower(), n["page"])
     return {b: sorted(ns.values(), key=lambda n: (n["page"] is None, n["page"] or 0, n["tag"].count("::"), n["tag"]))
             for b, ns in nodes.items()}
+
+
+@functools.lru_cache(maxsize=16)
+def _section_starts(root: str, toc_json: str | None) -> dict[str, int]:
+    """The first page of each section tag (lowercase) a book's contents make."""
+    toc = json.loads(toc_json) if toc_json else []
+    starts: dict[str, int] = {}
+    for i, (_, _, page) in enumerate(toc):
+        parts = [p for p in map(tag_part, _entry_path(toc, i)) if p]
+        if parts:
+            starts.setdefault("::".join([root, *parts]).lower(), page)
+    return starts
 
 
 def question(card) -> dict:

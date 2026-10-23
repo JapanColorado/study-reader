@@ -126,6 +126,8 @@ def _validate(data, title: str) -> dict:
             out["tags"] = list(dict.fromkeys(t for t in tags if t))
         if kind in ("numeric", "free") and isinstance(q.get("varies"), bool):
             out["varies"] = q["varies"]  # whether review can pose it with new numbers (variants.py)
+        if isinstance(q.get("section"), str) and q["section"].strip():
+            out["section"] = q["section"].strip()  # the book section it practices (srs.find_section)
         if isinstance(q.get("revises"), int) and not isinstance(q["revises"], bool) and q["revises"] >= 1:
             out["revises"] = q["revises"]  # its 1-based number in the quiz this one revises
         questions.append(out)
@@ -154,7 +156,7 @@ def revise_request(title: str, change: str) -> str:
 def validate_question(raw: dict) -> dict:
     """One question as a card holds it (no page). Raises ValueError, TypeError or KeyError if unusable."""
     (q,) = _validate({"questions": [raw]}, "")["questions"]
-    for key in ("page", "tags", "revises"):
+    for key in ("page", "tags", "revises", "section"):
         q.pop(key, None)
     return q
 

@@ -16,7 +16,7 @@ from . import quiz
 TYPES = ("numeric", "free")
 SKIP = {"skip": True}
 # Fields of a question that aren't part of the problem itself.
-_EXTRA = ("page", "tags", "revises", "answer_latex", "html", "varies")
+_EXTRA = ("page", "tags", "revises", "section", "answer_latex", "html", "varies")
 
 
 def _load(card) -> dict | None:
