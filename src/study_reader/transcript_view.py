@@ -225,8 +225,10 @@ class VisualizationWindow(QWidget):
         layout.addWidget(self.view)
 
     def _full_screen(self, on: bool) -> None:
-        """F11 and the toolbar button toggle; Escape only leaves."""
+        """F11 and the toolbar button toggle; Escape only leaves. Toggling only the
+        full-screen flag brings a maximized window back maximized."""
+        full = Qt.WindowState.WindowFullScreen
         if on and not self.isFullScreen():
-            self.showFullScreen()
+            self.setWindowState(self.windowState() | full)
         elif self.isFullScreen():
-            self.showNormal()
+            self.setWindowState(self.windowState() & ~full)

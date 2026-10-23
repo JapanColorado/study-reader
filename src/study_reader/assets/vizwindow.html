@@ -36,6 +36,7 @@
 let FRAME = null;
 
 function show(data) {
+  if (FRAME) return;  // the page may report loading more than once
   const root = document.documentElement;
   root.style.colorScheme = data.dark ? "dark" : "light";
   for (const [k, v] of Object.entries(data.colors || {})) root.style.setProperty(`--${k.replace(/_/g, "-")}`, v);

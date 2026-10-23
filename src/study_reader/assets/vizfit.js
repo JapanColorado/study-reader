@@ -1,9 +1,9 @@
 // Fits a visualization's sandboxed frame (made by vizDoc in transcript.html) into the
 // space it has. The frame reports its content's size; when that is too tall, the frame
 // is laid out narrower (plots drawn to the width get shorter with it), and whatever
-// still doesn't fit, or is wider than the space, is scaled down. A zoom the reader
-// chose replaces the fitted scale. The visualization window does the same inside the
-// frame instead (vizWindowMode), so it can keep the visualization's controls in view.
+// still doesn't fit, or is wider than the space, is scaled down. The visualization
+// window does the same inside the frame instead (vizWindowMode), so it can keep the
+// visualization's controls in view.
 const VIZ_MIN_WIDTH = 300;
 const VIZ_FIT_TRIES = 6;
 const VIZ_MAX_LAYOUT = 4000;  // tallest frame laid out, against content sized to the frame
@@ -11,7 +11,7 @@ const VIZ_MAX_LAYOUT = 4000;  // tallest frame laid out, against content sized t
 class VizFit {
   // box holds the frame (position:relative); avail() gives the {width, height} to fit.
   constructor(frame, box, avail) {
-    Object.assign(this, { frame, box, avail, zoom: null, scale: 1, fitScale: 1, size: null, onplace: null, growths: 0 });
+    Object.assign(this, { frame, box, avail, size: null, growths: 0 });
     frame.style.position = "absolute";
     frame.style.top = "0";
     frame.style.transformOrigin = "0 0";
@@ -25,6 +25,7 @@ class VizFit {
     this.fitted = { width, height };
     this.tries = 0;
     this.prev = null;
+    this.widened = false;
     const full = Math.max(1, Math.floor(width));
     const same = full === this.width;
     this.layout(full);
@@ -53,8 +54,11 @@ class VizFit {
   step() {
     const size = this.size;
     const { height } = this.avail();
-    if (size.width > this.width + 1) {
-      this.layout(Math.ceil(size.width));  // fixed-width content: give it its width, then scale
+    if (size.width > this.width + 1 && !this.widened) {
+      // Fixed-width content: give it its width once, then scale. Content that overflows
+      // whatever width it gets (labels past a full-width plot) would otherwise grow forever.
+      this.widened = true;
+      this.layout(Math.ceil(size.width));
     } else if (!this.followsFrame && size.height > height + 1 && this.tries < VIZ_FIT_TRIES) {
       if (this.prev && size.height >= this.prev.height * 0.97) {
         // Narrower didn't make it shorter: go back and scale instead.
@@ -66,6 +70,7 @@ class VizFit {
       if (next < this.width - 2) {
         this.prev = { width: this.width, height: size.height };
         this.tries++;
+        this.widened = false;
         this.layout(next);
         return;  // its new size comes in the next report
       }
@@ -79,20 +84,11 @@ class VizFit {
     const h = this.followsFrame ? Math.max(height, 40) : Math.min(Math.max(this.size.height, 40), VIZ_MAX_LAYOUT);
     this.laidHeight = h;
     this.placedAt = performance.now();
-    this.fitScale = Math.min(1, width / w, height / h);
-    this.scale = this.zoom ?? this.fitScale;
-    const s = this.scale;
+    const s = Math.min(1, width / w, height / h);
     Object.assign(this.frame.style, {
       height: `${h}px`, transform: s === 1 ? "" : `scale(${s})`, left: `${Math.max(0, (width - w * s) / 2)}px`,
     });
     this.box.style.height = `${h * s}px`;
-    this.box.style.width = w * s > width ? `${w * s}px` : "";
-    if (this.onplace) this.onplace(this);
-  }
-
-  setZoom(zoom) {
-    this.zoom = zoom;
-    if (this.size) this.place();
   }
 }
 
@@ -109,6 +105,9 @@ function vizWindowMode() {
 
   function buildDock() {
     const figure = "svg, canvas, img, video, table";
+    // Without a plot to keep apart (a visualization drawn with divs), the controls'
+    // containers would take the whole visualization into the dock.
+    if (!body.querySelector(figure)) return null;
     const groups = [];
     for (const el of body.querySelectorAll("input, select, textarea, button")) {
       let g = el;
@@ -236,12 +235,14 @@ function vizWindowMode() {
     root.style.cursor = "grabbing";
     e.preventDefault();
   });
+  const endDrag = () => { drag = null; root.style.cursor = ""; };
   addEventListener("pointermove", e => {
     if (!drag) return;
+    if (!(e.buttons & 5)) return endDrag();  // released outside the frame
     scrollBy(drag.x - e.clientX, drag.y - e.clientY);
     drag = { x: e.clientX, y: e.clientY };
   });
-  addEventListener("pointerup", () => { drag = null; root.style.cursor = ""; });
+  addEventListener("pointerup", endDrag);
 
   let pending = 0;
   const refit = () => { cancelAnimationFrame(pending); pending = requestAnimationFrame(fit); };
