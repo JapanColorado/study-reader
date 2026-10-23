@@ -405,6 +405,28 @@ def test_transcript_navigation_routes_links_and_confines_visualizations(monkeypa
     assert len(emitted) == 6 and opened == ["https://example.com/doc"]
 
 
+def test_visualization_window_navigation_toggles_full_screen_only_from_its_toolbar(monkeypatch):
+    from types import SimpleNamespace
+
+    from PySide6.QtCore import QUrl
+    from PySide6.QtWebEngineCore import QWebEnginePage
+    from study_reader import transcript_view as tv
+
+    monkeypatch.setattr(tv.QDesktopServices, "openUrl", lambda url: None)
+    toggled = []
+    page = SimpleNamespace(fullScreen=SimpleNamespace(emit=toggled.append))
+    nav = tv._VizPage.acceptNavigationRequest
+    scripted = QWebEnginePage.NavigationType.NavigationTypeOther
+
+    assert nav(page, tv.VIZ_WINDOW, scripted, True)
+    assert nav(page, QUrl("about:srcdoc"), scripted, False)
+    assert not nav(page, QUrl("viz://fullscreen"), scripted, True)
+    assert not nav(page, QUrl("viz://normal"), scripted, True)
+    assert not nav(page, QUrl("viz://fullscreen"), scripted, False)  # the visualization itself can't
+    assert not nav(page, QUrl("file:///etc/passwd"), scripted, True)
+    assert toggled == [True, False]
+
+
 def test_epub_document(epub_path):
     doc = Document(epub_path)
     assert doc.page_count >= 1 and doc.title == "Zorblatt EPUB"

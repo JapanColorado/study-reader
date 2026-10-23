@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  /* Fallbacks; the app sets these from theme.py. */
+  :root { --surface:#fbfaf8; --fg:#1f1e1c; --muted:#6b6862; --border:#dedad2; --accent:#b8562f; --accent-soft:#f4e2d8;
+          --raised:#ffffff; }
+  html, body { margin:0; height:100%; background:var(--surface); color:var(--fg); font:13px/1.4 system-ui, sans-serif; }
+  body { display:flex; flex-direction:column; }
+  #bar { flex:none; display:flex; align-items:center; gap:2px; padding:4px 8px; border-bottom:1px solid var(--border);
+         background:var(--raised); user-select:none; }
+  #bar .hint { flex:1; color:var(--muted); font-size:12px; padding-left:4px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  #bar button { font:inherit; color:var(--fg); background:none; border:0; border-radius:6px; padding:3px 9px;
+                min-width:28px; cursor:pointer; }
+  #bar button:hover { background:var(--accent-soft); color:var(--accent); }
+  #bar button.on { color:var(--accent); font-weight:600; }
+  #pct { min-width:56px; font-variant-numeric:tabular-nums; }
+  #bar .sep { width:1px; align-self:stretch; margin:3px 4px; background:var(--border); }
+  iframe { flex:1; display:block; width:100%; border:0; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <span class="hint">Ctrl+scroll to zoom · drag empty space to pan</span>
+  <button id="out" title="Zoom out (Ctrl+−)">−</button>
+  <button id="pct" title="Actual size (Ctrl+1)">100%</button>
+  <button id="in" title="Zoom in (Ctrl++)">+</button>
+  <span class="sep"></span>
+  <button id="fit" title="Fit to window (Ctrl+0)">Fit</button>
+  <button id="full" title="Full screen (F11)">⛶</button>
+</div>
+<script>
+// The visualization window: its toolbar over one visualization, which fits, zooms and
+// docks its own controls (vizWindowMode in vizfit.js); the toolbar sends it commands.
+let FRAME = null;
+
+function show(data) {
+  const root = document.documentElement;
+  root.style.colorScheme = data.dark ? "dark" : "light";
+  for (const [k, v] of Object.entries(data.colors || {})) root.style.setProperty(`--${k.replace(/_/g, "-")}`, v);
+  FRAME = document.createElement("iframe");
+  FRAME.setAttribute("sandbox", "allow-scripts");
+  FRAME.srcdoc = data.doc;
+  document.body.append(FRAME);
+  FRAME.addEventListener("load", () => FRAME.focus());
+}
+
+const send = cmd => FRAME && FRAME.contentWindow.postMessage({ vizCmd: cmd }, "*");
+const fullScreen = on => { location.href = on ? "viz://fullscreen" : "viz://normal"; };
+for (const [id, cmd] of [["out", "out"], ["pct", "actual"], ["in", "in"], ["fit", "fit"]])
+  document.getElementById(id).onclick = () => send(cmd);
+document.getElementById("full").onclick = () => fullScreen(true);
+
+window.addEventListener("keydown", e => {
+  const ctrl = e.ctrlKey || e.metaKey;
+  const cmd = ctrl && { "=": "in", "+": "in", "-": "out", "0": "fit", "1": "actual" }[e.key];
+  if (cmd) send(cmd);
+  else if (e.key === "F11") fullScreen(true);
+  else if (e.key === "Escape") fullScreen(false);
+  else return;
+  e.preventDefault();
+});
+window.addEventListener("wheel", e => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
+window.addEventListener("message", e => {
+  if (!FRAME || e.source !== FRAME.contentWindow) return;
+  const { vizScale, vizKey } = e.data || {};
+  if (vizScale) {
+    document.getElementById("pct").textContent = `${Math.round(vizScale.scale * 100)}%`;
+    document.getElementById("fit").classList.toggle("on", vizScale.fit);
+  }
+  if (vizKey) fullScreen(vizKey === "F11");
+});
+</script>
+</body>
+</html>

@@ -19,6 +19,7 @@ ASSETS = Path(__file__).parent / "assets"
 # Libraries a visualization may use. Sandboxed frames can't load file:// URLs, so
 # transcript.html inlines the ones a visualization's code refers to.
 VIZ_LIBS = {"d3": "viz/d3.min.js", "chart": "viz/chart.umd.min.js"}
+VIZ_WINDOW = QUrl.fromLocalFile(str(ASSETS / "vizwindow.html"))
 
 
 def _url_id(url: QUrl) -> int | None:
@@ -171,7 +172,7 @@ class TranscriptView(QWebEngineView):
                 VisualizationWindow(viz["title"] or "Visualization", viz["doc"], self.window()).show()
 
         # As JSON: large objects don't survive the conversion to Python.
-        self.page().runJavaScript(f"JSON.stringify(VIZ[{viz_id}] ? vizDoc({viz_id}) : null)", 0, show)
+        self.page().runJavaScript(f"JSON.stringify(VIZ[{viz_id}] ? vizDoc({viz_id}, true) : null)", 0, show)
 
     def _run(self, js: str, queue: bool = True) -> None:
         if self._ready:
@@ -189,28 +190,43 @@ class TranscriptView(QWebEngineView):
 
 
 class _VizPage(QWebEnginePage):
+    fullScreen = Signal(bool)
+
     def acceptNavigationRequest(self, url: QUrl, nav_type, is_main_frame: bool) -> bool:
-        if url.scheme() in ("about", "data"):
+        if is_main_frame and url.scheme() == "viz":  # vizwindow.html's full-screen toggle
+            self.fullScreen.emit(url.host() == "fullscreen")
+            return False
+        if url.scheme() in ("about", "data") or (is_main_frame and url == VIZ_WINDOW):
             return True
         _open_external(url, nav_type)
         return False
 
 
 class VisualizationWindow(QWidget):
-    """A visualization from the transcript in its own resizable window."""
+    """A visualization from the transcript in its own resizable window (vizwindow.html),
+    fitted to the window, with zoom and full screen."""
 
     def __init__(self, title: str, doc: str, parent: QWidget | None = None):
         super().__init__(parent, Qt.WindowType.Window)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setWindowTitle(title)
-        self.resize(900, 700)
+        screen = (parent or self).screen().availableGeometry()
+        self.resize(int(screen.width() * 0.75), int(screen.height() * 0.8))
         self.view = QWebEngineView(self)
         page = _VizPage(self.view)
         page.setBackgroundColor(QColor(theme().colors["surface"]))
+        page.fullScreen.connect(self._full_screen)
         self.view.setPage(page)
-        # setHtml goes through a data: URL capped at 2 MB; a document with both
-        # libraries inlined is about 0.5 MB.
-        self.view.setHtml(doc)
+        data = {"doc": doc, "dark": theme().dark, "colors": theme().colors}
+        self.view.loadFinished.connect(lambda ok: page.runJavaScript(f"show({json.dumps(data)})"))
+        self.view.load(VIZ_WINDOW)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.view)
+
+    def _full_screen(self, on: bool) -> None:
+        """F11 and the toolbar button toggle; Escape only leaves."""
+        if on and not self.isFullScreen():
+            self.showFullScreen()
+        elif self.isFullScreen():
+            self.showNormal()

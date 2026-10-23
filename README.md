@@ -46,7 +46,7 @@ Requires the `claude` CLI to be logged in (`claude` → `/login`). The app talks
 | Model | The chat header's dropdown sets the open chat's model. **Settings** (toolbar, right) → **Default model for new chats** sets what new chats start with |
 | Theme | **Settings** → **Theme**: match the system, light, or dark. **Dark pages** recolors the book itself in dark mode |
 
-Claude can answer with interactive visualizations (plots, diagrams, simulations with sliders). They render inline in the chat. **Open ↗** on a visualization's header shows it in a larger window. Asking for one ("visualize this", "plot it so I can vary k") helps.
+Claude can answer with interactive visualizations (plots, diagrams, simulations with sliders). They render inline in the chat. Each one is fitted to the panel's width and height. **Open ↗** on a visualization's header shows it in a larger window, fitted to the window: Ctrl+scroll (or Ctrl+=/−, the toolbar) zooms at the pointer, Ctrl+0 fits it again, dragging empty space pans, F11 goes full screen, and its sliders and buttons stay docked in view while zoomed. Asking for one ("visualize this", "plot it so I can vary k") helps.
 
 Every passage and screenshot region you ask about stays highlighted in the book. Right-click a chat or a library entry to delete it; deleting a chat removes its highlights.
 
