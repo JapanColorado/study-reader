@@ -18,7 +18,7 @@ function tex(latex) {
 // opts: index (data-q), meta (HTML for the line above it), draft (typed but not submitted),
 // revealed (a flashcard's back is showing; with rate, the rating buttons under it),
 // freeActions (HTML for the row under a free-response box), openAnswer (show a free
-// response's model answer outright rather than folded away).
+// response's model answer and rubric outright, for rating it yourself, rather than folded away).
 function questionHtml(q, a, opts = {}) {
   const draft = opts.draft || "";
   const showing = !!(a || opts.revealed);  // the answer side of a self-rated card
@@ -81,12 +81,12 @@ function resultHtml(q, a, opts = {}) {
     html += `<div class="verdict ${a.verdict || "none"}">${VERDICT_LABELS[a.verdict] || "Feedback"}</div>`;
   }
   if (a.feedback) html += `<div class="feedback">${renderMarkdown(a.feedback)}</div>`;
-  if (q.explanation) html += `<div class="explain">${mdq(q, q.explanation)}</div>`;
-  if (q.type === "free" && q.answer) {
-    html += opts.openAnswer
-      ? `<div class="model-answer"><span class="label">Model answer</span><div>${mdq(q, q.answer)}</div></div>`
-      : `<details><summary>Model answer</summary>${mdq(q, q.answer)}</details>`;
+  if (q.type === "free" && opts.openAnswer) {
+    if (q.answer) html += `<div class="model-answer"><span class="label">Model answer</span><div>${mdq(q, q.answer)}</div></div>`;
+    if (q.rubric) html += `<div class="model-answer"><span class="label">A full answer covers</span><div>${mdq(q, q.rubric)}</div></div>`;
   }
+  if (q.explanation) html += `<div class="explain">${mdq(q, q.explanation)}</div>`;
+  if (q.type === "free" && q.answer && !opts.openAnswer) html += `<details><summary>Model answer</summary>${mdq(q, q.answer)}</details>`;
   return html;
 }
 

@@ -135,6 +135,8 @@ new QWebChannel(qt.webChannelTransport, channel => { bridge = channel.objects.re
 
 const CARDS_ICON = `<svg viewBox="0 0 24 24"><rect width="14" height="16" x="7" y="5" rx="2"/><path d="M4 16V5a2 2 0 0 1 2-2h9"/></svg>`;
 let CARD = null;  // the card on display, as the app sent it; null on the overview
+// Cards the reviewer rates on their own once the answer shows (in review, free responses too).
+const selfRated = q => SELF_RATED.includes(q.type) || q.type === "free";
 
 function setTheme(colors, dark) {
   const root = document.documentElement;
@@ -374,8 +376,9 @@ function showCard(c) {
     c.page !== null ? `<a class="src" href="#" data-act="source" title="Show this page in the book">p. ${c.page + 1}</a>` : "",
     c.chat ? `<a class="src" href="#" data-act="chat" title="Open the chat the quiz is in">Open chat</a>` : "",
   ].filter(Boolean).join("<span>·</span>");
-  const freeActions = `<div class="submit-row"><span class="grow">Ctrl+Enter to grade</span>`
-    + `<button class="qbtn quiet" data-act="show">Show answer</button><button class="qbtn" data-act="free">Grade with Claude</button></div>`;
+  // Free responses are rated by the reviewer: recall the answer, or write it out first.
+  const freeActions = `<div class="submit-row"><span class="grow">Answer in your head, or write it out first (Ctrl+Enter)</span>`
+    + `<button class="qbtn" data-act="show">Show answer</button></div>`;
   let html = `<div class="bar"><a href="#" data-act="stop" title="Back to the overview">← Overview</a><span class="grow"></span>`
     + `<span class="count"><span class="due">${c.remaining.due}</span> due · <span class="new">${c.remaining.new}</span> new</span>`
     + `<a href="#" data-act="skip" title="Show another card first">Skip</a>`
@@ -388,14 +391,14 @@ function showCard(c) {
   if (c.previews) {
     html += `<div class="submit-row" style="margin-top:12px">How well did you know it?</div>${ratingRow(c.previews, c.suggested)}`
       + `<div class="keys"><kbd>1</kbd>–<kbd>4</kbd> to rate · <kbd>Space</kbd> for ${RATING_LABELS[c.suggested || 3]}</div>`;
-  } else if (SELF_RATED.includes(q.type) && !a) {
-    html += `<div class="keys"><kbd>Space</kbd> to show the answer</div>`;
+  } else if (selfRated(q) && !a) {
+    html += `<div class="keys"><kbd>Space</kbd> to show the answer${q.type === "free" ? " · <kbd>Esc</kbd> leaves the answer box" : ""}</div>`;
   }
   const root = document.getElementById("root");
   root.innerHTML = html;
   setupMathFields(root, qEl => answer("numeric", qEl));
   window.scrollTo(0, 0);
-  const field = root.querySelector("math-field, textarea.free");
+  const field = root.querySelector("math-field");
   if (field) field.focus();
 }
 
@@ -432,12 +435,7 @@ function answer(act, qEl, button) {
   if (act === "reveal") { bridge.check(CARD.id, "{}"); return; }
   if (act === "show") {
     const area = qEl.querySelector("textarea");
-    bridge.check(CARD.id, JSON.stringify({ text: area ? area.value.trim() : "" }));
-    return;
-  }
-  if (act === "free" || act === "regrade") {
-    const text = act === "regrade" ? (CARD.answer && CARD.answer.response.text) || "" : qEl.querySelector("textarea").value.trim();
-    if (text) bridge.claude(CARD.id, text);
+    bridge.check(CARD.id, area ? JSON.stringify({ text: area.value.trim() }) : "{}");
     return;
   }
   const response = readResponse(q, qEl, act, button);
@@ -484,7 +482,9 @@ document.addEventListener("keydown", ev => {
   if (typing) {
     if (ev.key === "Enter" && ev.ctrlKey && ev.target.matches("textarea.free")) {
       ev.preventDefault();
-      answer("free", ev.target.closest(".q"));
+      answer("show", ev.target.closest(".q"));
+    } else if (ev.key === "Escape" && ev.target.matches("textarea.free")) {
+      ev.target.blur();
     }
     return;
   }
@@ -498,7 +498,7 @@ document.addEventListener("keydown", ev => {
   if (CARD.previews && "1234".includes(ev.key) && ev.key.length === 1) { go(); bridge.rate(CARD.id, +ev.key); }
   else if (ev.key === " " || ev.key === "Enter") {
     if (CARD.previews) { go(); bridge.rate(CARD.id, CARD.suggested || 3); }
-    else if (SELF_RATED.includes(CARD.question.type) && !CARD.answer) { go(); bridge.check(CARD.id, "{}"); }
+    else if (selfRated(CARD.question) && !CARD.answer) { go(); answer("show", document.querySelector(".card .q")); }
   }
 });
 </script>

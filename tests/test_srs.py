@@ -289,7 +289,7 @@ def test_reviewing_cards(chat_panel):
     panel.start_quiz("Quiz me.", "Quiz", 0)
     worker.done.emit(panel.chat_id, "s1", QUIZ, "u1")
     reply = db.messages(panel.chat_id)[1]["id"]
-    review = ReviewPanel(db, worker)
+    review = ReviewPanel(db)
     review.set_book(book_id)
     shown = []
     review._js = lambda fn, *args: shown.append((fn, args))
@@ -313,18 +313,17 @@ def test_reviewing_cards(chat_panel):
     review.check(review.card_id, {"latex": r"\frac{1}{"})
     assert shown[-1][0] == "inputError" and review._answer is None
 
-    # Free responses: graded by Claude in a detached fork at the quiz's reply.
+    # Free responses are rated by the reviewer: showing the answer keeps what was typed, ungraded.
     while srs.question(db.card(review.card_id))["type"] != "free":
         review.act(review.card_id, "skip")
     free = review.card_id
-    review.grade_with_claude(free, "Because tea.")
-    job, card_id = worker.card_gradings[-1]
-    assert card_id == free and job.detached and (job.chat_session_id, job.resume_at) == ("s1", "u1")
-    assert "spaced-repetition" in job.question and "Because tea." in job.question
-    worker.cardGraded.emit(free, '{"verdict": "incorrect", "feedback": "No."}')
-    assert review._answer["verdict"] == "incorrect" and shown[-1][1][0]["suggested"] == 1
+    gradings = len(worker.gradings)
+    review.check(free, {"text": "Because tea."})
+    payload = shown[-1][1][0]
+    assert payload["answer"]["verdict"] is None and payload["suggested"] is None and payload["previews"]
+    assert len(worker.gradings) == gradings
     review.rate(free, 1)
-    assert db.reviews(free)[0]["verdict"] == "incorrect"
+    assert db.reviews(free)[0]["verdict"] is None and json.loads(db.reviews(free)[0]["response"]) == {"text": "Because tea."}
 
     review.act(review.card_id, "suspend")
     assert db.count_cards(book_id, "suspended=1") == 1
@@ -347,7 +346,7 @@ def test_reviewing_one_book_or_section(chat_panel):
     other = db.upsert_book("h2", "/b.pdf", "B", 3)["id"]
     db.add_card_note("basic", {"front": "q", "back": "a"}, db.book_deck(other), book_id=other)
 
-    review = ReviewPanel(db, worker)
+    review = ReviewPanel(db)
     review.set_book(book_id)
     shown = []
     review._js = lambda fn, *args: shown.append((fn, args))
@@ -362,7 +361,7 @@ def test_reviewing_one_book_or_section(chat_panel):
     review.set_book(book_id)
     assert review.section is None
 
-    everything = ReviewPanel(db, worker, all_books=True)
+    everything = ReviewPanel(db, all_books=True)
     everything._js = lambda fn, *args: shown.append((fn, args))
     everything.refresh()
     o = shown[-1][1][0]

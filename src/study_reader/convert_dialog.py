@@ -132,7 +132,7 @@ class ConvertStartDialog(QDialog):
         self.setMinimumWidth(520)
         intro = QLabel(
             f"Claude will look at {count} card{'s' * (count != 1)} and propose a better question type for each where "
-            "one fits (e.g. a free response it grades, a numeric problem, or multiple choice), or keep it as is. "
+            "one fits (e.g. a numeric problem, multiple choice, or a sharper flashcard), or keep it as is. "
             "Nothing changes until you accept a proposal; accepted cards keep their schedule and history.")
         intro.setWordWrap(True)
         self.model_box = QComboBox()
@@ -140,7 +140,7 @@ class ConvertStartDialog(QDialog):
             self.model_box.addItem(label, value)
         self.notes = QPlainTextEdit()
         self.notes.setObjectName("fieldEdit")
-        self.notes.setPlaceholderText("Optional instructions for Claude, e.g. “prefer free responses”, "
+        self.notes.setPlaceholderText("Optional instructions for Claude, e.g. “prefer multiple choice”, "
                                       "“keep the cloze cards”, “these are for an exam on chapter 3”")
         self.notes.setPlainText(db.get_setting(INSTRUCTIONS_SETTING, ""))
         self.notes.setMaximumHeight(110)
@@ -263,7 +263,11 @@ class ConversionDialog(QDialog):
         for c in rows:
             accepted = c["status"] == "accepted"
             before = json.loads(c["original"])["data"] if accepted and c["original"] else json.loads(c["card_data"])
-            after = json.loads(c["card_data"]) if accepted else json.loads(c["proposal"]) if c["proposal"] else None
+            if accepted:  # what the card (and the cards its split added) show now
+                added = json.loads(c["original"]).get("added", []) if c["original"] else []
+                after = [json.loads(c["card_data"])] + [json.loads(x["data"]) for x in map(self.db.card, added) if x]
+            else:
+                after = convert.questions(c["proposal"]) or None
             items.append({"id": c["id"], "status": c["status"], "deck": c["deck"] or "",
                           "reason": c["reason"], "before": before, "after": after})
         counts = self.db.conversion_counts()

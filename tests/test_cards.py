@@ -211,6 +211,45 @@ def test_conversion_proposals_keep_the_schedule(db):
     assert bad[1]["action"] == "error"
 
 
+def test_conversion_splits_a_card(db):
+    deck = db.ensure_deck("D")
+    note = db.add_card_note("quiz", {"type": "free", "question": "What is flux, and why is it conserved?",
+                                     "answer": "A flow; no sources.", "rubric": ""}, deck, tags=["gauss"], page=3)
+    (card,) = db.note_cards(note)
+    srs.review(db, card["id"], 3, now=NOW)
+    ids = convert.start(db, [card["id"]])
+    flux = {"type": "flashcard", "question": "What is flux?", "answer": "A flow."}
+    why = {"type": "truefalse", "question": "Flux is conserved where there are no sources.", "answer": True}
+    convert.record(db, ids, json.dumps({"cards": [
+        {"id": card["id"], "action": "split", "reason": "two parts", "questions": [flux, why]}]}))
+    c = db.conversion(ids[card["id"]])
+    assert c["status"] == "proposed" and [q["question"] for q in convert.questions(c["proposal"])] == [
+        "What is flux?", "Flux is conserved where there are no sources."]
+
+    assert convert.accept(db, c["id"])
+    kept = db.card(card["id"])
+    assert json.loads(kept["data"])["question"] == "What is flux?" and kept["reps"] == 1
+    (added,) = json.loads(db.conversion(c["id"])["original"])["added"]
+    new = db.card(added)
+    assert json.loads(new["data"])["type"] == "truefalse" and srs.is_new(new)
+    assert (new["deck_id"], new["page"]) == (deck, 3) and db.card_note(new["note_id"])["tags"].split() == ["gauss"]
+
+    assert convert.revert(db, c["id"])
+    assert db.card(added) is None and json.loads(db.card(card["id"])["data"])["type"] == "free"
+
+    # Too many parts, or a reviewed card a split added, which an undo keeps.
+    ids = convert.start(db, [card["id"]])
+    convert.record(db, ids, json.dumps({"cards": [{"id": card["id"], "action": "split", "questions": [flux] * 5}]}))
+    assert db.conversion(ids[card["id"]])["status"] == "error"
+    ids = convert.start(db, [card["id"]])
+    convert.record(db, ids, json.dumps({"cards": [{"id": card["id"], "action": "split", "questions": [flux, why]}]}))
+    convert.accept(db, ids[card["id"]])
+    (added,) = json.loads(db.conversion(ids[card["id"]])["original"])["added"]
+    srs.review(db, added, 3, now=NOW)
+    convert.revert(db, ids[card["id"]])
+    assert db.card(added) is not None
+
+
 def test_conversion_manager(db, chat_panel):
     from study_reader.convert_dialog import ConversionManager
 
@@ -239,20 +278,27 @@ def test_conversion_manager(db, chat_panel):
 
 def test_conversion_never_makes_needless_flashcards(db):
     deck = db.ensure_deck("D")
+    choice = db.add_card_note("quiz", {"type": "choice", "question": "Which?", "choices": ["A", "B"], "answer": 0}, deck)
     free = db.add_card_note("quiz", {"type": "free", "question": "Why?", "answer": "Because.", "rubric": ""}, deck)
     basic = db.add_card_note("basic", {"front": "What is $x$?", "back": "A variable"}, deck)
     other = db.add_card_note("basic", {"front": "Vague", "back": "Too much"}, deck)
-    (q,), (b,), (o,) = db.note_cards(free), db.note_cards(basic), db.note_cards(other)
-    ids = convert.start(db, [q["id"], b["id"], o["id"]])
+    (c,), (q,), (b,), (o,) = db.note_cards(choice), db.note_cards(free), db.note_cards(basic), db.note_cards(other)
+    ids = convert.start(db, [c["id"], q["id"], b["id"], o["id"]])
     convert.record(db, ids, json.dumps({"cards": [
-        {"id": q["id"], "action": "convert", "reason": "recall", "question":
+        {"id": c["id"], "action": "convert", "reason": "recall", "question":
+            {"type": "flashcard", "question": "Which?", "answer": "A"}},
+        {"id": q["id"], "action": "convert", "reason": "faster", "question":
             {"type": "flashcard", "question": "Why?", "answer": "Because."}},
         {"id": b["id"], "action": "convert", "question": {"type": "flashcard", "question": "What is $x$?",
                                                          "answer": "A  variable"}},
         {"id": o["id"], "action": "convert", "question": {"type": "flashcard", "question": "Sharp?", "answer": "Short"}},
     ]}))
-    assert [db.conversion(ids[i])["status"] for i in (q["id"], b["id"], o["id"])] == ["kept", "kept", "proposed"]
-    assert "quiz questions stay" in db.conversion(ids[q["id"]])["reason"]
+    statuses = [db.conversion(ids[i])["status"] for i in (c["id"], q["id"], b["id"], o["id"])]
+    assert statuses == ["kept", "proposed", "kept", "proposed"]
+    assert "quiz questions stay" in db.conversion(ids[c["id"]])["reason"]
+    # A free response may become a flashcard, keeping its schedule.
+    assert convert.accept(db, ids[q["id"]])
+    assert db.card_note(db.card(q["id"])["note_id"])["kind"] == "basic"
     assert convert.accept(db, ids[o["id"]])
     note = db.card_note(db.card(o["id"])["note_id"])
     assert note["kind"] == "basic" and json.loads(note["fields"])["front"] == "Sharp?"
@@ -281,7 +327,7 @@ def test_reviewing_cloze_and_bookless_free_cards(db, chat_panel):
     db.add_card_note("cloze", {"text": "{{c1::Gauss}}'s law"}, deck, now=NOW - 10)
     db.add_card_note("quiz", {"type": "free", "question": "Why?", "answer": "Because.", "explanation": ""}, deck, now=NOW)
     db.ensure_deck("Elsewhere")
-    review = ReviewPanel(db, worker, all_books=True)
+    review = ReviewPanel(db, all_books=True)
     shown = []
     review._js = lambda fn, *args: shown.append((fn, args))
     review.choose_deck(db.deck_by_name("Anki")["id"])
@@ -296,13 +342,10 @@ def test_reviewing_cloze_and_bookless_free_cards(db, chat_panel):
     review.rate(review.card_id, 3)
 
     free = review.card_id
-    review.grade_with_claude(free, "Because I said so.")
-    job, card_id = worker.card_gradings[-1]
-    assert card_id == free and job.book is None and job.chat_session_id is None
-    assert 'deck "Anki::Physics"' in job.question
-    worker.cardGraded.emit(free, '{"verdict": "correct", "feedback": "Yes."}')
+    review.check(free, {"text": ""})  # shown without writing an answer
+    assert shown[-1][1][0]["previews"] and shown[-1][1][0]["answer"]["verdict"] is None
     review.rate(free, 3)
-    assert db.reviews(free)[0]["verdict"] == "correct"
+    assert db.reviews(free)[0]["verdict"] is None and not worker.jobs
 
 
 # -- the browser ---------------------------------------------------------------------------

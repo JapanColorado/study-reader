@@ -290,23 +290,6 @@ def grading_prompt(quiz: dict, index: int, response_text: str) -> str:
     return _grading_prompt(intro, quiz["questions"][index], response_text)
 
 
-def review_grading_prompt(title: str, index: int | None, question: dict, response_text: str,
-                          new_version: bool = False) -> str:
-    """Grading a free response given when the question came back in review. index None: the
-    question isn't from a quiz in a chat; title is then its deck. new_version: the question is
-    a version of it with new numbers (variants.py)."""
-    if index is None:
-        deck = f" (deck \"{title}\")" if title else ""
-        intro = f"I'm reviewing this question from my spaced-repetition deck{deck}. Grade my answer."
-    elif new_version:
-        intro = (f"I'm reviewing a new version (with different numbers) of question {index + 1} of your quiz "
-                 f"\"{title}\", in spaced-repetition review. Grade my answer.")
-    else:
-        intro = (f"I'm reviewing question {index + 1} of your quiz \"{title}\" again, in spaced-repetition "
-                 "review. Grade my answer.")
-    return _grading_prompt(intro, question, response_text)
-
-
 def _grading_prompt(intro: str, q: dict, response_text: str) -> str:
     parts = [intro, f"<question>\n{q['question']}\n</question>"]
     if q.get("answer"):

@@ -1,10 +1,12 @@
 """Claude Conversion: Claude (Sonnet) rewrites review cards, e.g. ones migrated from Anki, into
-the question types that fit them best (a free response Claude grades, a numeric problem, a
-multiple-choice question, or a sharper flashcard), or says to keep them. Quiz questions never
-become flashcards, and a flashcard proposed for a card that already says the same is kept.
+the question types that fit them best (a numeric problem, a multiple-choice question, a
+sharper flashcard, or as a last resort a free response), splits a card that asks several
+things into a few questions, or says to keep them. Quiz questions other than free responses
+never become flashcards, and a flashcard proposed for a card that already says the same is kept.
 Each rewrite is a proposal the user accepts or rejects; an accepted one replaces the card's
 content (a flashcard as a Basic note, anything else as a quiz note) and keeps its schedule and
-review history. Proposals live in the conversions table. Qt-free."""
+review history; a split's other questions become new cards beside it. Proposals live in the
+conversions table. Qt-free."""
 
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ from .db import Database, media_dir
 
 MODEL = "sonnet"
 BATCH_SIZE = 8  # cards per request
+MAX_SPLIT = 4  # questions one card may be split into
 IMAGE_BATCH_SIZE = 3  # cards per request when they have images
 MAX_IMAGES = 6  # attached per request
 MAX_IMAGE_BYTES = 3_000_000
@@ -27,44 +30,58 @@ IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
 SYSTEM_PROMPT = (
     "You improve spaced-repetition cards for a study app. Most came from Anki as plain flashcards "
     "or cloze deletions. The app can also show questions the learner answers before seeing the "
-    "answer: \"free\" (a written answer that you grade later against a model answer and rubric), "
-    "\"numeric\" (a number, typed as math, checked within a tolerance), \"choice\" (multiple "
-    "choice) and \"truefalse\", besides \"flashcard\" (recall, then self-rate). For each card, "
-    "decide whether another type would make the learner think harder about what the card is "
-    "really testing, and if so rewrite it. A card that already makes the learner answer "
-    "(choice, truefalse, numeric, free) never becomes a flashcard. Reply with JSON only."
+    "answer: \"numeric\" (a number, typed as math, checked within a tolerance), \"choice\" "
+    "(multiple choice) and \"truefalse\", besides \"flashcard\" (recall, then self-rate) and "
+    "\"free\" (a written answer the learner compares with a model answer and its key points, "
+    "then self-rates; slow to review, so a last resort). For each card, decide whether another "
+    "type would make the learner think harder about what the card is really testing, or review "
+    "faster without losing that, and if so rewrite it (or split it, if it asks several things). A card that already makes the learner "
+    "answer (choice, truefalse, numeric) never becomes a flashcard. Reply with JSON only."
 )
 
 INSTRUCTIONS = """Rewrite each card below as the question type that best fits it, or keep it.
 
 Choosing:
-- "free" for explaining, deriving, comparing or applying an idea: the learner writes an answer
-  that is graded against your model answer and rubric. Prefer it for conceptual cards.
 - "numeric" when the card asks for a single quantity that can be computed. Pose the problem so
   it needs the idea, not memorized arithmetic.
 - "choice" when there are plausible confusions to tell apart (2-5 choices, plausible wrong ones).
 - "truefalse" for a crisp claim that people commonly get wrong.
-- "flashcard" for pure recall worth memorizing verbatim (a definition, a formula, a name), and
-  only for cards that are flashcards, cloze or image occlusion now: improve a vague front or an
-  overloaded back. Never turn a "choice", "truefalse", "numeric" or "free" card into a flashcard;
-  keep it, or rewrite it as another of those types if that is clearly better.
-- "keep" when the card already works well as it is (good cloze, recall and quiz cards usually
-  do), when a rewrite would only reword it, or when it depends on an image or context you can't
-  see.
+- "flashcard" for recall worth memorizing (a definition, a formula, a name, a short
+  explanation of why or how), only for cards that are flashcards, cloze, image occlusion or
+  free responses now: improve a vague front or an overloaded back. Keep the back short: the
+  answer, or its few key points, not an essay. Never turn a "choice", "truefalse" or "numeric"
+  card into a flashcard; keep it, or rewrite it as another of those types if that is clearly
+  better.
+- "free" only as a last resort, when no other type could fit that specific question (a
+  derivation or argument the learner must produce in full, that no number, choice or short
+  flashcard back captures): "answer" is a model answer and "rubric" its key points.
+- A "free" card now: rewrite it as another type whenever one fits (a flashcard asking the same
+  question with the key points as its back, a numeric problem, a multiple-choice question that
+  tests the same understanding); keep it only if none could.
+- "split" a card that asks several separate things (what something is, why it holds, what
+  follows from it...) into 2-4 questions, each on one part and each of whatever type fits that
+  part best, rather than one question that leaves parts out or a flashcard whose back has to
+  list them all. Together they must cover everything the card asks. Don't split parts that are
+  one idea, or a card whose answer is already short.
+- "keep" when the card already works well as it is (good cloze, recall, choice, truefalse and
+  numeric cards usually do), when a rewrite would only reword it, or when it depends on an image
+  or context you can't see.
 Never add facts that aren't in the card or standard, correct knowledge of its subject. Keep the
-card's scope: one card in, one question out. Each question must stand alone (name the concept;
-no "the passage" or "above").
+card's scope: a converted question tests everything the card does, no more and no less (split
+the card instead if one question can't). Each question must stand alone (name the concept; no
+"the passage", "above" or "the previous question").
 
 Each converted question is a JSON object with "type", "question" (Markdown, $LaTeX$ for math),
 "explanation" (shown after answering: why the answer is right, briefly), and by type: "choice":
 "choices" (strings) and "answer" (0-based index); "truefalse": "answer" true/false; "numeric":
 "answer" (a number or expression like "3/8" or "sqrt(2)/2"), optional "tolerance" (absolute)
-and "unit"; "free": "answer" (model answer) and "rubric" (what a full-credit answer must
+and "unit"; "free": "answer" (model answer) and "rubric" (the key points a full answer must
 contain); "flashcard": "answer" (the back, Markdown).
 
 Reply with one JSON object and nothing else:
 {"cards": [{"id": <card id>, "action": "keep", "reason": "<a few words>"},
-           {"id": <card id>, "action": "convert", "reason": "<a few words>", "question": {...}}]}
+           {"id": <card id>, "action": "convert", "reason": "<a few words>", "question": {...}},
+           {"id": <card id>, "action": "split", "reason": "<a few words>", "questions": [{...}, {...}]}]}
 with exactly one entry per card, in order. It is JSON: escape quotes and double every LaTeX
 backslash ("$\\\\frac{a}{b}$")."""
 
@@ -154,8 +171,9 @@ def blocks(db: Database, card_ids: list[int], extra_instructions: str = "") -> l
 
 # -- replies -------------------------------------------------------------------------------
 def parse(text: str, card_ids: list[int]) -> dict[int, dict]:
-    """{card id: {"action": "keep" | "convert" | "error", "question": dict | None, "reason": str}}
-    for every card of the batch (cards missing from the reply are errors)."""
+    """{card id: {"action": "keep" | "convert" | "error", "question": dict | list | None, "reason": str}}
+    for every card of the batch (cards missing from the reply are errors). A split's question is
+    the list of its questions."""
     m = re.search(r"\{.*\}", text, re.DOTALL)
     if not m:
         raise ConvertError("Claude's reply had no JSON in it")
@@ -177,11 +195,19 @@ def parse(text: str, card_ids: list[int]) -> dict[int, dict]:
         if card_id not in card_ids:
             continue
         reason = str(entry.get("reason") or "")
-        if str(entry.get("action", "")).lower() == "keep" or not entry.get("question"):
+        given = entry.get("questions") or entry.get("question")
+        if isinstance(given, list) and len(given) == 1:
+            given = given[0]
+        if str(entry.get("action", "")).lower() == "keep" or not given:
             out[card_id] = {"action": "keep", "question": None, "reason": reason}
             continue
         try:
-            question = quiz.validate_question(entry["question"])
+            if isinstance(given, list):
+                if len(given) > MAX_SPLIT:
+                    raise ValueError(f"split into {len(given)} questions (at most {MAX_SPLIT})")
+                question = [quiz.validate_question(q) for q in given]
+            else:
+                question = quiz.validate_question(given)
         except (ValueError, TypeError, KeyError) as e:
             out[card_id] = {"action": "error", "question": None, "reason": f"unusable question: {e}"}
             continue
@@ -207,7 +233,10 @@ def record(db: Database, conversions: dict[int, int], text: str) -> None:
     for card_id, conversion_id in conversions.items():
         r = results[card_id]
         card = db.card(card_id)
-        why = _needless(json.loads(card["data"]), r["question"]) if card is not None and r["question"] else None
+        why = None
+        if card is not None:
+            current = json.loads(card["data"])
+            why = next((w for q in questions(r["question"]) if (w := _needless(current, q))), None)
         if why:
             r = {"action": "keep", "question": None, "reason": f"{r['reason']} ({why})" if r["reason"] else why}
         status = {"keep": "kept", "convert": "proposed", "error": "error"}[r["action"]]
@@ -217,10 +246,11 @@ def record(db: Database, conversions: dict[int, int], text: str) -> None:
 
 def _needless(current: dict, question: dict) -> str | None:
     """Why a proposed flashcard shouldn't replace the card's question, if it shouldn't: quiz
-    questions don't become flashcards, and a flashcard saying the same needs no change."""
+    questions other than free responses don't become flashcards, and a flashcard saying the
+    same needs no change."""
     if question.get("type") != "flashcard":
         return None
-    if current.get("type") not in cardmodel.SELF_RATED:
+    if current.get("type") not in (*cardmodel.SELF_RATED, "free"):
         return "quiz questions stay quiz questions"
     if current.get("type") == "flashcard" and all(
         cardmodel.plain(str(current.get(k) or "")) == cardmodel.plain(str(question.get(k) or ""))
@@ -230,6 +260,13 @@ def _needless(current: dict, question: dict) -> str | None:
     return None
 
 
+def questions(proposal) -> list[dict]:
+    """A proposal's questions: one, or a split's several (proposal: a question, a list, or JSON of either)."""
+    if isinstance(proposal, str):
+        proposal = json.loads(proposal) if proposal else []
+    return proposal if isinstance(proposal, list) else [proposal] if proposal else []
+
+
 def fail(db: Database, conversions: dict[int, int], message: str) -> None:
     for conversion_id in conversions.values():
         db.update_conversion(conversion_id, status="error", reason=message)
@@ -237,7 +274,9 @@ def fail(db: Database, conversions: dict[int, int], message: str) -> None:
 
 def accept(db: Database, conversion_id: int) -> bool:
     """Give the card its proposed content (as a note of its own: Basic for a flashcard, else a
-    quiz note); it keeps its deck, tags, schedule and history. The old content is kept for revert()."""
+    quiz note); it keeps its deck, tags, schedule and history. A split's first question takes
+    the card; the others become new cards in its deck, book and page, with its tags. The old
+    content (and the cards a split added) is kept for revert()."""
     c = db.conversion(conversion_id)
     if c is None or c["status"] != "proposed" or not c["proposal"]:
         return False
@@ -245,9 +284,17 @@ def accept(db: Database, conversion_id: int) -> bool:
     note = db.card_note(card["note_id"]) if card else None
     if card is None or note is None:
         return False
+    first, *rest = questions(c["proposal"])
     original = {"note_id": note["id"], "kind": note["kind"], "fields": json.loads(note["fields"]),
                 "ord": card["ord"], "data": json.loads(card["data"])}
-    db.move_card_to_note(card["id"], *cardmodel.note_for_question(json.loads(c["proposal"])))
+    db.move_card_to_note(card["id"], *cardmodel.note_for_question(first))
+    added = []
+    for q in rest:
+        note_id = db.add_card_note(*cardmodel.note_for_question(q), card["deck_id"], tags=note["tags"].split(),
+                                   book_id=card["book_id"], page=card["page"], title=card["title"])
+        added += [x["id"] for x in db.note_cards(note_id)]
+    if added:
+        original["added"] = added
     db.update_conversion(conversion_id, status="accepted", original=json.dumps(original, ensure_ascii=False))
     return True
 
@@ -265,7 +312,8 @@ def accepted_conversion(db: Database, card_id: int):
 
 def revert(db: Database, conversion_id: int) -> bool:
     """Undo an accepted conversion: the card shows what it did before (back on its old note
-    if that note still exists and hasn't regained the card), keeping its schedule."""
+    if that note still exists and hasn't regained the card), keeping its schedule. Cards a split
+    added go unless they have been reviewed."""
     c = db.conversion(conversion_id)
     if c is None or c["status"] != "accepted" or not c["original"]:
         return False
@@ -287,5 +335,8 @@ def revert(db: Database, conversion_id: int) -> bool:
         back = q.get("answer", "") if q.get("type") != "occlusion" else ""
         db.move_card_to_note(card["id"], "basic", {"front": front or "(card)", "back": back,
                                                    "extra": q.get("explanation", "")})
+    added = [i for i in original.get("added", []) if db.card(i) is not None and not db.reviews(i)]
+    if added:
+        db.delete_cards(added)
     db.update_conversion(conversion_id, status="rejected")
     return True

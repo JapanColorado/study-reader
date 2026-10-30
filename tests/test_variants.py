@@ -61,7 +61,7 @@ def _review(chat_panel):
     panel.start_quiz("Quiz me.", "Quiz", 0)
     worker.done.emit(panel.chat_id, "s1", QUIZ, "u1")
     reply = db.messages(panel.chat_id)[1]["id"]
-    review = ReviewPanel(db, worker, variants=maker)
+    review = ReviewPanel(db, variants=maker)
     review.set_book(book_id)
     shown = []
     review._js = lambda fn, *args: shown.append((fn, args))

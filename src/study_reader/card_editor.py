@@ -18,8 +18,8 @@ from PySide6.QtWidgets import (
 from . import cardmodel, quiz
 from .db import Database, media_dir
 
-QUIZ_TYPES = [("free", "Free response (graded by Claude)"), ("choice", "Multiple choice"),
-              ("truefalse", "True or false"), ("numeric", "Numeric")]
+QUIZ_TYPES = [("choice", "Multiple choice"), ("truefalse", "True or false"), ("numeric", "Numeric"),
+              ("free", "Free response (rated yourself)")]
 ADD_KINDS = [(k, cardmodel.KIND_LABELS[k]) for k in ("basic", "reverse", "cloze", "quiz")]
 
 
@@ -166,7 +166,7 @@ class NoteEditor(QWidget):
         self.q_number = QLineEdit(placeholderText="e.g. 0.25, 3/8 or sqrt(2)/2")
         self.q_unit = QLineEdit(placeholderText="optional, e.g. m/s")
         self.q_tolerance = QDoubleSpinBox(decimals=6, maximum=1e12, specialValueText="1% of the answer")
-        self.q_rubric = FieldEdit("What a full-credit answer must contain (optional)")
+        self.q_rubric = FieldEdit("The key points a full answer covers, shown when you rate it (optional)")
         self.q_explanation = FieldEdit("Why the answer is right (shown after answering)")
         self.q_rows: dict[str, tuple] = {}
         for key, label, w in (("type", "Type", self.q_type), ("question", "Question", self.q_question),

@@ -35,6 +35,8 @@
   .pair .head .status.proposed { background:var(--accent-soft); color:var(--accent); }
   .pair .head .status.accepted { color:var(--success); }
   .pair .head .status.error { color:var(--error); }
+  .pair .part + .part { margin-top:10px; padding-top:8px; border-top:1px dashed var(--border); }
+  .pair .part > .label { font-size:11px; font-weight:650; color:var(--muted); margin-bottom:4px; }
   .pair .reason { padding:6px 12px 0; font-size:12.5px; color:var(--muted); font-style:italic; }
   .pair .cols { display:grid; grid-template-columns:1fr 1fr; gap:10px; padding:10px 12px; }
   @media (max-width: 760px) { .pair .cols { grid-template-columns:1fr; } }
@@ -119,10 +121,17 @@ function showProposals(items) {
     if (c.reason) html += `<div class="reason">${esc(c.reason)}</div>`;
     let before = "", after = "";
     try { before = backHtml(c.before); } catch (e) { before = esc(String(e)); }
-    if (c.after) { try { after = sides(c.after); } catch (e) { after = esc(String(e)); } }
+    const split = c.after && c.after.length > 1;
+    if (c.after) {
+      after = c.after.map((q, k) => {
+        let one;
+        try { one = sides(q); } catch (e) { one = esc(String(e)); }
+        return split ? `<div class="part"><div class="label">Card ${k + 1} of ${c.after.length}${k ? " · new" : " · keeps the history"}</div>${one}</div>` : one;
+      }).join("");
+    }
     else after = `<div class="empty" style="margin:20px 0">${c.status === "pending" ? "Waiting for Claude…" : c.status === "error" ? "No proposal." : "No change."}</div>`;
     html += `<div class="cols"><div class="col"><h3>Now</h3><div class="side">${before}</div></div>`
-      + `<div class="col"><h3>Proposed</h3>${after}</div></div>`;
+      + `<div class="col"><h3>${split ? `Proposed: split into ${c.after.length}` : "Proposed"}</h3>${after}</div></div>`;
     if (c.status === "proposed") html += `<div class="actions"><button class="qbtn quiet" data-decide="reject">Reject</button>`
       + `<button class="qbtn" data-decide="accept">Accept</button></div>`;
     else if (c.status === "error" || c.status === "kept") html += `<div class="actions"><button class="qbtn quiet" data-decide="dismiss">Dismiss</button></div>`;

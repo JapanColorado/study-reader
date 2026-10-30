@@ -65,7 +65,7 @@ class MainWindow(QMainWindow):
         self.reader = ReaderView()
         self.library = LibraryView(self.db)
         self.variants = VariantMaker(self.db, self.worker, self)  # new numbers for reviewed calculation cards
-        self.review_all = ReviewPanel(self.db, self.worker, all_books=True, variants=self.variants)  # every book's cards, from the library
+        self.review_all = ReviewPanel(self.db, all_books=True, variants=self.variants)  # every book's cards, from the library
         self.center = QStackedWidget()
         self.center.addWidget(self.library)
         self.center.addWidget(self.reader)
@@ -74,7 +74,7 @@ class MainWindow(QMainWindow):
         self.chat.current_page = self.reader.current_page
         self.calc = CalculatorPanel(self.db)
         self.notes = NotesPanel(self.db)
-        self.review = ReviewPanel(self.db, self.worker, variants=self.variants)
+        self.review = ReviewPanel(self.db, variants=self.variants)
         self.right = QStackedWidget()  # chats, the calculator, notes and review take turns in the same slot
         for w in (self.chat, self.calc, self.notes, self.review):
             self.right.addWidget(w)

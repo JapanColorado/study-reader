@@ -153,9 +153,10 @@ CREATE TABLE IF NOT EXISTS conversions (
     card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
     status TEXT NOT NULL,           -- 'pending' (Claude is working) | 'proposed' | 'kept' (Claude would keep
                                     -- it) | 'accepted' | 'rejected' | 'error'
-    proposal TEXT NOT NULL DEFAULT '', -- JSON quiz question Claude proposed
+    proposal TEXT NOT NULL DEFAULT '', -- JSON quiz question Claude proposed (a list of them for a split)
     reason TEXT NOT NULL DEFAULT '',   -- Claude's note on it, or the error
-    original TEXT NOT NULL DEFAULT '', -- JSON {kind, fields, ord, data}: the card before an accepted change
+    original TEXT NOT NULL DEFAULT '', -- JSON {kind, fields, ord, data, added?}: the card before an accepted
+                                       -- change (added: the ids of the cards a split made)
     created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
