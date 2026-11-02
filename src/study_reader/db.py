@@ -160,6 +160,12 @@ CREATE TABLE IF NOT EXISTS conversions (
     created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+-- Phone sync (phone_sync.py): events applied from the phone app, by their ids, and the batch
+-- files they came in (the snapshot acknowledges those, so the phone can delete them).
+CREATE TABLE IF NOT EXISTS phone_events (id TEXT PRIMARY KEY, device TEXT NOT NULL, applied_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS phone_batches (
+    device TEXT NOT NULL, batch TEXT NOT NULL, applied_at REAL NOT NULL, PRIMARY KEY (device, batch)
+);
 """
 # After the migrations, which may rebuild the tables these index.
 INDEXES = """

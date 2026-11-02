@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Two review cards, the front one checked. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#F3E9DA" android:fillAlpha="0.75"
+        android:pathData="M40,30 h30 a5,5 0 0 1 5,5 v34 a5,5 0 0 1 -5,5 h-30 a5,5 0 0 1 -5,-5 v-34 a5,5 0 0 1 5,-5 z" />
+    <path android:fillColor="#FFFAF2"
+        android:pathData="M34,36 h30 a5,5 0 0 1 5,5 v34 a5,5 0 0 1 -5,5 h-30 a5,5 0 0 1 -5,-5 v-34 a5,5 0 0 1 5,-5 z" />
+    <path android:strokeColor="#D6C6B0" android:strokeWidth="3" android:strokeLineCap="round"
+        android:pathData="M37,46 h22 M37,53 h16" />
+    <path android:strokeColor="#3A8F5C" android:strokeWidth="4.5" android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:pathData="M41,64 l6,6 l12,-13" />
+</vector>
