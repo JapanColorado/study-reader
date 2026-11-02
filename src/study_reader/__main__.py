@@ -19,6 +19,14 @@ def configure_webengine() -> None:
         os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{flags} --disable-gpu".strip()
 
 
+def configure_compositing() -> None:
+    """Draw the window through the GPU (RHI) at all times. Qt otherwise draws it in software
+    until a web view is on screen and switches over when one appears, and on Wayland the
+    switch shows a white frame: switching from the Library to Home flashed white.
+    QT_WIDGETS_RHI=0 turns this off."""
+    os.environ.setdefault("QT_WIDGETS_RHI", "1")
+
+
 def configure_decorations() -> None:
     """COSMIC asks Qt to draw its own title bar; the "adwaita" decoration looks
     nicer than Qt's default "bradient" one."""
@@ -40,6 +48,7 @@ def configure_platform_theme() -> None:
 
 def main() -> int:
     configure_webengine()
+    configure_compositing()
     configure_decorations()
     configure_platform_theme()
     app = QApplication(sys.argv)
