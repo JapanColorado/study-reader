@@ -25,6 +25,7 @@ from .db import Database, data_dir
 from .document import Document, file_hash
 from .library_view import LibraryView
 from .notes import NotesPanel
+from .phone_sync_dialog import PhoneSync, PhoneSyncDialog
 from .reader_view import ReaderView
 from .review import ReviewPanel, VariantMaker
 from .theme import MODES, icon, theme
@@ -125,6 +126,10 @@ class MainWindow(QMainWindow):
         self._save_timer = QTimer(self, interval=10_000)
         self._save_timer.timeout.connect(self._save_position)
         self._save_timer.start()
+        # The phone app's reviews come in through a shared folder; new numbers for the calculation cards it reviewed.
+        self.phone_sync = PhoneSync(self.db, after_review=self.variants.after_review, parent=self)
+        self.phone_sync.synced.connect(lambda result: result.applied and self._on_cards_changed())
+        QTimer.singleShot(0, self.phone_sync.sync)
         self.show_library()
 
     def _build_toolbar(self) -> None:
@@ -268,6 +273,7 @@ class MainWindow(QMainWindow):
         self.rewards_action.setChecked(gamify.enabled(self.db))
         self.rewards_action.toggled.connect(self._set_rewards)
         review_menu.addAction("Daily goal…").triggered.connect(self._set_daily_goal)
+        menu.addAction(icon("cards"), "Phone sync…").triggered.connect(lambda: PhoneSyncDialog(self.phone_sync, self).exec())
         settings = QToolButton()
         settings.setIcon(icon("settings"))
         settings.setToolTip("Settings")
@@ -857,6 +863,7 @@ class MainWindow(QMainWindow):
         self._save_position()
         if self.browser is not None:
             self.browser.save_note()
+        self.phone_sync.sync()  # what was reviewed here, for the phone
         self.worker.shutdown()
         super().closeEvent(event)
 

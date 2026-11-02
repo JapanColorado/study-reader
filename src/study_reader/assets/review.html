@@ -123,6 +123,34 @@
   @keyframes toast-out { to { opacity:0; transform:translateX(30px); } }
   @keyframes pulse { 50% { transform:scale(1.35); } }
   @media (prefers-reduced-motion: reduce) { .toast, .float, .combo.pulse { animation:none; } }
+  /* Flags (as Anki's), on the phone app's cards */
+  .flagdot { display:inline-block; width:9px; height:9px; border-radius:50%; vertical-align:middle; }
+  .flags { display:flex; gap:10px; justify-content:center; align-items:center; margin:0 0 10px; }
+  .flags button { width:30px; height:30px; border-radius:50%; border:2px solid transparent; cursor:pointer; }
+  .flags button.on { border-color:var(--fg); }
+  .flags button.none { background:var(--raised); border-color:var(--border); color:var(--muted); font:inherit; font-size:14px; }
+  /* The Android app (android/): touch-sized targets, no keyboard hints, rating buttons at hand. */
+  html.mobile, html.mobile body { font-size:16px; -webkit-tap-highlight-color:transparent; }
+  html.mobile #root { padding:6px 12px 120px; }
+  html.mobile .keys, html.mobile .hint { display:none; }
+  html.mobile .bar { font-size:13.5px; gap:2px; flex-wrap:wrap; }
+  html.mobile .bar a { padding:7px 9px; }
+  html.mobile .start { padding:13px; font-size:1.05em; }
+  html.mobile .quick button { padding:10px; }
+  html.mobile .deck { padding:9px 8px; font-size:15px; }
+  html.mobile .deck .tw { width:22px; font-size:13px; }
+  html.mobile .choice { padding:11px 12px; }
+  html.mobile .qbtn { padding:9px 16px; font-size:14.5px; }
+  html.mobile .submit-row { font-size:13px; }
+  html.mobile .rate-dock { position:fixed; left:0; right:0; bottom:0; z-index:40; padding:8px 10px 12px;
+                           background:var(--surface); border-top:1px solid var(--border); }
+  html.mobile .rate-dock .submit-row { margin:0 0 2px; justify-content:center; }
+  html.mobile .rate-row { margin-top:4px; max-width:680px; margin-left:auto; margin-right:auto; }
+  html.mobile .rate { padding:11px 4px; font-size:15px; }
+  html.mobile .rate .when { font-size:12.5px; }
+  html.mobile .rate .key { display:none; }
+  html.mobile #toasts { left:10px; right:10px; align-items:center; }
+  html.mobile .ach-grid { grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); }
 </style>
 </head>
 <body>
@@ -131,7 +159,13 @@
 // The app picks the cards and schedules them (srs.py); this page shows the overview or one card,
 // and sends answers, ratings and actions back through the web channel.
 let bridge = null;
-new QWebChannel(qt.webChannelTransport, channel => { bridge = channel.objects.review; });
+// The Android app (android/) puts its bridge on the page as ReviewApp, with the same methods.
+const MOBILE = !!window.ReviewApp;
+if (MOBILE) { bridge = window.ReviewApp; document.documentElement.classList.add("mobile"); }
+else new QWebChannel(qt.webChannelTransport, channel => { bridge = channel.objects.review; });
+// Anki's flag colors (browser.py's FLAGS).
+const FLAG_COLORS = { 1: "#e25252", 2: "#f59a3a", 3: "#4fb35a", 4: "#3d8bf2", 5: "#ec79c6", 6: "#3cc7c2", 7: "#9a6be0" };
+const FLAG_NAMES = { 1: "Red", 2: "Orange", 3: "Green", 4: "Blue", 5: "Pink", 6: "Turquoise", 7: "Purple" };
 
 const CARDS_ICON = `<svg viewBox="0 0 24 24"><rect width="14" height="16" x="7" y="5" rx="2"/><path d="M4 16V5a2 2 0 0 1 2-2h9"/></svg>`;
 let CARD = null;  // the card on display, as the app sent it; null on the overview
@@ -210,7 +244,7 @@ function showOverview(o) {
     (<kbd>Ctrl+Shift+Q</kbd>) on a selection or the section you're reading, or under one of
     Claude's replies.`;
   if (!o.total) {
-    root.innerHTML = `<div class="empty">${CARDS_ICON}<div class="msg">No review cards ${o.all ? "yet" : "for this book yet"}.</div></div>`
+    root.innerHTML = `<div class="empty">${CARDS_ICON}<div class="msg">${o.empty ? esc(o.empty) : `No review cards ${o.all ? "yet" : "for this book yet"}.`}</div></div>`
       + `<div class="hint">${how}</div>`;
     return;
   }
@@ -225,6 +259,7 @@ function showOverview(o) {
     + `<div class="stat due"><div class="n">${o.due}</div><div class="l">due</div></div>`
     + `<div class="stat new"><div class="n">${o.new}</div><div class="l">new today${o.new_total > o.new ? ` · ${o.new_total} waiting` : ""}</div></div>`
     + `<div class="stat"><div class="n">${o.total}</div><div class="l">cards${o.suspended ? ` · ${o.suspended} suspended` : ""}</div></div></div>`;
+  if (o.status) html += `<div class="nudge">${esc(o.status)}</div>`;
   if (o.reviewed && !o.summary) html += `<div class="msg"><strong>${plural(o.reviewed, "card")} reviewed.</strong></div>`;
   const more = o.reviewed ? " more" : "";
   if (o.ready) html += `<button class="start" data-act="start">${o.reviewed ? "Keep going" : "Start review"}</button>`
@@ -233,7 +268,8 @@ function showOverview(o) {
     + `<div class="keys"><kbd>Space</kbd> to start · <kbd>5</kbd> for ${o.quick.cards} cards</div>`;
   else html += `<div class="msg">All caught up${o.next ? ` — the next card is due ${esc(o.next)}` : ""}.`
     + (o.new_total > o.new ? `<br>Today's ${o.new_per_day} new cards are done; more tomorrow.` : "") + `</div>`;
-  html += `<div class="links"><a href="#" data-act="browse">Browse cards</a><a href="#" data-act="stats">Statistics</a></div>`;
+  const links = o.links || [["browse", "Browse cards"], ["stats", "Statistics"]];
+  if (links.length) html += `<div class="links">${links.map(([act, label]) => `<a href="#" data-act="${act}">${esc(label)}</a>`).join("")}</div>`;
   if (g) html += extrasHtml(g);
   root.innerHTML = html + `<div class="hint">${how}</div>`;
   if (g) heatmap(document.getElementById("heat"), g.heat);
@@ -375,20 +411,29 @@ function showCard(c) {
     `<span title="${esc(c.deck)}">${esc(c.title || c.deck.split("::").pop())}</span>`,
     c.page !== null ? `<a class="src" href="#" data-act="source" title="Show this page in the book">p. ${c.page + 1}</a>` : "",
     c.chat ? `<a class="src" href="#" data-act="chat" title="Open the chat the quiz is in">Open chat</a>` : "",
+    c.flag ? `<span title="${FLAG_NAMES[c.flag]} flag"><span class="flagdot" style="background:${FLAG_COLORS[c.flag]}"></span></span>` : "",
   ].filter(Boolean).join("<span>·</span>");
   // Free responses are rated by the reviewer: recall the answer, or write it out first.
   const freeActions = `<div class="submit-row"><span class="grow">Answer in your head, or write it out first (Ctrl+Enter)</span>`
     + `<button class="qbtn" data-act="show">Show answer</button></div>`;
+  const actions = c.actions || [
+    ["skip", "Skip", "Show another card first"],
+    ["edit", "Edit", "Open this card in the browser to edit it"],
+    ["suspend", "Suspend", "Leave this card out of review (the quiz's “In review” toggle brings it back)"],
+    ["delete", "Delete", "Delete this card and its history"],
+  ];
   let html = `<div class="bar"><a href="#" data-act="stop" title="Back to the overview">← Overview</a><span class="grow"></span>`
     + `<span class="count"><span class="due">${c.remaining.due}</span> due · <span class="new">${c.remaining.new}</span> new</span>`
-    + `<a href="#" data-act="skip" title="Show another card first">Skip</a>`
-    + `<a href="#" data-act="edit" title="Open this card in the browser to edit it">Edit</a>`
-    + `<a href="#" data-act="suspend" title="Leave this card out of review (the quiz's “In review” toggle brings it back)">Suspend</a>`
-    + `<a href="#" data-act="delete" title="Delete this card and its history">Delete</a></div>`;
+    + actions.map(([act, label, title]) => `<a href="#" data-act="${act}" title="${esc(title)}">${esc(label)}</a>`).join("") + `</div>`;
+  if (FLAGS_OPEN) html += `<div class="flags">${[1, 2, 3, 4, 5, 6, 7].map(n => `<button data-act="setflag" data-k="${n}"`
+    + ` class="${c.flag === n ? "on" : ""}" style="background:${FLAG_COLORS[n]}" title="${FLAG_NAMES[n]}"></button>`).join("")}`
+    + `<button class="none" data-act="setflag" data-k="0" title="No flag">✕</button></div>`;
   html += progressHtml(c);
   html += `<div class="card">${questionHtml(q, a || undefined, { meta, freeActions, openAnswer: true })}`;
   html += `</div>`;
-  if (c.previews) {
+  if (c.previews && MOBILE) {
+    html += `<div class="rate-dock"><div class="submit-row">How well did you know it?</div>${ratingRow(c.previews, c.suggested)}</div>`;
+  } else if (c.previews) {
     html += `<div class="submit-row" style="margin-top:12px">How well did you know it?</div>${ratingRow(c.previews, c.suggested)}`
       + `<div class="keys"><kbd>1</kbd>–<kbd>4</kbd> to rate · <kbd>Space</kbd> for ${RATING_LABELS[c.suggested || 3]}</div>`;
   } else if (selfRated(q) && !a) {
@@ -397,10 +442,15 @@ function showCard(c) {
   const root = document.getElementById("root");
   root.innerHTML = html;
   setupMathFields(root, qEl => answer("numeric", qEl));
-  window.scrollTo(0, 0);
+  if (!MOBILE || c.id !== SHOWN_ID) window.scrollTo(0, 0);  // the phone keeps its place when the card is redrawn
+  SHOWN_ID = c.id;
   const field = root.querySelector("math-field");
+  if (field && MOBILE) field.mathVirtualKeyboardPolicy = "auto";  // MathLive's math keyboard on touch
   if (field) field.focus();
 }
+
+let SHOWN_ID = null;  // the card last drawn
+let FLAGS_OPEN = false;  // the phone's flag picker is showing
 
 let CLOCK = null;  // the timer counting down a timed session
 
@@ -471,8 +521,10 @@ document.addEventListener("click", ev => {
   else if (act === "section") bridge.chooseSection(+target.dataset.book, target.dataset.tag);
   else if (act === "browse" || act === "stats") bridge.open(act);
   else if (!CARD) return;
-  else if (act === "rate") bridge.rate(CARD.id, +target.dataset.k);
-  else if (["source", "chat", "skip", "suspend", "delete", "edit"].includes(act)) bridge.act(CARD.id, act);
+  else if (act === "rate") { FLAGS_OPEN = false; bridge.rate(CARD.id, +target.dataset.k); }
+  else if (act === "flag") { FLAGS_OPEN = !FLAGS_OPEN; showCard(CARD); }
+  else if (act === "setflag") { FLAGS_OPEN = false; bridge.act(CARD.id, `flag:${target.dataset.k}`); }
+  else if (["source", "chat", "skip", "suspend", "delete", "edit", "bury"].includes(act)) { FLAGS_OPEN = false; bridge.act(CARD.id, act); }
   else answer(act, target.closest(".q"), target);
 });
 
