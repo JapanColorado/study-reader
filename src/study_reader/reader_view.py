@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import bisect
 import html
+import time
 from collections import OrderedDict
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
@@ -36,6 +37,10 @@ FOOTNOTE_LIGHT = (QColor(200, 190, 252), QColor(172, 156, 246))
 FOOTNOTE_DARK = (QColor(62, 52, 118), QColor(88, 74, 160))
 XREF_LIGHT = (QColor(236, 233, 253), QColor(212, 204, 252))
 XREF_DARK = (QColor(36, 32, 64), QColor(62, 52, 118))
+# Reading aloud: the sentence, and the word in it, blended like the highlighter.
+SPEECH_LIGHT = (QColor(208, 228, 255), QColor(255, 200, 100))
+SPEECH_DARK = (QColor(30, 52, 82), QColor(122, 88, 24))
+FOLLOW_PAUSE = 8.0  # s after the user scrolls before reading aloud moves the view again
 CLICK_SLOP = 4  # px a press may move and still count as a click
 LINK_SLOP = 2.0  # pt around a link that still hits it (footnote markers are tiny)
 
@@ -48,6 +53,8 @@ class ReaderView(QAbstractScrollArea):
     pageChanged = Signal(int)
     zoomChanged = Signal(float)
     highlightClicked = Signal(list, list, QPoint)  # snippets and notes under the click, global position
+    readRequested = Signal(object, bool)  # selected words by page; whether to read on past them
+    speechClicked = Signal(int, float, float)  # a click while reading aloud: page, x, y
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -74,6 +81,10 @@ class ReaderView(QAbstractScrollArea):
         self._press: QPointF | None = None
         self._hover_link: Link | None = None
         self._back: list[tuple[int, float]] = []  # positions to return to after following links
+        self._speech: tuple[dict, dict | None] | None = None  # read-aloud (sentence, word) rects by page
+        self.speech_active = False  # clicks jump the reading voice
+        self._last_nav = 0.0  # when the user last scrolled or jumped
+        self.verticalScrollBar().actionTriggered.connect(self._user_moved)
 
         self.viewport().setMouseTracking(True)
         self.viewport().setCursor(Qt.CursorShape.IBeamCursor)
@@ -101,7 +112,13 @@ class ReaderView(QAbstractScrollArea):
         self._note_btn.clicked.connect(self.choose_note)
         self._copy_btn = QPushButton("Copy")
         self._copy_btn.clicked.connect(self.copy_selection)
-        for b in (ask, add, quiz, self._note_btn, self._copy_btn):
+        self._read_btn = QPushButton("Read aloud")
+        self._read_btn.setToolTip("Read the selection aloud")
+        self._read_btn.clicked.connect(lambda: self.choose_read(False))
+        self._read_on_btn = QPushButton("Read from here")
+        self._read_on_btn.setToolTip("Read aloud from the selection on")
+        self._read_on_btn.clicked.connect(lambda: self.choose_read(True))
+        for b in (ask, add, quiz, self._note_btn, self._copy_btn, self._read_btn, self._read_on_btn):
             row.addWidget(b)
         self._popup.hide()
 
@@ -124,6 +141,7 @@ class ReaderView(QAbstractScrollArea):
         self._marks, self._hover, self._hover_link = {}, [], None
         self._back = []
         self._back_bar.hide()
+        self._speech = None
         self.clear_selection()
         self._content_box = None
         self.crop = crop
@@ -310,6 +328,7 @@ class ReaderView(QAbstractScrollArea):
         if not self._back:
             return False
         page, y_pt = self._back.pop()
+        self._user_moved()
         self.verticalScrollBar().setValue(int(self._tops[page] + (y_pt - self._clips[page][1]) * self.zoom))
         self._check_page()
         self._back_bar.setVisible(bool(self._back))
@@ -348,8 +367,55 @@ class ReaderView(QAbstractScrollArea):
             y = self._tops[page] - self._gap
         else:
             y = self._tops[page] + (y_pt - self._clips[page][1]) * self.zoom - 60
+        self._user_moved()
         self.verticalScrollBar().setValue(int(y))
         self._check_page()
+
+    def _user_moved(self, *_) -> None:
+        self._last_nav = time.monotonic()
+
+    # -- reading aloud -------------------------------------------------------------
+    def set_speech(self, sentence: dict, word: dict | None = None) -> None:
+        """Highlight the sentence being read aloud and the word in it ({page: rects})."""
+        self._speech = (sentence, word)
+        self.viewport().update()
+
+    def clear_speech(self) -> None:
+        if self._speech:
+            self._speech = None
+            self.viewport().update()
+
+    def follow_speech(self, rects: dict, force: bool = False) -> None:
+        """Scroll so the first of ``rects`` is in view, unless the user has just scrolled."""
+        if not rects or not self._tops or (not force and time.monotonic() - self._last_nav < FOLLOW_PAUSE):
+            return
+        page = min(rects)
+        if not rects[page] or not 0 <= page < len(self._tops):
+            return
+        r = rects[page][0]
+        y = self._tops[page] + (r[1] - self._clips[page][1]) * self.zoom  # in content pixels
+        top = self.verticalScrollBar().value()
+        h = self.viewport().height()
+        if top + 0.12 * h <= y <= top + 0.8 * h - (r[3] - r[1]) * self.zoom:
+            return
+        self.verticalScrollBar().setValue(int(y - 0.3 * h))
+        self._check_page()
+
+    def _paint_speech(self, p: QPainter, page: int, rect: QRectF) -> None:
+        if not self._speech:
+            return
+        sentence, word = self._speech
+        dark = theme().pages_dark
+        colors = SPEECH_DARK if dark else SPEECH_LIGHT
+        p.save()
+        p.setCompositionMode(
+            QPainter.CompositionMode.CompositionMode_Screen if dark else QPainter.CompositionMode.CompositionMode_Multiply
+        )
+        for r in sentence.get(page, []):
+            p.fillRect(self._to_view(page, rect, r).adjusted(-1, 0, 1, 0), colors[0])
+        for r in (word or {}).get(page, []):
+            p.fillRect(self._to_view(page, rect, r).adjusted(-1, 0, 1, 0), colors[1])
+        p.restore()
 
     def set_zoom(self, zoom: float, keep_fit: bool = False) -> None:
         self.fit_mode = self.fit_mode and keep_fit
@@ -374,6 +440,7 @@ class ReaderView(QAbstractScrollArea):
 
     def flash(self, page: int, rects: list) -> None:
         """Scroll to a snippet's source and highlight it briefly."""
+        self._user_moved()
         self.go_to(page, min((r[1] for r in rects), default=0.0) or 0.001)
         self._flash = (page, rects)
         self.viewport().update()
@@ -398,6 +465,7 @@ class ReaderView(QAbstractScrollArea):
             self.zoom_in() if event.angleDelta().y() > 0 else self.zoom_out()
             event.accept()
         else:
+            self._user_moved()
             super().wheelEvent(event)
 
     # -- painting ------------------------------------------------------------------
@@ -441,6 +509,7 @@ class ReaderView(QAbstractScrollArea):
             p.drawImage(rect, self._image(i))
             self._paint_links(p, i, rect)
             self._paint_marks(p, i, rect)
+            self._paint_speech(p, i, rect)
             for r in line_rects(self._selection.get(i, [])):
                 p.fillRect(self._to_view(i, rect, r), SELECT_COLOR)
             if self._region and self._region[0] == i:
@@ -572,6 +641,10 @@ class ReaderView(QAbstractScrollArea):
                 QToolTip.hideText()
                 self.follow_link(link)
                 return
+            if self.speech_active:
+                if hit := self._hit(event.position()):
+                    self.speechClicked.emit(*hit)
+                return
             marks = self._marks_at(event.position())
             if marks:
                 snippets = [sn for m in marks for sn in m["snippets"]]
@@ -622,6 +695,8 @@ class ReaderView(QAbstractScrollArea):
     def _show_popup(self, pos: QPoint) -> None:
         self._copy_btn.setVisible(bool(self._selection))
         self._note_btn.setVisible(bool(self._selection))
+        self._read_btn.setVisible(bool(self._selection))
+        self._read_on_btn.setVisible(bool(self._selection))
         self._popup.adjustSize()
         vp = self.viewport().rect()
         x = min(max(pos.x() - self._popup.width() // 2, 4), vp.width() - self._popup.width() - 4)
@@ -657,6 +732,15 @@ class ReaderView(QAbstractScrollArea):
         if snippet:
             self.noteChosen.emit(snippet)
         return snippet is not None
+
+    def choose_read(self, onward: bool) -> bool:
+        """Read the selected text aloud (onward: and on from it); False if there is none."""
+        if not self._selection:
+            return False
+        sel = dict(self._selection)
+        self.clear_selection()
+        self.readRequested.emit(sel, onward)
+        return True
 
     def take_selection(self) -> dict | None:
         """The current selection or region as a snippet, clearing it."""

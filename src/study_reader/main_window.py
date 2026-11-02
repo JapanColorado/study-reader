@@ -29,9 +29,11 @@ from .library_view import LibraryView
 from .nav import PAGES, NavRail
 from .notes import NotesPanel
 from .phone_sync_dialog import PhoneSync, PhoneSyncDialog
+from .read_aloud import ReadAloud
 from .reader_view import ReaderView
 from .review import ReviewPanel, VariantMaker
 from .theme import MODES, icon, theme
+from .tts_engines import ENGINES
 from .web_import import WebImportError, normalize_url
 from .web_render import WebImporter
 
@@ -68,6 +70,13 @@ class MainWindow(QMainWindow):
 
         self.reader = ReaderView()
         self.home = HomeView(self.db)
+        self.read_aloud = ReadAloud(self.db, self.reader, self)
+        self.book_view = QWidget()  # the reader, with the read-aloud bar under it
+        col = QVBoxLayout(self.book_view)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(0)
+        col.addWidget(self.reader, 1)
+        col.addWidget(self.read_aloud.bar)
         self.library = LibraryView(self.db)
         self.variants = VariantMaker(self.db, self.worker, self)  # new numbers for reviewed calculation cards
         self.review_all = ReviewPanel(self.db, all_books=True, variants=self.variants)  # every book's cards: the Review page
@@ -77,7 +86,7 @@ class MainWindow(QMainWindow):
         # The pages the navigation rail switches between; "book" is the open book.
         self.pages = {
             "home": self.home, "library": self.library, "review": self.review_all,
-            "cards": self.cards_page, "stats": self.stats_page, "book": self.reader,
+            "cards": self.cards_page, "stats": self.stats_page, "book": self.book_view,
         }
         for w in self.pages.values():
             self.center.addWidget(w)
@@ -135,6 +144,9 @@ class MainWindow(QMainWindow):
         self.reader.quizChosen.connect(self._quiz_on)
         self.reader.noteChosen.connect(lambda sn: self._show_notes(lambda: self.notes.add_note(sn)))
         self.reader.highlightClicked.connect(self._highlight_menu)
+        self.reader.readRequested.connect(self.read_aloud.read_selection)
+        self.chat.listenRequested.connect(lambda mid: self.read_aloud.read_reply(self.chat.transcript, mid))
+        self.read_aloud.activeChanged.connect(self._on_reading)
         self.chat.highlightsChanged.connect(self._refresh_highlights)
         self.notes.notesChanged.connect(self._refresh_highlights)
         self.notes.jumpRequested.connect(self.reader.flash)
@@ -259,10 +271,20 @@ class MainWindow(QMainWindow):
             a.triggered.connect(lambda _=False, new=new: self.reader.choose(new))
             self.reader.addAction(a)
         add_note = action("Add note", "Ctrl+Shift+N", self.reader.choose_note)
+        ra = self.read_aloud
+        self.read_action = action("Read aloud", "", self._toggle_reading, "volume", checkable=True)
+        self.read_action.setToolTip("Read the book aloud from this page, following along on the page (F5 plays and pauses)")
+        bar.addAction(self.read_action)
+        labelled(self.read_action)
+        self.play_action = action("Play or pause reading aloud", "F5", ra.play_pause)
+        self.stop_reading_action = action("Stop reading aloud", "Shift+F5", ra.stop)
+        self.prev_sentence_action = action("Previous sentence", "F4", ra.prev_sentence)
+        self.next_sentence_action = action("Next sentence", "F6", ra.next_sentence)
         self.book_actions = [
             zoom_out, zoom_in, fit, self.crop_action, self.region_action, self.quiz_action,
-            self.finished_action, new_chat, add_note, self.close_action,
+            self.finished_action, new_chat, add_note, self.close_action, self.read_action, self.play_action,
         ]
+        self._on_reading(False)
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -313,6 +335,16 @@ class MainWindow(QMainWindow):
             a.setChecked(self.chat.default_model() == value)
             a.triggered.connect(lambda _=False, v=value: self.chat.set_default_model(v))
             group.addAction(a)
+        voice_menu = menu.addMenu(icon("volume"), "Read-aloud voice")
+        group = QActionGroup(self)
+        self.engine_actions = {}
+        for name, label in ENGINES:
+            a = voice_menu.addAction(label)
+            a.setCheckable(True)
+            a.setChecked(self.read_aloud.engine_name == name)
+            a.triggered.connect(lambda _=False, n=name: self.read_aloud.set_engine(n))
+            group.addAction(a)
+            self.engine_actions[name] = a
         menu.addSeparator()
         menu.addAction(icon("import"), "Migrate from Anki…").triggered.connect(self.migrate_from_anki)
         review_menu = menu.addMenu(icon("cards"), "Review settings")
@@ -378,7 +410,7 @@ class MainWindow(QMainWindow):
     @property
     def reading(self) -> bool:
         """The open book is on screen (not another page)."""
-        return self.doc is not None and self.center.currentWidget() is self.reader
+        return self.doc is not None and self.center.currentWidget() is self.book_view
 
     def page(self) -> str:
         """The page on screen: a name from self.pages."""
@@ -390,8 +422,9 @@ class MainWindow(QMainWindow):
         if name == "book" and self.doc is None:
             name = "home"
         current = self.center.currentWidget()
-        if current is self.reader and name != "book":
+        if current is self.book_view and name != "book":
             self._save_position()
+            self.read_aloud.pause()  # its controls are on the book page; F5 there resumes
             if self.region_action.isChecked():
                 self.region_action.trigger()
         if current is self.cards_page and self.browser is not None and name != "cards":
@@ -434,6 +467,7 @@ class MainWindow(QMainWindow):
         self._save_position()
         if self.region_action.isChecked():
             self.region_action.trigger()
+        self.read_aloud.set_document(None)
         self.reader.set_document(None)
         if self.doc:
             self.doc.close()
@@ -586,6 +620,7 @@ class MainWindow(QMainWindow):
             self.reader.set_document(doc, book["last_page"], book["zoom"], crop=bool(book["crop_margins"]))
         finally:
             QApplication.restoreOverrideCursor()
+        self.read_aloud.set_document(doc)
         self._on_page_changed(self.reader.current_page())
         self.chat.set_book(self.book_id)
         self.calc.set_book(self.book_id)
@@ -961,10 +996,27 @@ class MainWindow(QMainWindow):
         self.page_spin.blockSignals(False)
 
     def _save_position(self) -> None:
-        if self.book_id is not None and self.center.currentWidget() is self.reader:
+        if self.book_id is not None and self.center.currentWidget() is self.book_view:
             self.db.update_book(self.book_id, last_page=self.reader.current_page(), zoom=self.reader.saved_zoom())
 
+    # -- reading aloud ----------------------------------------------------------------
+    def _toggle_reading(self, on: bool) -> None:
+        if on:
+            self.read_aloud.start_from_view()
+            if not self.read_aloud.active:
+                self.read_action.setChecked(False)
+        else:
+            self.read_aloud.stop()
+
+    def _on_reading(self, on: bool) -> None:
+        self.read_action.blockSignals(True)
+        self.read_action.setChecked(on)
+        self.read_action.blockSignals(False)
+        for a in (self.stop_reading_action, self.prev_sentence_action, self.next_sentence_action):
+            a.setEnabled(on)
+
     def closeEvent(self, event) -> None:
+        self.read_aloud.shutdown()
         self._save_position()
         if self.browser is not None:
             self.browser.save_note()

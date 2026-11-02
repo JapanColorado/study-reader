@@ -21,6 +21,11 @@ fsrs = ">=6.3, <7"
 torch = { version = ">=2.5", index = "https://download.pytorch.org/whl/cpu" }
 pandas = ">=2.2"
 tqdm = "*"
+# Read aloud: Kokoro neural TTS (on the CPU torch above), misaki's G2P, and spaCy's
+# English model, so misaki never tries to pip-install it at runtime.
+kokoro = ">=0.9.4, <0.10"
+misaki = { version = ">=0.9.4", extras = ["en"] }
+en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
 
 [activation.env]
 PYTHONPATH = "$PIXI_PROJECT_ROOT/src"

@@ -1,0 +1,614 @@
+"""Speech engines for reading aloud: Kokoro (a neural voice, run on a worker thread and
+played through a QAudioSink, with word timings) and the system's speech-dispatcher
+through QTextToSpeech (sentence by sentence, no word timings)."""
+
+from __future__ import annotations
+
+import importlib.util
+import math
+import os
+import threading
+from dataclasses import dataclass, field
+
+import numpy as np
+from PySide6.QtCore import QIODevice, QObject, QTimer, Signal
+
+RATE = 24000  # Kokoro's sample rate
+REPO = "hexgrad/Kokoro-82M"
+LATENCY = 0.08  # s between audio handed to the device and heard
+BUFFER = 3.0  # s of speech ready before playing starts (or resumes after running dry)
+TICK_MS = 30
+
+ENGINES = [("kokoro", "Kokoro (natural voice)"), ("speechd", "System voice (speech-dispatcher)")]
+KOKORO_VOICES = [
+    ("af_heart", "Heart · US"), ("af_bella", "Bella · US"), ("af_nicole", "Nicole · US"),
+    ("af_sarah", "Sarah · US"), ("am_michael", "Michael · US"), ("am_fenrir", "Fenrir · US"),
+    ("am_puck", "Puck · US"), ("bf_emma", "Emma · UK"), ("bf_isabella", "Isabella · UK"),
+    ("bm_george", "George · UK"), ("bm_fable", "Fable · UK"),
+]
+MIN_SPEED, MAX_SPEED = 0.5, 2.5
+
+
+class Engine(QObject):
+    """Speaks queued utterances (by uid) in order and reports what is audible."""
+
+    started = Signal(int)  # uid now audible
+    word = Signal(int, int)  # uid, char offset (in its text) of the word now audible
+    finished = Signal(int)  # uid fully played
+    failed = Signal(str)
+    status = Signal(str)  # e.g. "Loading Kokoro…"; "" when ready
+    lookahead = 0  # utterances to queue beyond the one playing
+    lookahead_chars = 0  # ...or more, until this much text is queued
+    word_timing = False
+    name = ""
+
+    def voices(self) -> list[tuple[str, str]]:
+        return []
+
+    def warm(self) -> None:
+        """Get ready to speak (load models) before the first sentence is asked for."""
+
+    def enqueue(self, uid: int, text: str, pause: float) -> None: ...
+    def clear(self, keep_current: bool = False) -> None: ...
+    def pause(self) -> None: ...
+    def resume(self) -> None: ...
+    def is_paused(self) -> bool:
+        return False
+    def set_speed(self, speed: float) -> None: ...
+    def set_voice(self, voice: str) -> None: ...
+    def shutdown(self) -> None: ...
+
+
+def kokoro_missing() -> str | None:
+    """Why Kokoro can't run, without importing it (that takes seconds)."""
+    for mod in ("kokoro", "misaki", "torch", "en_core_web_sm"):
+        if importlib.util.find_spec(mod) is None:
+            return f"the Python package {mod!r} isn't installed"
+    return None
+
+
+def make_engine(name: str, parent: QObject | None = None) -> Engine:
+    return KokoroEngine(parent) if name == "kokoro" else SpeechdEngine(parent)
+
+
+# -- PCM timing ---------------------------------------------------------------------------
+
+@dataclass
+class _Segment:
+    uid: int
+    data: bytes
+    words: list[tuple[float, float, int, int]]  # (start s, end s, char start, char end)
+    start: int | None = None  # byte offset in the stream where it began
+    pos: int = 0  # bytes handed out
+    announced: bool = False
+    char: int | None = None
+
+
+@dataclass
+class PcmQueue:
+    """Audio segments played back to back, padded with silence, and which one (and which
+    word in it) is audible once a given number of bytes has been played."""
+
+    bytes_per_second: int = RATE * 2
+    frame: int = 2  # bytes per frame, so silence never splits one
+    segs: list[_Segment] = field(default_factory=list)
+    total: int = 0  # bytes handed out since the last reset
+    hold: bool = True  # play silence until enough is ready (see settle)
+
+    def append(self, uid: int, data: bytes, words: list[tuple[float, float, int, int]]) -> None:
+        self.segs.append(_Segment(uid, data, words))
+
+    def read(self, n: int) -> bytes:
+        n -= n % self.frame
+        out = bytearray()
+        for s in [] if self.hold else self.segs:
+            if len(out) >= n:
+                break
+            if s.pos >= len(s.data):
+                if s.start is None:
+                    s.start = self.total + len(out)
+                continue
+            if s.start is None:
+                s.start = self.total + len(out)
+            chunk = s.data[s.pos:s.pos + n - len(out)]
+            s.pos += len(chunk)
+            out += chunk
+        out += bytes(n - len(out))
+        self.total += n
+        return bytes(out)
+
+    def pending(self) -> bool:
+        return any(s.pos < len(s.data) for s in self.segs)
+
+    def buffered(self) -> float:
+        """Seconds of audio queued and not yet handed out."""
+        return sum(len(s.data) - s.pos for s in self.segs) / self.bytes_per_second
+
+    def settle(self, waiting: int, buffer: float = BUFFER) -> None:
+        """Hold playback while less than ``buffer`` s is ready and ``waiting`` more
+        utterances are still being made, so a slow stretch is one pause, not many."""
+        ready = self.buffered()
+        if self.hold:
+            if ready > 0 and (ready >= buffer or not waiting):
+                self.hold = False
+        elif ready == 0 and waiting:
+            self.hold = True
+
+    def events(self, played: int) -> list[tuple]:
+        """("started", uid), ("word", uid, char) and ("finished", uid), in order, up to
+        ``played`` bytes into the stream."""
+        out: list[tuple] = []
+        while self.segs and self.segs[0].start is not None and self.segs[0].start <= played:
+            s = self.segs[0]
+            if not s.announced:
+                s.announced = True
+                out.append(("started", s.uid))
+            if s.pos >= len(s.data) and played >= s.start + len(s.data):
+                out.append(("finished", s.uid))
+                self.segs.pop(0)
+                continue
+            t = (played - s.start) / self.bytes_per_second
+            char = None
+            for t0, _, c0, _ in s.words:
+                if t0 > t:
+                    break
+                char = c0
+            if char is not None and char != s.char:
+                s.char = char
+                out.append(("word", s.uid, char))
+            break
+        return out
+
+    def current(self) -> _Segment | None:
+        return next((s for s in self.segs if s.start is not None), None)
+
+    def drop_unstarted(self) -> None:
+        self.segs = [s for s in self.segs if s.start is not None]
+
+    def reset(self) -> None:
+        self.segs, self.total, self.hold = [], 0, True
+
+
+def to_format(samples: np.ndarray, rate: int, channels: int, kind: str) -> bytes:
+    """Mono float samples at RATE -> bytes for a device (kind "int16" or "float")."""
+    if rate != RATE and len(samples):
+        n = int(round(len(samples) * rate / RATE))
+        samples = np.interp(np.linspace(0, len(samples) - 1, n), np.arange(len(samples)), samples)
+    samples = np.clip(samples, -1.0, 1.0)
+    if channels > 1:
+        samples = np.repeat(samples[:, None], channels, axis=1).reshape(-1)
+    if kind == "float":
+        return samples.astype("<f4").tobytes()
+    return (samples * 32767).astype("<i2").tobytes()
+
+
+def synthesize(pipeline, text: str, voice: str, speed: float, pause: float) -> tuple[np.ndarray, list]:
+    """Kokoro's audio for one utterance (float samples at RATE, with ``pause`` s of
+    silence after) and its word timings against ``text``."""
+    from .speech_text import align_tokens
+
+    chunks, toks, t0 = [], [], 0.0
+    for result in pipeline(text, voice=voice, speed=speed, split_pattern=None):
+        audio = result.audio
+        if audio is None:
+            continue
+        audio = np.asarray(audio.detach().cpu().numpy() if hasattr(audio, "detach") else audio, dtype=np.float32)
+        for t in result.tokens or []:
+            ok = t.start_ts is not None and t.end_ts is not None
+            toks.append((t.text, t0 + t.start_ts if ok else None, t0 + t.end_ts if ok else None))
+        chunks.append(audio)
+        t0 += len(audio) / RATE
+    chunks.append(np.zeros(int(pause * RATE), dtype=np.float32))
+    return np.concatenate(chunks), align_tokens(text, toks)
+
+
+# -- Kokoro ---------------------------------------------------------------------------------
+
+class _PcmDevice(QIODevice):
+    """A never-ending sequential device the sink pulls audio from."""
+
+    def __init__(self, pcm: PcmQueue, parent=None):
+        super().__init__(parent)
+        self.pcm = pcm
+
+    def readData(self, maxlen: int) -> bytes:
+        return self.pcm.read(min(maxlen, 1 << 16))
+
+    def writeData(self, data) -> int:
+        return 0
+
+    def bytesAvailable(self) -> int:
+        return (1 << 16) + super().bytesAvailable()
+
+    def isSequential(self) -> bool:
+        return True
+
+
+def _fetch(name: str, note: str, put) -> str:
+    from huggingface_hub import hf_hub_download
+
+    try:
+        return hf_hub_download(REPO, name, local_files_only=True)
+    except Exception:  # noqa: BLE001 - not cached yet
+        put(("status", note))
+        return hf_hub_download(REPO, name)
+
+
+def kokoro_worker(jobs, results, gen, voice: str) -> None:
+    """Kokoro's own process: loads the model, then makes each job's audio, skipping jobs
+    from before the app's latest clear() (``gen`` is shared with it)."""
+    import multiprocessing
+
+    put = results.put
+    parent = multiprocessing.parent_process()
+    if parent is not None:  # don't outlive the app if it dies without shutting this down
+        threading.Thread(target=lambda: (parent.join(), os._exit(0)), daemon=True).start()
+    try:
+        os.nice(5)  # the reader stays responsive while this works flat out
+    except OSError:
+        pass
+    try:
+        put(("status", "Loading Kokoro…"))
+        from kokoro import KModel, KPipeline
+
+        config = _fetch("config.json", "Downloading Kokoro…", put)
+        weights = _fetch("kokoro-v1_0.pth", "Downloading Kokoro…", put)
+        model = KModel(repo_id=REPO, config=config, model=weights).eval()
+        pipelines: dict[str, object] = {}
+        packs: dict[str, str] = {}
+
+        def pipeline(lang: str):
+            if lang not in pipelines:
+                pipelines[lang] = KPipeline(lang_code=lang, repo_id=REPO, model=model)
+            return pipelines[lang]
+
+        def pack(v: str) -> str:
+            if v not in packs:
+                packs[v] = _fetch(f"voices/{v}.pt", f"Downloading the {v} voice…", put)
+            return packs[v]
+
+        synthesize(pipeline(voice[0]), "Ready.", pack(voice), 1.0, 0.0)  # the first run is slow
+        put(("status", ""))
+    except Exception as e:  # noqa: BLE001 - any failure means falling back
+        put(("failed", f"Kokoro couldn't start: {e}"))
+        return
+    while (job := jobs.get()) is not None:
+        g, uid, text, voice, speed, pause = job
+        if g != gen.value:
+            continue
+        silence = np.zeros(int(pause * RATE), dtype=np.float32)
+        try:
+            new = voice not in packs
+            path = pack(voice)
+            if new:
+                put(("status", ""))
+            samples, words = synthesize(pipeline(voice[0]), text, path, speed, pause) if text.strip() else (silence, [])
+        except Exception as e:  # noqa: BLE001 - skip the sentence, keep reading
+            put(("status", f"Couldn't read a sentence: {e}"))
+            samples, words = silence, []
+        put(("ready", g, uid, samples, words))
+
+
+class _Bridge(QObject):
+    """Carries the Kokoro process's messages to the GUI thread (queued connections)."""
+
+    ready = Signal(int, int, object, object)  # generation, uid, samples, words
+    status = Signal(str)
+    failed = Signal(str)
+
+
+class KokoroEngine(Engine):
+    lookahead = 1
+    lookahead_chars = 600  # about 40 s of speech
+    word_timing = True
+    name = "kokoro"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.voice, self.speed = "af_heart", 1.0
+        self._gen = 0
+        self._proc = None  # the Kokoro process, with its job and result queues and shared generation
+        self._jobs = self._results = self._shared_gen = None
+        self._bridge = _Bridge(self)
+        self._bridge.ready.connect(self._on_ready)
+        self._bridge.status.connect(self.status)
+        self._bridge.failed.connect(self._fail)
+        self._sink = None
+        self._dev: _PcmDevice | None = None
+        self._pcm = PcmQueue()
+        self._fmt = (RATE, 1, "int16")
+        self._paused = False
+        self._dead = False
+        self._closing = False
+        self._waiting = 0  # utterances enqueued and not yet made
+        self._timer = QTimer(self, interval=TICK_MS)
+        self._timer.timeout.connect(self._tick)
+        self._watch = QTimer(self, interval=1000)  # notices the process dying
+        self._watch.timeout.connect(self._check_alive)
+
+    def voices(self) -> list[tuple[str, str]]:
+        return KOKORO_VOICES
+
+    # -- the process ------------------------------------------------------------------
+    def _start(self) -> None:
+        if self._proc is not None:
+            return
+        import multiprocessing
+
+        ctx = multiprocessing.get_context("spawn")  # never fork a process running Qt
+        self._jobs, self._results, self._shared_gen = ctx.Queue(), ctx.Queue(), ctx.Value("i", self._gen)
+        self._proc = ctx.Process(
+            target=kokoro_worker, args=(self._jobs, self._results, self._shared_gen, self.voice),
+            daemon=True, name="kokoro",
+        )
+        self._proc.start()
+        threading.Thread(target=self._listen, args=(self._results,), daemon=True, name="kokoro-results").start()
+        self._watch.start()
+
+    def _listen(self, results) -> None:
+        while True:
+            try:
+                msg = results.get()
+            except (EOFError, OSError, ValueError):
+                return
+            if msg is None:
+                return
+            if msg[0] == "ready":
+                self._bridge.ready.emit(*msg[1:])
+            elif msg[0] == "status":
+                self._bridge.status.emit(msg[1])
+            else:
+                self._bridge.failed.emit(msg[1])
+
+    def _check_alive(self) -> None:
+        if self._proc is not None and not self._proc.is_alive() and not self._closing and not self._dead:
+            self._fail(f"Kokoro couldn't start: its process stopped (exit code {self._proc.exitcode})")
+
+    def _bump(self) -> None:
+        self._gen += 1
+        if self._shared_gen is not None:
+            self._shared_gen.value = self._gen
+
+    # -- the GUI side ---------------------------------------------------------------
+    def _fail(self, message: str) -> None:
+        if "couldn't start" in message:
+            if self._dead:
+                return
+            self._dead = True
+            self._watch.stop()
+        self.failed.emit(message)
+
+    def _ensure_sink(self) -> bool:
+        if self._sink is not None:
+            return True
+        from PySide6.QtMultimedia import QAudio, QAudioFormat, QAudioSink, QMediaDevices
+
+        device = QMediaDevices.defaultAudioOutput()
+        if device.isNull():
+            self._fail("Kokoro couldn't start: there is no audio output device")
+            return False
+        fmt = QAudioFormat()
+        fmt.setSampleRate(RATE)
+        fmt.setChannelCount(1)
+        fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
+        if not device.isFormatSupported(fmt):
+            fmt = device.preferredFormat()
+        kinds = {QAudioFormat.SampleFormat.Int16: "int16", QAudioFormat.SampleFormat.Float: "float"}
+        if fmt.sampleFormat() not in kinds:
+            fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
+        self._fmt = (fmt.sampleRate(), fmt.channelCount(), kinds.get(fmt.sampleFormat(), "int16"))
+        width = 4 if self._fmt[2] == "float" else 2
+        self._pcm = PcmQueue(fmt.sampleRate() * fmt.channelCount() * width, fmt.channelCount() * width)
+        self._sink = QAudioSink(device, fmt, self)
+        self._sink.setBufferSize(int(self._pcm.bytes_per_second * 0.1))
+        self._sink.stateChanged.connect(self._sink_state)
+        self._audio_error = QAudio.Error.NoError
+        self._dev = _PcmDevice(self._pcm, self)
+        self._dev.open(QIODevice.OpenModeFlag.ReadOnly)
+        self._sink.start(self._dev)
+        self._timer.start()
+        return True
+
+    def _sink_state(self, _state) -> None:
+        from PySide6.QtMultimedia import QAudio
+
+        err = self._sink.error()
+        if err in (QAudio.Error.OpenError, QAudio.Error.FatalError):
+            self._fail(f"Kokoro couldn't start: the audio device failed ({err.name})")
+
+    def _played(self) -> int:
+        b = self._pcm.bytes_per_second
+        played = self._sink.processedUSecs() * b // 1_000_000 - int(LATENCY * b)
+        return max(played, -1)
+
+    def _tick(self) -> None:
+        if self._sink is None or self._paused:
+            return
+        self._pcm.settle(self._waiting)
+        for ev in self._pcm.events(self._played()):
+            getattr(self, ev[0]).emit(*ev[1:])
+
+    def warm(self) -> None:
+        if not self._dead:
+            self._start()
+
+    def enqueue(self, uid: int, text: str, pause: float) -> None:
+        if self._dead:
+            return
+        self._start()
+        self._waiting += 1
+        self._jobs.put((self._gen, uid, text, self.voice, self.speed, pause))
+
+    def _on_ready(self, gen: int, uid: int, samples, words) -> None:
+        if gen != self._gen or not self._ensure_sink():
+            return
+        self._waiting = max(self._waiting - 1, 0)
+        rate, channels, kind = self._fmt
+        self._pcm.append(uid, to_format(samples, rate, channels, kind), words)
+        self._pcm.settle(self._waiting)
+
+    def clear(self, keep_current: bool = False) -> None:
+        self._bump()
+        self._waiting = 0
+        if self._sink is None:
+            return
+        if keep_current:
+            self._pcm.drop_unstarted()
+            return
+        self._sink.stop()
+        self._pcm.reset()
+        if not self._dev.isOpen():
+            self._dev.open(QIODevice.OpenModeFlag.ReadOnly)
+        self._sink.start(self._dev)
+        if self._paused:
+            self._sink.suspend()
+
+    def pause(self) -> None:
+        self._paused = True
+        if self._sink is not None:
+            self._sink.suspend()
+
+    def resume(self) -> None:
+        self._paused = False
+        if self._sink is not None:
+            self._sink.resume()
+
+    def is_paused(self) -> bool:
+        return self._paused
+
+    def set_speed(self, speed: float) -> None:
+        self.speed = speed
+
+    def set_voice(self, voice: str) -> None:
+        self.voice = voice
+
+    def shutdown(self) -> None:
+        self._closing = True
+        self._bump()
+        self._timer.stop()
+        self._watch.stop()
+        if self._sink is not None:
+            self._sink.stop()
+        if self._proc is not None:
+            try:
+                self._jobs.put(None)
+                self._proc.join(0.3)
+            finally:
+                if self._proc.is_alive():
+                    self._proc.kill()  # mid-sentence: no need to wait for it
+                    self._proc.join(2)
+                self._results.put(None)  # ends _listen
+                for q in (self._jobs, self._results):
+                    q.cancel_join_thread()
+
+
+# -- speech-dispatcher -------------------------------------------------------------------------
+
+def speechd_rate(speed: float) -> float:
+    """A speed factor -> QTextToSpeech's rate (-1 to 1, 0 is normal)."""
+    return max(-1.0, min(1.0, math.log(speed, MAX_SPEED)))
+
+
+class SpeechdEngine(Engine):
+    name = "speechd"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from PySide6.QtTextToSpeech import QTextToSpeech
+
+        self._queue: list[tuple[int, str]] = []
+        self._uid: int | None = None
+        self._stopping = False
+        self._paused = False
+        self._voice = ""
+        self.tts = None
+        if "speechd" not in QTextToSpeech.availableEngines():
+            QTimer.singleShot(0, lambda: self.failed.emit("speech-dispatcher isn't available"))
+            return
+        self.tts = QTextToSpeech("speechd", self)
+        self.tts.stateChanged.connect(self._state)
+
+    def voices(self) -> list[tuple[str, str]]:
+        if self.tts is None:
+            return []
+        return [(v.name(), v.name()) for v in self.tts.availableVoices()]
+
+    def _state(self, state) -> None:
+        from PySide6.QtTextToSpeech import QTextToSpeech
+
+        if state == QTextToSpeech.State.Error:
+            self.failed.emit(f"speech-dispatcher failed: {self.tts.errorString()}")
+        elif state == QTextToSpeech.State.Speaking and self._uid is not None:
+            self.started.emit(self._uid)
+        elif state == QTextToSpeech.State.Ready:
+            if self._stopping:
+                self._stopping = False
+            elif self._uid is not None:
+                uid, self._uid = self._uid, None
+                self.finished.emit(uid)
+            self._next()
+
+    def _next(self) -> None:
+        from PySide6.QtTextToSpeech import QTextToSpeech
+
+        if self.tts is None or self._uid is not None or not self._queue or self._paused:
+            return
+        if self.tts.state() not in (QTextToSpeech.State.Ready,):
+            return
+        self._uid, text = self._queue.pop(0)
+        if text.strip():
+            self.tts.say(text)
+        else:
+            uid, self._uid = self._uid, None
+            self.started.emit(uid)
+            self.finished.emit(uid)
+            self._next()
+
+    def enqueue(self, uid: int, text: str, pause: float) -> None:
+        self._queue.append((uid, text))
+        self._next()
+
+    def clear(self, keep_current: bool = False) -> None:
+        self._queue = []
+        if keep_current or self.tts is None:
+            return
+        if self._uid is not None:
+            self._uid = None
+            self._stopping = True
+            from PySide6.QtTextToSpeech import QTextToSpeech
+
+            self.tts.stop(QTextToSpeech.BoundaryHint.Immediate)
+
+    def pause(self) -> None:
+        self._paused = True
+        if self.tts is not None and self._uid is not None:
+            from PySide6.QtTextToSpeech import QTextToSpeech
+
+            self.tts.pause(QTextToSpeech.BoundaryHint.Immediate)
+
+    def resume(self) -> None:
+        self._paused = False
+        if self.tts is None:
+            return
+        if self._uid is not None:
+            self.tts.resume()
+        else:
+            self._next()
+
+    def is_paused(self) -> bool:
+        return self._paused
+
+    def set_speed(self, speed: float) -> None:
+        if self.tts is not None:
+            self.tts.setRate(speechd_rate(speed))
+
+    def set_voice(self, voice: str) -> None:
+        if self.tts is None:
+            return
+        for v in self.tts.availableVoices():
+            if v.name() == voice:
+                self.tts.setVoice(v)
+                return
+
+    def shutdown(self) -> None:
+        self.clear()

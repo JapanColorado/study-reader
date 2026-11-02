@@ -42,6 +42,7 @@ class _Page(QWebEnginePage):
     regenerate = Signal(int)
     page = Signal(int)
     quiz = Signal(int)
+    speak = Signal(int)
 
     def acceptNavigationRequest(self, url: QUrl, nav_type, is_main_frame: bool) -> bool:
         if not is_main_frame:  # a visualization's iframe: only its own srcdoc
@@ -51,7 +52,7 @@ class _Page(QWebEnginePage):
             return False
         actions = {
             "jump": self.jump, "viz": self.openViz, "edit": self.edit, "regen": self.regenerate, "page": self.page,
-            "quiz": self.quiz,
+            "quiz": self.quiz, "speak": self.speak,
         }
         if url.scheme() in actions:
             if (n := _url_id(url)) is not None:
@@ -97,6 +98,7 @@ class TranscriptView(QWebEngineView):
     editRequested = Signal(int)  # message id
     regenerateRequested = Signal(int)  # message id
     quizRequested = Signal(int)  # message id: quiz me on this reply
+    listenRequested = Signal(int)  # message id: read this reply aloud
     quizAnswered = Signal(int, int, int, str)  # message id, quiz, question, response JSON
     quizRetake = Signal(int, int)  # message id, quiz
     quizRegrade = Signal(int, int, int)  # message id, quiz, question (its grading failed)
@@ -111,6 +113,7 @@ class TranscriptView(QWebEngineView):
         page.edit.connect(self.editRequested)
         page.regenerate.connect(self.regenerateRequested)
         page.quiz.connect(self.quizRequested)
+        page.speak.connect(self.listenRequested)
         page.openViz.connect(self._open_viz)
         self.setPage(page)
         self.channel = QWebChannel(page)
@@ -173,6 +176,21 @@ class TranscriptView(QWebEngineView):
 
         # As JSON: large objects don't survive the conversion to Python.
         self.page().runJavaScript(f"JSON.stringify(VIZ[{viz_id}] ? vizDoc({viz_id}, true) : null)", 0, show)
+
+    def speech_blocks(self, message_id: int, callback) -> None:
+        """A reply's paragraphs, list items and headings as [{n, text}] (math as TeX), for
+        reading aloud; ``n`` is what speech_highlight() takes."""
+        def got(result) -> None:
+            callback(json.loads(result) if isinstance(result, str) and result else [])
+
+        if self._ready:
+            self.page().runJavaScript(f"JSON.stringify(speechBlocks({message_id}))", 0, got)
+        else:
+            callback([])
+
+    def speech_highlight(self, message_id: int, block: int) -> None:
+        """Mark the block of a reply being read aloud (-1: none)."""
+        self._run(f"speakHighlight({message_id}, {block})", queue=False)
 
     def _run(self, js: str, queue: bool = True) -> None:
         if self._ready:

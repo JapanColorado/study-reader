@@ -106,3 +106,11 @@ def chat_panel(tmp_path, monkeypatch):
     panel = ChatPanel(db, worker)
     panel.set_book(book_id)
     return panel, worker, db, book_id
+
+
+@pytest.fixture(autouse=True)
+def _no_kokoro(monkeypatch):
+    """Opening a book warms up read-aloud's Kokoro voice; tests never load it."""
+    from study_reader import tts_engines
+
+    monkeypatch.setattr(tts_engines.KokoroEngine, "warm", lambda self: None)

@@ -49,6 +49,7 @@ class ChatPanel(QWidget):
     pageRequested = Signal(int)
     highlightsChanged = Signal()  # a chat, or the composer, gained or lost snippets
     cardsChanged = Signal()  # review cards were added, answered or put in or out of review
+    listenRequested = Signal(int)  # message id: read this reply aloud
 
     def __init__(self, db: Database, worker: ChatWorker, variants=None, parent=None):
         super().__init__(parent)
@@ -115,6 +116,7 @@ class ChatPanel(QWidget):
         self.transcript.quizReviewToggled.connect(self._on_quiz_review_toggled)
         self.transcript.quizReviseRequested.connect(self.revise_quiz)
         self.transcript.quizRequested.connect(self.quiz_on_reply)
+        self.transcript.listenRequested.connect(self.listenRequested)
         self.status = QLabel()
         self.status.setWordWrap(True)
         self.status.setProperty("role", "hint")

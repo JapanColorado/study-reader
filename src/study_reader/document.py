@@ -171,7 +171,7 @@ class Document:
         if name:
             # PyMuPDF leaves a named destination's point in PDF (bottom-up) coordinates.
             target, x, y = self.doc.resolve_link("#" + name)
-            if self._web_snapshot:
+            if self.web_snapshot:
                 # Chromium writes named destinations as if the page had no margins.
                 x, y = x + WEB_MARGINS[0], y + WEB_MARGINS[1]
         elif ln["kind"] == pymupdf.LINK_GOTO:
@@ -234,17 +234,22 @@ class Document:
         return self._targets[link]
 
     @property
-    def _web_snapshot(self) -> bool:
+    def web_snapshot(self) -> bool:
+        """A web page printed by web_render."""
         return (self.doc.metadata or {}).get("creator") == "Study Reader"
 
-    def _is_heading(self, index: int, rect: Rect) -> bool:
+    def body_size(self, index: int) -> float:
+        """The page's most common font size."""
         if index not in self._body_size:
             sizes: Counter[float] = Counter()
             for ln in self._lines(index):
                 for s in ln.spans:
                     sizes[round(s["size"], 1)] += len(s["text"])
             self._body_size[index] = sizes.most_common(1)[0][0] if sizes else 0
-        body = self._body_size[index]
+        return self._body_size[index]
+
+    def _is_heading(self, index: int, rect: Rect) -> bool:
+        body = self.body_size(index)
         inside = [s["size"] for ln in self._lines(index) for s in ln.spans if _overlaps(tuple(s["bbox"]), rect)]
         return bool(inside) and max(inside) > 1.15 * body
 

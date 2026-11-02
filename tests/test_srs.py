@@ -407,7 +407,7 @@ def test_main_window_review_panel(pdf_path, tmp_path, monkeypatch):
     assert win.center.currentWidget() is win.review_all and win.book_id == book_id
     assert not win.toolbar.isVisible() and not win.right.isVisible() and win.nav.book.isVisible()
     win._review_chat(book_id, chat)
-    assert win.center.currentWidget() is win.reader and win.chat.chat_id == chat
+    assert win.center.currentWidget() is win.book_view and win.chat.chat_id == chat
     assert win.toolbar.isVisible() and win.right.isVisible()
 
     win.library.reviewBookRequested.emit(book_id)  # the Library's Review button

@@ -384,7 +384,7 @@ def test_transcript_navigation_routes_links_and_confines_visualizations(monkeypa
     emitted = []
     page = SimpleNamespace(**{
         name: SimpleNamespace(emit=lambda n, name=name: emitted.append((name, n)))
-        for name in ("jump", "openViz", "edit", "regenerate", "page", "quiz")
+        for name in ("jump", "openViz", "edit", "regenerate", "page", "quiz", "speak")
     })
     nav = tv._Page.acceptNavigationRequest
     Nav = QWebEnginePage.NavigationType
@@ -396,13 +396,16 @@ def test_transcript_navigation_routes_links_and_confines_visualizations(monkeypa
     assert not nav(page, QUrl("regen://message/4"), clicked, True)
     assert not nav(page, QUrl("page://go/41"), clicked, True)
     assert not nav(page, QUrl("quiz://message/5"), clicked, True)
-    assert emitted == [("jump", 7), ("openViz", 2), ("edit", 3), ("regenerate", 4), ("page", 41), ("quiz", 5)]
+    assert not nav(page, QUrl("speak://message/6"), clicked, True)
+    assert emitted == [
+        ("jump", 7), ("openViz", 2), ("edit", 3), ("regenerate", 4), ("page", 41), ("quiz", 5), ("speak", 6),
+    ]
     # Inside a visualization's frame: its srcdoc loads, nothing else navigates or reaches the app.
     assert nav(page, QUrl("about:srcdoc"), scripted, False)
     assert not nav(page, QUrl("viz://open/0"), clicked, False)
     assert not nav(page, QUrl("https://example.com/leak"), scripted, False)
     assert not nav(page, QUrl("https://example.com/doc"), clicked, False)
-    assert len(emitted) == 6 and opened == ["https://example.com/doc"]
+    assert len(emitted) == 7 and opened == ["https://example.com/doc"]
 
 
 def test_visualization_window_navigation_toggles_full_screen_only_from_its_toolbar(monkeypatch):
