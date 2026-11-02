@@ -92,12 +92,33 @@ class MainActivity : ComponentActivity() {
     private var syncing = mutableStateOf(false)
     private var screen = mutableStateOf("review")
 
-    private fun dark() = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+    private fun systemDark() = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+    private val darkState = mutableStateOf(false)
+    private fun dark() = darkState.value
+
+    /** The page's colors follow the system's light or dark mode (the activity isn't recreated for it). */
+    private fun applyTheme() {
+        val view = webView ?: return
+        view.setBackgroundColor(android.graphics.Color.parseColor((if (dark()) DARK else LIGHT)["surface"]))
+        if (!pageReady) return
+        val colors = buildJsonObject { (if (dark()) DARK else LIGHT).forEach { (k, v) -> put(k, v) } }
+        view.evaluateJavascript("setTheme($colors, ${dark()})", null)
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (systemDark() != darkState.value) {
+            darkState.value = systemDark()
+            enableEdgeToEdge()  // status bar icons for the new mode
+            applyTheme()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         store = Store.get(this)
+        darkState.value = systemDark()
         store.worker.execute {
             controller = ReviewController(store.sql, js = ::runJs, onChanged = { updateStatus() })
         }
@@ -212,8 +233,7 @@ class MainActivity : ComponentActivity() {
                 override fun onPageFinished(view: WebView, url: String?) {
                     android.util.Log.d("StudyReview", "page loaded: $url")
                     pageReady = true
-                    val colors = buildJsonObject { (if (dark()) DARK else LIGHT).forEach { (k, v) -> put(k, v) } }
-                    view.evaluateJavascript("setTheme($colors, ${dark()})", null)
+                    applyTheme()
                     view.evaluateJavascript("setMedia(${JsonPrimitive("https://appassets.androidplatform.net/media/")})", null)
                     queued.forEach { view.evaluateJavascript(it, null) }
                     queued.clear()
