@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <link rel="stylesheet" href="katex/katex.min.css">
+<link rel="stylesheet" href="app.css">
 <link rel="stylesheet" href="quiz.css">
 <script src="katex/katex.min.js"></script>
 <script src="markdown-it.min.js"></script>
@@ -10,100 +11,82 @@
 <script src="mathlive/mathlive.min.js"></script>
 <script src="mathfield.js"></script>
 <script src="quiz.js"></script>
+<script src="progress.js"></script>
 <script src="confetti.js"></script>
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 <style>
-  /* Fallbacks; the app sets these from theme.py. */
-  :root { --surface:#fbfaf8; --raised:#ffffff; --fg:#1f1e1c; --muted:#6b6862; --faint:#a19d95; --border:#dedad2;
-          --hover:#ebe8e1; --accent:#b8562f; --accent-fg:#ffffff; --accent-soft:#f4e2d8; --code:#f1eee8; --scroll:#cfcac1;
-          --user:#efece6; --error:#c0392b; --success:#3a8f5c; --warning:#b8860b; }
-  html, body { margin:0; background:var(--surface); color:var(--fg); font:14.5px/1.6 system-ui, sans-serif; }
-  ::selection { background:var(--accent-soft); }
-  ::-webkit-scrollbar { width:11px; height:11px; }
-  ::-webkit-scrollbar-thumb { background:var(--scroll); border-radius:3px; border:3px solid transparent; background-clip:padding-box; }
-  ::-webkit-scrollbar-thumb:hover { background-color:var(--faint); }
-  #root { max-width:680px; margin:0 auto; padding:6px 4px 28px; overflow-wrap:anywhere; }
-  h1 { font-size:1.15em; margin:0 0 12px; }
-  .stats { display:flex; gap:8px; margin:0 0 14px; }
-  .stat { flex:1; background:var(--raised); border:1px solid var(--border); border-radius:10px; padding:8px 10px; }
-  .stat .n { font-size:1.6em; font-weight:650; line-height:1.2; }
-  .stat .l { font-size:12px; color:var(--muted); }
-  .stat.due .n { color:var(--accent); } .stat.new .n { color:var(--success); }
-  .start { display:block; width:100%; font:inherit; font-weight:600; padding:9px; border-radius:9px; cursor:pointer;
-           border:1px solid var(--accent); background:var(--accent); color:var(--accent-fg); }
-  .start:hover { filter:brightness(1.08); }
+  #root { max-width:720px; margin:0 auto; padding:14px 6px 30px; overflow-wrap:anywhere; }
+  html.page #root { padding-top:28px; }
+  html.page, html.page body { background:var(--window); }
+  header { margin:0 0 14px; }
+  header h1 { font-size:1.35em; font-weight:700; letter-spacing:-0.01em; margin:0; line-height:1.25; }
+  html.page header h1 { font-size:27px; }
+  html.page #root { max-width:760px; }
+  html.page .card .q { font-size:16px; padding:20px 24px 22px; }
+  html.page .bar { font-size:13px; }
+  header .crumbs { color:var(--muted); font-size:13px; margin-top:2px; }
+  header .crumbs a { color:var(--muted); text-decoration:none; } header .crumbs a:hover { color:var(--accent); }
+  .stack > * + * { margin-top:14px; }
+  .hero .counts { display:flex; gap:28px; flex-wrap:wrap; align-items:flex-end; }
+  .hero .sub { color:var(--muted); font-size:13px; margin:4px 0 16px; }
+  .hero .actions { display:grid; gap:8px; grid-template-columns:1fr auto auto; }
+  @media (max-width: 520px) {
+    .hero .actions { grid-template-columns:1fr 1fr; }
+    .hero .actions .btn.big { grid-column:1 / -1; }
+  }
+  .hero .done { font-size:17px; font-weight:650; margin:4px 0 2px; }
   .msg { color:var(--muted); text-align:center; margin:18px auto; line-height:1.5; }
   .msg strong { color:var(--fg); }
-  .hint { color:var(--muted); font-size:12.5px; margin-top:18px; line-height:1.5; }
-  .hint kbd, .keys kbd { font:inherit; font-size:11px; padding:0 4px; border:1px solid var(--border); border-radius:4px; background:var(--code); }
+  .hint { color:var(--muted); font-size:12.5px; line-height:1.55; }
+  .keys { font-size:11.5px; color:var(--faint); margin-top:9px; text-align:center; }
+  .hero .keys { text-align:left; }
   .empty svg { display:block; margin:30px auto 12px; width:36px; height:36px; stroke:var(--faint); fill:none;
                stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
   .bar { display:flex; align-items:center; gap:4px; font-size:12px; color:var(--muted); margin-bottom:8px; }
   .bar .grow { flex:1; }
-  .bar a { color:var(--muted); text-decoration:none; padding:1px 7px; border-radius:5px; }
+  .bar a { color:var(--muted); text-decoration:none; padding:2px 8px; border-radius:6px; }
   .bar a:hover { color:var(--fg); background:var(--hover); }
-  .bar .count { font-weight:600; }
-  .bar .count .due { color:var(--accent); } .bar .count .new { color:var(--success); }
-  .card { background:var(--raised); border:1px solid var(--border); border-radius:12px; overflow:hidden; }
-  .card .q { border-bottom:none; padding:12px 14px 14px; }
+  .bar .count { font-weight:650; font-variant-numeric:tabular-nums; }
+  .bar .count .due { color:var(--accent); } .bar .count .new { color:var(--new); }
+  .card { background:var(--raised); border:1px solid var(--border); border-radius:14px; overflow:hidden; box-shadow:0 1px 3px var(--shadow); }
+  .card .q { border-bottom:none; padding:14px 16px 16px; }
   .card .q-meta { flex-wrap:wrap; gap:4px 8px; }
-  .card .q-meta .tag { color:var(--success); }
+  .card .q-meta .tag { color:var(--new); }
   .card .q-meta .book { color:var(--fg); }
   .card .q-meta .src { white-space:nowrap; }
-  .keys { font-size:11.5px; color:var(--faint); margin-top:6px; text-align:center; }
-  .decks { background:var(--raised); border:1px solid var(--border); border-radius:10px; margin:0 0 14px; padding:4px; }
-  .deck { display:flex; align-items:center; gap:6px; padding:3px 8px; border-radius:6px; cursor:pointer; font-size:13.5px; }
+  /* What to review: decks, books (with their sections) or the open book's sections */
+  .tabs { display:flex; gap:2px; margin:-4px 0 8px; border-bottom:1px solid var(--border); }
+  .tabs a { font-size:13px; font-weight:600; color:var(--muted); text-decoration:none; padding:4px 10px 7px; margin-bottom:-1px;
+            border-bottom:2px solid transparent; }
+  .tabs a:hover { color:var(--fg); }
+  .tabs a.on { color:var(--accent); border-bottom-color:var(--accent); }
+  .tabs .grow { flex:1; }
+  .decks { margin:0 -8px; }
+  .deck { display:flex; align-items:center; gap:6px; padding:4px 8px; border-radius:7px; cursor:pointer; font-size:13.5px; }
   .deck:hover { background:var(--hover); }
   .deck.sel { background:var(--accent-soft); }
   .deck .tw { width:14px; flex:none; color:var(--muted); text-align:center; font-size:10px; }
   .deck .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .deck .n { width:44px; text-align:right; font-variant-numeric:tabular-nums; color:var(--faint); }
-  .deck .n.due { color:var(--accent); } .deck .n.new { color:var(--success); }
-  .deck .n.zero { color:var(--faint); opacity:0.5; }
-  .deck-head { display:flex; gap:6px; padding:2px 8px 4px; font-size:11px; color:var(--muted); font-weight:600; }
+  .deck .n { width:44px; text-align:right; font-variant-numeric:tabular-nums; font-weight:600; }
+  .deck .n.due { color:var(--accent); } .deck .n.new { color:var(--new); }
+  .deck .n.zero { color:var(--faint); opacity:0.5; font-weight:400; }
+  .deck.all .name { font-weight:600; }
+  .deck-head { display:flex; gap:6px; padding:0 8px 4px; font-size:11px; color:var(--faint); font-weight:650;
+               text-transform:uppercase; letter-spacing:0.04em; }
   .deck-head .name { flex:1; } .deck-head .n { width:44px; text-align:right; }
-  .links { display:flex; gap:12px; justify-content:center; margin-top:10px; font-size:12.5px; }
-  .links a { color:var(--muted); text-decoration:none; } .links a:hover { color:var(--accent); }
-  /* Rewards (gamify.py) */
-  .player { display:flex; gap:8px; margin:0 0 10px; flex-wrap:wrap; }
-  .player > div { background:var(--raised); border:1px solid var(--border); border-radius:10px; padding:8px 10px; }
-  .player .l { font-size:12px; color:var(--muted); }
-  .player .n { font-size:1.4em; font-weight:650; line-height:1.15; font-variant-numeric:tabular-nums; }
-  .player .n small { font-size:0.6em; color:var(--muted); font-weight:500; }
-  .lvl { flex:2 1 190px; }
-  .lvl .top { display:flex; align-items:baseline; gap:8px; }
-  .lvl .badge { font-weight:700; font-size:12px; color:var(--accent-fg); background:var(--accent); border-radius:6px; padding:1px 7px; }
-  .lvl .title { font-weight:650; }
-  .xpbar { height:7px; border-radius:4px; background:var(--hover); overflow:hidden; margin:7px 0 3px; }
-  .xpbar i { display:block; height:100%; border-radius:4px; background:linear-gradient(90deg, var(--accent), var(--warning)); }
-  .streak, .ring { flex:1 1 110px; display:flex; align-items:center; gap:9px; }
-  .streak .flame { font-size:26px; line-height:1; }
-  .streak.off .flame { filter:grayscale(1); opacity:0.45; }
-  .ring svg { width:42px; height:42px; flex:none; transform:rotate(-90deg); }
-  .ring circle { fill:none; stroke-width:5; }
-  .ring .track { stroke:var(--hover); }
-  .ring .fill { stroke:var(--success); stroke-linecap:round; transition:stroke-dashoffset 0.6s; }
-  .nudge { font-size:13px; color:var(--muted); background:var(--accent-soft); border-radius:8px; padding:6px 10px; margin:0 0 12px; }
-  .quick { display:flex; gap:8px; margin-top:8px; }
-  .quick button { flex:1; font:inherit; font-size:13.5px; padding:6px; border-radius:9px; cursor:pointer;
-                  border:1px solid var(--border); background:var(--raised); color:var(--fg); }
-  .quick button:hover { border-color:var(--accent); color:var(--accent); }
-  .box { background:var(--raised); border:1px solid var(--border); border-radius:10px; padding:8px 10px; margin-top:14px; }
-  .box > .head, details.box > summary { font-size:12px; color:var(--muted); font-weight:600; }
-  details.box > summary { cursor:pointer; }
-  .heat { overflow-x:auto; margin-top:6px; }
-  .heat svg { display:block; }
+  .links { display:flex; gap:6px; justify-content:center; }
   .ach-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(170px, 1fr)); gap:4px; margin-top:8px; }
   .ach { display:flex; gap:8px; align-items:center; padding:4px 6px; border-radius:7px; font-size:12.5px; line-height:1.3; }
   .ach .i { font-size:20px; flex:none; }
   .ach .d { color:var(--muted); font-size:11.5px; }
   .ach.locked { opacity:0.45; } .ach.locked .i { filter:grayscale(1); }
-  .summary { background:var(--raised); border:1px solid var(--border); border-radius:12px; padding:12px 14px; margin:0 0 14px; text-align:center; }
+  details.panel > summary { cursor:pointer; font-size:13px; font-weight:650; letter-spacing:0.04em; text-transform:uppercase; color:var(--muted); }
+  .summary { text-align:center; }
   .summary h2 { font-size:1.2em; margin:0 0 10px; }
   .summary .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(90px, 1fr)); gap:8px; }
-  .summary .n { font-size:1.35em; font-weight:650; font-variant-numeric:tabular-nums; }
+  .summary .n { font-size:1.35em; font-weight:700; font-variant-numeric:tabular-nums; }
   .summary .l { font-size:12px; color:var(--muted); }
-  .prog { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); margin:0 0 8px; }
+  .prog { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); margin:0 0 10px; }
   .prog .track { flex:1; height:6px; border-radius:3px; background:var(--hover); overflow:hidden; }
   .prog .track i { display:block; height:100%; border-radius:3px; background:var(--accent); transition:width 0.4s; }
   .prog .label { font-variant-numeric:tabular-nums; }
@@ -138,16 +121,13 @@ let CARD = null;  // the card on display, as the app sent it; null on the overvi
 // Cards the reviewer rates on their own once the answer shows (in review, free responses too).
 const selfRated = q => SELF_RATED.includes(q.type) || q.type === "free";
 
-function setTheme(colors, dark) {
-  const root = document.documentElement;
-  root.dataset.theme = dark ? "dark" : "light";
-  for (const [k, v] of Object.entries(colors)) root.style.setProperty(`--${k.replace(/_/g, "-")}`, v);
-}
-
-const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const OPEN = new Set();  // rows expanded in the overview's lists: "d<deck id>", "b<book id>", "s<section tag>"
 const num = (n, cls) => `<span class="n ${cls}${n ? "" : " zero"}">${n}</span>`;
 const twist = (key, has) => `<span class="tw" data-act="twist" data-key="${esc(key)}">${has ? (OPEN.has(key) ? "▾" : "▸") : ""}</span>`;
+
+const PLAY = `<svg viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></svg>`;
+let LAST = null;  // the overview last shown, to redraw when the picker's tab changes
+let PICK = null;  // the picker's tab on the Review page: "decks" or "books" (null: by what is picked)
 
 // Every deck, with its own and its subdecks' counts; clicking one picks what to review.
 function decksHtml(o) {
@@ -162,7 +142,7 @@ function decksHtml(o) {
     return html;
   };
   return `<div class="decks"><div class="deck-head"><span class="tw"></span><span class="name">Deck</span><span class="n">Due</span><span class="n">New</span></div>`
-    + `<div class="deck${o.deck === null && o.book === null ? " sel" : ""}" data-act="deck" data-deck="0"><span class="tw"></span><span class="name">All decks</span>`
+    + `<div class="deck all${o.deck === null && o.book === null ? " sel" : ""}" data-act="deck" data-deck="0"><span class="tw"></span><span class="name">All decks</span>`
     + `${num(o.all_due, "due")}${num(o.all_new, "new")}</div>`
     + (byParent[0] || []).map(d => row(d, 0)).join("") + `</div>`;
 }
@@ -197,73 +177,84 @@ function booksHtml(o) {
 // The open book's sections, to review just one.
 function sectionsHtml(o) {
   return `<div class="decks"><div class="deck-head"><span class="tw"></span><span class="name">Section</span><span class="n">Due</span><span class="n">New</span></div>`
-    + `<div class="deck${o.section ? "" : " sel"}" data-act="section" data-book="0" data-tag=""><span class="tw"></span><span class="name">Whole book</span>`
+    + `<div class="deck all${o.section ? "" : " sel"}" data-act="section" data-book="0" data-tag=""><span class="tw"></span><span class="name">Whole book</span>`
     + `${num(o.whole_due, "due")}${num(o.whole_new, "new")}</div>`
     + sectionRows(o.sections, 0, o.section, 0) + `</div>`;
 }
 
+// What to review: decks or books (the Review page), or the open book's sections.
+function pickerHtml(o) {
+  if (!o.all) {
+    return o.sections && o.sections.length
+      ? `<section class="panel"><div class="tabs"><a class="on">Sections</a></div>${sectionsHtml(o)}</section>` : "";
+  }
+  const hasDecks = !!(o.decks && o.decks.length), hasBooks = !!(o.books && o.books.length);
+  if (!hasDecks && !hasBooks) return "";
+  let tab = PICK || (o.book !== null && hasBooks ? "books" : hasDecks ? "decks" : "books");
+  if (tab === "decks" && !hasDecks) tab = "books";
+  if (tab === "books" && !hasBooks) tab = "decks";
+  const link = (name, label) => `<a href="#" data-act="pick" data-tab="${name}" class="${tab === name ? "on" : ""}">${label}</a>`;
+  return `<section class="panel"><div class="tabs">${hasDecks ? link("decks", "Decks") : ""}${hasBooks ? link("books", "Books") : ""}</div>`
+    + (tab === "decks" ? decksHtml(o) : booksHtml(o)) + `</section>`;
+}
+
+// The counts and the buttons that start a session.
+function heroHtml(o) {
+  let html = `<section class="panel hero"><div class="counts">`
+    + `<div class="big-count"><span class="n due-c${o.due ? "" : " zero"}">${comma(o.due)}</span><span class="l">due</span></div>`
+    + `<div class="big-count"><span class="n new-c${o.new ? "" : " zero"}">${comma(o.new)}</span><span class="l">new today</span></div></div>`
+    + `<div class="sub">${comma(o.total)} card${o.total === 1 ? "" : "s"}${o.new_total > o.new ? ` · ${comma(o.new_total)} new waiting` : ""}`
+    + `${o.suspended ? ` · ${comma(o.suspended)} suspended` : ""}</div>`;
+  if (o.reviewed && !o.summary) html += `<div class="msg"><strong>${plural(o.reviewed, "card")} reviewed.</strong></div>`;
+  const more = o.reviewed ? " more" : "";
+  if (o.ready) {
+    html += `<div class="actions"><button class="btn primary big" data-act="start">${PLAY}${o.reviewed ? "Keep going" : "Start review"}</button>`
+      + `<button class="btn" data-act="start" data-limit="cards" title="A short session: just ${o.quick.cards} cards">Just ${o.quick.cards}${more} cards</button>`
+      + `<button class="btn" data-act="start" data-limit="time" title="A short session: as many cards as fit in ${o.quick.minutes} minutes">${o.quick.minutes}${more} minutes</button></div>`
+      + `<div class="keys"><kbd>Space</kbd> to start · <kbd>5</kbd> for ${o.quick.cards} cards</div>`;
+  } else {
+    html += `<div class="done done-c">All caught up ✓</div><div class="hint">${o.next ? `The next card is due ${esc(o.next)}.` : ""}`
+      + (o.new_total > o.new ? ` Today's ${o.new_per_day} new cards are done; more tomorrow.` : "") + `</div>`;
+  }
+  return html + `</section>`;
+}
+
+function headerHtml(o) {
+  let crumbs;
+  if (o.all) crumbs = o.title ? `<a href="#" data-act="deck" data-deck="0">← Every deck and book</a>` : "Every deck and book";
+  else crumbs = o.section ? `<a href="#" data-act="section" data-book="0" data-tag="">← The whole book</a>` : "This book's cards";
+  return `<header><h1>${o.title ? esc(o.title) : "Review"}</h1><div class="crumbs">${crumbs}</div></header>`;
+}
+
 function showOverview(o) {
   CARD = null;
+  LAST = o;
   const root = document.getElementById("root");
   if (o.disabled) { root.innerHTML = ""; return; }
+  document.documentElement.classList.toggle("page", !!o.all);
   const how = `Every question in a quiz Claude writes becomes a review card. Choose <em>Quiz me</em>
     (<kbd>Ctrl+Shift+Q</kbd>) on a selection or the section you're reading, or under one of
     Claude's replies.`;
   if (!o.total) {
-    root.innerHTML = `<div class="empty">${CARDS_ICON}<div class="msg">No review cards ${o.all ? "yet" : "for this book yet"}.</div></div>`
+    root.innerHTML = headerHtml(o) + `<div class="empty">${CARDS_ICON}<div class="msg">No review cards ${o.all ? "yet" : "for this book yet"}.</div></div>`
       + `<div class="hint">${how}</div>`;
     return;
   }
   const g = o.game;
-  let html = `<h1>${o.title ? esc(o.title) : o.all ? "Review all decks" : "Review"}</h1>`;
+  let html = headerHtml(o) + `<div class="stack">`;
   if (o.summary) html += summaryHtml(o.summary, !!g);
-  if (g) html += playerHtml(g);
-  if (o.all && (o.decks?.length || o.books?.length)) html += decksHtml(o);
-  if (o.all && o.books && o.books.length) html += booksHtml(o);
-  if (!o.all && o.sections && o.sections.length) html += sectionsHtml(o);
-  html += `<div class="stats">`
-    + `<div class="stat due"><div class="n">${o.due}</div><div class="l">due</div></div>`
-    + `<div class="stat new"><div class="n">${o.new}</div><div class="l">new today${o.new_total > o.new ? ` · ${o.new_total} waiting` : ""}</div></div>`
-    + `<div class="stat"><div class="n">${o.total}</div><div class="l">cards${o.suspended ? ` · ${o.suspended} suspended` : ""}</div></div></div>`;
-  if (o.reviewed && !o.summary) html += `<div class="msg"><strong>${plural(o.reviewed, "card")} reviewed.</strong></div>`;
-  const more = o.reviewed ? " more" : "";
-  if (o.ready) html += `<button class="start" data-act="start">${o.reviewed ? "Keep going" : "Start review"}</button>`
-    + `<div class="quick"><button data-act="start" data-limit="cards" title="A short session: just ${o.quick.cards} cards">Just ${o.quick.cards}${more} cards</button>`
-    + `<button data-act="start" data-limit="time" title="A short session: as many cards as fit in ${o.quick.minutes} minutes">${o.quick.minutes}${more} minutes</button></div>`
-    + `<div class="keys"><kbd>Space</kbd> to start · <kbd>5</kbd> for ${o.quick.cards} cards</div>`;
-  else html += `<div class="msg">All caught up${o.next ? ` — the next card is due ${esc(o.next)}` : ""}.`
-    + (o.new_total > o.new ? `<br>Today's ${o.new_per_day} new cards are done; more tomorrow.` : "") + `</div>`;
-  html += `<div class="links"><a href="#" data-act="browse">Browse cards</a><a href="#" data-act="stats">Statistics</a></div>`;
+  html += heroHtml(o);
+  if (g) html += `<div>${playerHtml(g)}</div>`;
+  html += pickerHtml(o);
   if (g) html += extrasHtml(g);
-  root.innerHTML = html + `<div class="hint">${how}</div>`;
-  if (g) heatmap(document.getElementById("heat"), g.heat);
+  if (!o.all) html += `<div class="links"><a class="btn ghost" href="#" data-act="browse">Browse cards</a><a class="btn ghost" href="#" data-act="stats">Statistics</a></div>`;
+  html += `<div class="hint">${how}</div></div>`;
+  root.innerHTML = html;
+  if (g) heatmap(document.getElementById("heat"), g.heat, { fit: true });
 }
 
 // -- rewards (gamify.py) ------------------------------------------------------------------
 let ACH_OPEN = false;  // the achievements list is expanded
-const comma = n => n.toLocaleString();
-
-function playerHtml(g) {
-  const r = 17, C = 2 * Math.PI * r, frac = Math.min(g.today / g.goal, 1);
-  const met = g.goal_met;
-  let html = `<div class="player">`
-    + `<div class="lvl" title="${comma(g.xp)} XP in all: 10 a card, 15 a new one, times your combo multiplier">`
-    + `<div class="top"><span class="badge">Lv ${g.level}</span><span class="title">${esc(g.title)}</span></div>`
-    + `<div class="xpbar"><i style="width:${(100 * g.into / g.need).toFixed(1)}%"></i></div>`
-    + `<div class="l">${comma(g.into)} / ${comma(g.need)} XP to level ${g.level + 1}</div></div>`
-    + `<div class="streak${g.streak ? "" : " off"}" title="Days in a row with at least one review. A streak freeze `
-    + `covers a missed day; you earn one every ${g.freeze_every} days of streak (at most 2).">`
-    + `<span class="flame">🔥</span><div><div class="n">${g.streak}</div>`
-    + `<div class="l">day streak${g.freezes ? ` · ${"❄️".repeat(g.freezes)}` : ""}</div></div></div>`
-    + `<div class="ring" title="Daily goal: ${g.goal} reviews (change it under Settings › Review settings). Reviewing everything due meets it too.">`
-    + `<svg viewBox="0 0 42 42"><circle class="track" cx="21" cy="21" r="${r}"/>`
-    + `<circle class="fill" cx="21" cy="21" r="${r}" stroke-dasharray="${C.toFixed(2)}" stroke-dashoffset="${(C * (1 - (met ? 1 : frac))).toFixed(2)}"/></svg>`
-    + `<div><div class="n">${g.today}<small> / ${g.goal}</small></div><div class="l">${met ? "goal met ✓" : "today's goal"}</div></div></div>`
-    + `</div>`;
-  if (g.at_risk) html += `<div class="nudge">Keep your ${g.streak}-day streak going: even one card today counts.</div>`;
-  else if (g.lapsed) html += `<div class="nudge">A fresh start: one card begins a new streak.</div>`;
-  return html;
-}
 
 function summaryHtml(s, game) {
   const head = s.caught_up ? "All caught up! 🎉" : s.quick ? "Quick session done! 🍪" : "Session summary";
@@ -275,52 +266,16 @@ function summaryHtml(s, game) {
   if (game) cells += stat(`+${comma(s.xp)}`, "XP") + stat(s.best, "best combo");
   if (s.matured) cells += stat(s.matured, s.matured === 1 ? "card matured" : "cards matured");
   if (s.stability) cells += stat(`+${comma(s.stability)}d`, "memory stability");
-  return `<div class="summary"><h2>${head}</h2><div class="grid">${cells}</div></div>`;
+  return `<section class="panel summary"><h2>${head}</h2><div class="grid">${cells}</div></section>`;
 }
 
 function extrasHtml(g) {
   const got = g.achievements.filter(a => a.unlocked).length;
   const list = g.achievements.map(a => `<div class="ach${a.unlocked ? "" : " locked"}" title="${esc(a.desc)}">`
     + `<span class="i">${a.icon}</span><div><div>${esc(a.name)}</div><div class="d">${esc(a.desc)}</div></div></div>`).join("");
-  return `<div class="box"><div class="head">Recent weeks</div><div class="heat" id="heat"></div></div>`
-    + `<details class="box" id="ach"${ACH_OPEN ? " open" : ""}><summary>Achievements · ${got} of ${g.achievements.length}</summary>`
+  return `<section class="panel"><div class="panel-head"><h2>Recent weeks</h2></div><div class="heat" id="heat"></div></section>`
+    + `<details class="panel" id="ach"${ACH_OPEN ? " open" : ""}><summary>Achievements · ${got} of ${g.achievements.length}</summary>`
     + `<div class="ach-grid">${list}</div></details>`;
-}
-
-const isoDay = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-
-// Reviews per day over the recent weeks, a column a week; days a streak freeze covered show a snowflake.
-function heatmap(el, heat) {
-  const counts = Object.fromEntries(heat.days.map(d => [d.date, d.count]));
-  const frozen = new Set(heat.frozen);
-  const max = Math.max(1, ...heat.days.map(d => d.count));
-  const start = new Date(heat.start + "T12:00"), end = new Date(heat.end + "T12:00");
-  const first = new Date(start); first.setDate(first.getDate() - first.getDay());
-  const size = 12, gap = 3, top = 14, left = 26;
-  let cells = "", months = "", x = 0, lastMonth = -1;
-  for (let week = new Date(first); week <= end; week.setDate(week.getDate() + 7), x++) {
-    if (week.getMonth() !== lastMonth) {
-      lastMonth = week.getMonth();
-      months += `<text x="${left + x * (size + gap)}" y="10" font-size="10" style="fill:var(--muted)">${week.toLocaleDateString(undefined, { month: "short" })}</text>`;
-    }
-    for (let d = 0; d < 7; d++) {
-      const day = new Date(week); day.setDate(day.getDate() + d);
-      if (day < start || day > end) continue;
-      const iso = isoDay(day), n = counts[iso] || 0;
-      const px = left + x * (size + gap), py = top + d * (size + gap);
-      const label = day.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
-      if (frozen.has(iso)) {
-        cells += `<text x="${px + size / 2}" y="${py + 10}" font-size="11" text-anchor="middle"><title>${esc(label)}: streak freeze</title>❄</text>`;
-        continue;
-      }
-      const opacity = n ? (0.3 + 0.7 * Math.sqrt(n / max)).toFixed(2) : 0.55;
-      const style = `fill:var(${n ? "--accent" : "--border"})${iso === heat.end ? ";stroke:var(--muted)" : ""}`;
-      cells += `<rect x="${px}" y="${py}" width="${size}" height="${size}" rx="2" style="${style}"`
-        + ` fill-opacity="${opacity}"><title>${esc(label)}: ${plural(n, "review")}</title></rect>`;
-    }
-  }
-  const days = ["", "Mon", "", "Wed", "", "Fri", ""].map((l, d) => l ? `<text x="0" y="${top + d * (size + gap) + 10}" font-size="10" style="fill:var(--muted)">${l}</text>` : "").join("");
-  el.innerHTML = `<svg width="${left + x * (size + gap)}" height="${top + 7 * (size + gap)}">${months}${days}${cells}</svg>`;
 }
 
 document.addEventListener("toggle", ev => { if (ev.target.id === "ach") ACH_OPEN = ev.target.open; }, true);
@@ -466,6 +421,7 @@ document.addEventListener("click", ev => {
     OPEN.has(key) ? OPEN.delete(key) : OPEN.add(key);
     bridge.refresh();
   }
+  else if (act === "pick") { PICK = target.dataset.tab; if (LAST) showOverview(LAST); }
   else if (act === "deck") bridge.chooseDeck(+target.dataset.deck);
   else if (act === "book") bridge.chooseBook(+target.dataset.book);
   else if (act === "section") bridge.chooseSection(+target.dataset.book, target.dataset.tag);

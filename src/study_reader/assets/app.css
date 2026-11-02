@@ -1,0 +1,83 @@
+/* Shared by the app's full-page views (home.html, review.html): base type, panels, buttons and
+   the review counts' colors. The app sets the variables from theme.py; these are fallbacks. */
+:root { --window:#f4f1ea; --surface:#faf8f4; --raised:#ffffff; --fg:#1d1b18; --muted:#69645c; --faint:#a39e95;
+        --border:#e2ddd3; --hover:#ece8df; --accent:#b9532b; --accent-hover:#a34723; --accent-fg:#ffffff;
+        --accent-soft:#f6e4da; --code:#f2efe9; --scroll:#d2ccc2; --user:#efebe4; --error:#c0392b;
+        --success:#2f8a57; --warning:#a87a0a; --new:#2f6db5; --success-soft:#e1f0e6; --new-soft:#e3ecf8;
+        --shadow:rgba(60,45,30,0.10); }
+html, body { margin:0; background:var(--surface); color:var(--fg);
+             font:14.5px/1.55 "Inter", "Fira Sans", system-ui, sans-serif; -webkit-font-smoothing:antialiased; }
+::selection { background:var(--accent-soft); }
+::-webkit-scrollbar { width:11px; height:11px; }
+::-webkit-scrollbar-thumb { background:var(--scroll); border-radius:3px; border:3px solid transparent; background-clip:padding-box; }
+::-webkit-scrollbar-thumb:hover { background-color:var(--faint); }
+kbd { font:inherit; font-size:11px; padding:0 5px; border:1px solid var(--border); border-bottom-width:2px;
+      border-radius:4px; background:var(--code); color:var(--muted); }
+a { color:var(--accent); }
+
+/* Panels */
+.panel { background:var(--raised); border:1px solid var(--border); border-radius:14px; padding:16px 18px;
+         box-shadow:0 1px 2px var(--shadow); }
+.panel-head { display:flex; align-items:baseline; gap:10px; margin:0 0 10px; }
+.panel-head h2 { font-size:13px; font-weight:650; letter-spacing:0.04em; text-transform:uppercase; color:var(--muted); margin:0; }
+.panel-head .grow { flex:1; }
+.panel-head .aside { font-size:12.5px; color:var(--faint); }
+.panel-head a { font-size:12.5px; text-decoration:none; color:var(--muted); }
+.panel-head a:hover { color:var(--accent); }
+
+/* Buttons */
+.btn { font:inherit; font-size:13.5px; font-weight:550; padding:7px 14px; border-radius:9px; cursor:pointer;
+       border:1px solid var(--border); background:var(--raised); color:var(--fg); display:inline-flex;
+       align-items:center; justify-content:center; gap:7px; text-decoration:none; white-space:nowrap; }
+.btn:hover { border-color:var(--accent); color:var(--accent); }
+.btn svg { width:15px; height:15px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.btn.primary { background:var(--accent); border-color:var(--accent); color:var(--accent-fg); }
+.btn.primary:hover { background:var(--accent-hover); border-color:var(--accent-hover); color:var(--accent-fg); }
+.btn.primary svg { fill:currentColor; stroke:none; }
+.btn.big { font-size:15px; padding:11px 22px; border-radius:11px; font-weight:650; }
+.btn.ghost { border-color:transparent; background:transparent; color:var(--muted); }
+.btn.ghost:hover { background:var(--hover); color:var(--fg); }
+
+/* Review counts */
+.due-c { color:var(--accent); } .new-c { color:var(--new); } .done-c { color:var(--success); }
+.pill { display:inline-flex; align-items:center; gap:4px; font-size:12px; font-weight:650; border-radius:999px;
+        padding:1px 8px; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.pill.due { background:var(--accent-soft); color:var(--accent); }
+.pill.new { background:var(--new-soft); color:var(--new); }
+.pill.done { background:var(--success-soft); color:var(--success); }
+.big-count { display:flex; flex-direction:column; }
+.big-count .n { font-size:42px; font-weight:700; line-height:1.05; letter-spacing:-0.02em; font-variant-numeric:tabular-nums; }
+.big-count .l { font-size:12.5px; color:var(--muted); font-weight:550; }
+.big-count .n.zero { color:var(--faint); }
+
+/* Rewards: level, streak, daily goal (progress.js playerHtml) */
+.player { display:flex; gap:10px; flex-wrap:wrap; }
+.player > div { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:9px 12px; }
+.player .l { font-size:12px; color:var(--muted); }
+.player .n { font-size:1.45em; font-weight:700; line-height:1.15; font-variant-numeric:tabular-nums; }
+.player .n small { font-size:0.6em; color:var(--muted); font-weight:500; }
+.lvl { flex:2 1 190px; }
+.lvl .top { display:flex; align-items:baseline; gap:8px; }
+.lvl .badge { font-weight:700; font-size:12px; color:var(--accent-fg); background:var(--accent); border-radius:6px; padding:1px 7px; }
+.lvl .title { font-weight:650; }
+.xpbar { height:7px; border-radius:4px; background:var(--hover); overflow:hidden; margin:7px 0 3px; }
+.xpbar i { display:block; height:100%; border-radius:4px; background:linear-gradient(90deg, var(--accent), var(--warning)); }
+.streak, .ring { flex:1 1 110px; display:flex; align-items:center; gap:10px; }
+.streak .flame { font-size:26px; line-height:1; }
+.streak.off .flame { filter:grayscale(1); opacity:0.45; }
+.ring svg { width:42px; height:42px; flex:none; transform:rotate(-90deg); }
+.ring circle { fill:none; stroke-width:5; }
+.ring .track { stroke:var(--hover); }
+.ring .fill { stroke:var(--success); stroke-linecap:round; transition:stroke-dashoffset 0.6s; }
+.nudge { font-size:13px; color:var(--fg); background:var(--accent-soft); border-radius:9px; padding:7px 12px; }
+
+/* Charts (progress.js heatmap, forecastHtml) */
+.heat { overflow-x:auto; }
+.heat svg { display:block; }
+.forecast { display:flex; align-items:flex-end; gap:4px; height:92px; padding-top:16px; }
+.forecast .col { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%; min-width:0; }
+.forecast .bar { width:100%; max-width:26px; border-radius:4px 4px 2px 2px; background:var(--accent); opacity:0.8; min-height:2px; }
+.forecast .bar.zero { background:var(--border); opacity:1; }
+.forecast .col:hover .bar { opacity:1; }
+.forecast .v { font-size:10.5px; color:var(--muted); font-variant-numeric:tabular-nums; height:15px; }
+.forecast .d { font-size:10px; color:var(--faint); margin-top:4px; height:14px; white-space:nowrap; }

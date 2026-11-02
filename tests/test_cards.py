@@ -469,17 +469,20 @@ def test_main_window_cards_menu(pdf_path, tmp_path, monkeypatch):
     db.add_card_note("basic", {"front": "f", "back": "b"}, deck)
     win = MainWindow(db)
     win.show()
-    assert win.library.cards.isVisible() and win.library.review.text() == "Review · 1"
-    browser = win.show_browser()
+    assert win.nav.buttons["review"].badge == "1"
+    browser = win.show_browser()  # the Cards page
     assert browser is win.show_browser() and len(browser.model.ids) == 1
+    assert win.center.currentWidget() is win.cards_page and browser.isVisible() and not browser.isWindow()
+    assert win.nav.buttons["cards"].isChecked() and not win.web_action.isEnabled()  # its Ctrl+Shift+O wins
     browser.reviewDeckRequested.emit(deck)
     assert win.center.currentWidget() is win.review_all and win.review_all.deck_id == deck
+    assert win.web_action.isEnabled()
     win.review_all.start()
     win.review_all.act(win.review_all.card_id, "edit")
-    assert browser.search_box.text().startswith("cid:")
+    assert win.page() == "cards" and browser.search_box.text().startswith("cid:")
     win.show_stats(deck)
-    assert win.stats_window.isVisible()
-    win.stats_window.close()
+    assert win.page() == "stats" and win.stats_window.isVisible() and not win.stats_window.isWindow()
+    assert win.stats_window.scope.currentData() == ("deck", deck)
     browser.close()
     win.close()
 

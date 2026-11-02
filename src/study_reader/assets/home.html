@@ -1,0 +1,197 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="app.css">
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<script>const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));</script>
+<script src="progress.js"></script>
+<style>
+  html, body { background:var(--window); }
+  #root { max-width:1120px; margin:0 auto; padding:30px 36px 40px; }
+  header { display:flex; align-items:flex-end; gap:12px; margin-bottom:22px; }
+  header h1 { font-size:27px; font-weight:700; letter-spacing:-0.015em; margin:0; line-height:1.15; }
+  header .date { color:var(--muted); font-size:13.5px; margin-top:3px; }
+  header .grow { flex:1; }
+  .grid { display:grid; gap:18px; grid-template-columns:minmax(0, 1fr) minmax(0, 1fr); }
+  .wide { grid-column:1 / -1; }
+
+  /* Today */
+  .today { display:grid; grid-template-columns:minmax(0, 1.15fr) minmax(0, 1fr); gap:26px; padding:22px 24px; }
+  .today .counts { display:flex; gap:34px; margin:2px 0 6px; }
+  .today .sub { color:var(--muted); font-size:13px; margin-bottom:18px; }
+  .today .actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .today .keys { font-size:12px; color:var(--faint); margin-top:10px; }
+  .today .done { font-size:17px; font-weight:650; margin:6px 0 4px; }
+  .today .side { display:flex; flex-direction:column; justify-content:center; gap:10px; }
+  .today .plain { display:flex; gap:10px; }
+  .today .plain > div { flex:1; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:9px 12px; }
+  .today .plain .n { font-size:1.45em; font-weight:700; font-variant-numeric:tabular-nums; }
+  .today .plain .l { font-size:12px; color:var(--muted); }
+  @media (max-width: 860px) { .today { grid-template-columns:1fr; } .grid { grid-template-columns:1fr; } }
+
+  /* Continue reading */
+  .books { display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr)); gap:12px; }
+  .book { display:flex; gap:12px; padding:12px; border-radius:12px; border:1px solid var(--border); background:var(--surface);
+          cursor:pointer; min-width:0; transition:border-color 0.15s, transform 0.15s; }
+  .book:hover { border-color:var(--accent); transform:translateY(-1px); }
+  .cover { width:62px; height:84px; flex:none; border-radius:5px; background:var(--hover) center/cover no-repeat;
+           box-shadow:0 1px 3px var(--shadow), 0 0 0 1px var(--border); display:flex; align-items:center; justify-content:center;
+           font-size:10.5px; font-weight:700; color:var(--accent); }
+  .book .info { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .book .title { font-weight:650; font-size:13.5px; line-height:1.3; display:-webkit-box; -webkit-line-clamp:2;
+                 -webkit-box-orient:vertical; overflow:hidden; }
+  .book .page { font-size:12px; color:var(--muted); margin-top:3px; }
+  .book .track { height:4px; border-radius:2px; background:var(--hover); margin-top:5px; overflow:hidden; }
+  .book .track i { display:block; height:100%; background:var(--accent); border-radius:2px; }
+  .book .foot { display:flex; align-items:center; gap:5px; margin-top:auto; padding-top:7px; }
+  .book .foot .grow { flex:1; }
+  .book .rev { width:28px; height:28px; padding:0; border-radius:50%; flex:none; }
+  .book .rev svg { width:11px; height:11px; fill:currentColor; stroke:none; margin-left:2px; }
+  .book .foot .pill { padding:1px 7px; }
+  .empty-books { color:var(--muted); font-size:13.5px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+
+  /* Decks */
+  .decks { margin:0 -6px; }
+  .deck { display:flex; align-items:center; gap:6px; padding:5px 8px; border-radius:8px; cursor:pointer; font-size:13.5px; }
+  .deck:hover { background:var(--hover); }
+  .deck .tw { width:14px; flex:none; color:var(--muted); text-align:center; font-size:10px; }
+  .deck .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .deck .n { width:40px; text-align:right; font-variant-numeric:tabular-nums; font-weight:600; }
+  .deck .n.zero { color:var(--faint); opacity:0.5; font-weight:400; }
+  .deck .go { width:22px; height:22px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:6px;
+              opacity:0; color:var(--accent); }
+  .deck .go svg { width:12px; height:12px; fill:currentColor; }
+  .deck:hover .go { opacity:1; }
+  .deck .go:hover { background:var(--accent-soft); }
+  .deck-head { display:flex; gap:6px; padding:0 8px 4px; font-size:11px; color:var(--faint); font-weight:650; text-transform:uppercase; letter-spacing:0.04em; }
+  .deck-head .name { flex:1; } .deck-head .n { width:40px; text-align:right; } .deck-head .go { width:22px; }
+  .muted { color:var(--muted); font-size:13px; }
+  .stack { display:flex; flex-direction:column; gap:18px; }
+  .help { color:var(--muted); font-size:13px; line-height:1.6; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+// The app sends dashboard.home(); clicks go back through the web channel.
+let bridge = null;
+new QWebChannel(qt.webChannelTransport, channel => { bridge = channel.objects.home; });
+
+const ICON = {
+  play: `<svg viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></svg>`,
+  folder: `<svg viewBox="0 0 24 24"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>`,
+  globe: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>`,
+};
+const OPEN = new Set();  // decks expanded
+let DATA = null;
+
+function show(d) {
+  DATA = d;
+  const root = document.getElementById("root");
+  let html = `<header><div><h1>${esc(d.greeting)}</h1><div class="date">${esc(d.date)}</div></div><span class="grow"></span>`
+    + `<button class="btn" data-act="web">${ICON.globe}Open web page…</button>`
+    + `<button class="btn" data-act="file">${ICON.folder}Open PDF or EPUB…</button></header>`;
+  html += `<div class="grid">`;
+  html += `<section class="panel today wide">${todayHtml(d)}</section>`;
+  html += `<section class="panel wide">${readingHtml(d)}</section>`;
+  html += `<section class="panel">${decksHtml(d)}</section>`;
+  html += `<div class="stack"><section class="panel"><div class="panel-head"><h2>Activity</h2><span class="grow"></span>`
+    + `<span class="aside">${comma(d.heat.total)} reviews · ${plural(d.heat.active, "day")} in 6 months</span></div><div class="heat" id="heat"></div></section>`
+    + `<section class="panel"><div class="panel-head"><h2>Coming up</h2><span class="grow"></span>`
+    + `<span class="aside">${comma(d.forecast.reduce((a, f) => a + f.count, 0))} cards in 2 weeks</span>`
+    + `<a href="#" data-act="go" data-page="stats">Statistics →</a></div>${forecastHtml(d.forecast)}</section></div>`;
+  html += `</div>`;
+  root.innerHTML = html;
+  heatmap(document.getElementById("heat"), d.heat, { size: 11, fit: true, max: 16 });
+}
+
+function todayHtml(d) {
+  const g = d.game;
+  let left = `<div class="panel-head"><h2>Today's review</h2></div>`;
+  if (!d.total) {
+    left += `<div class="done">No review cards yet</div><div class="help">Every question in a quiz Claude writes becomes a review card.
+      Open a book, select a passage or go to a section, and choose <em>Quiz me</em> (<kbd>Ctrl+Shift+Q</kbd>).</div>`;
+  } else {
+    left += `<div class="counts">`
+      + `<div class="big-count"><span class="n due-c${d.due ? "" : " zero"}">${comma(d.due)}</span><span class="l">due</span></div>`
+      + `<div class="big-count"><span class="n new-c${d.new ? "" : " zero"}">${comma(d.new)}</span><span class="l">new today</span></div></div>`
+      + `<div class="sub">${comma(d.total)} cards${d.new_total > d.new ? ` · ${comma(d.new_total)} new waiting` : ""}${d.suspended ? ` · ${comma(d.suspended)} suspended` : ""}</div>`;
+    if (d.ready) {
+      left += `<div class="actions"><button class="btn primary big" data-act="start">${ICON.play}Start review</button>`
+        + `<button class="btn" data-act="start" data-limit="cards" title="A short session: just ${d.quick.cards} cards">Just ${d.quick.cards} cards</button>`
+        + `<button class="btn" data-act="start" data-limit="time" title="As many cards as fit in ${d.quick.minutes} minutes">${d.quick.minutes} minutes</button></div>`
+        + `<div class="keys"><kbd>Space</kbd> to start · <kbd>5</kbd> for ${d.quick.cards} cards</div>`;
+    } else {
+      left += `<div class="done done-c">All caught up ✓</div><div class="muted">${d.next ? `The next card is due ${esc(d.next)}.` : ""}`
+        + `${d.new_total > d.new ? ` Today's ${d.new_per_day} new cards are done; more tomorrow.` : ""}</div>`;
+    }
+  }
+  const side = g ? playerHtml(g) : `<div class="plain"><div><div class="n">${comma(d.heat.days.at(-1)?.date === d.heat.end ? d.heat.days.at(-1).count : 0)}</div><div class="l">reviewed today</div></div>`
+    + `<div><div class="n">${comma(d.total)}</div><div class="l">cards in all</div></div></div>`;
+  return `<div>${left}</div><div class="side">${side}</div>`;
+}
+
+function readingHtml(d) {
+  let html = `<div class="panel-head"><h2>Continue reading</h2><span class="grow"></span>`
+    + `<a href="#" data-act="go" data-page="library">All ${plural(d.books, "book")} →</a></div>`;
+  if (!d.reading.length) {
+    return html + `<div class="empty-books">Nothing open yet. Open a PDF, EPUB or web page, then select any passage to ask Claude about it.</div>`;
+  }
+  return html + `<div class="books">` + d.reading.map(b => {
+    const cover = b.cover ? `style="background-image:url('${b.cover}')"` : "";
+    const pills = [b.due ? `<span class="pill due" title="Cards due">${b.due} due</span>` : "",
+                   b.new ? `<span class="pill new" title="New cards today">${b.new} new</span>` : ""].join("");
+    const review = b.due + b.new ? `<button class="btn rev" data-act="book" data-book="${b.id}" title="Review this book's cards">${ICON.play}</button>` : "";
+    return `<div class="book" data-act="open" data-book="${b.id}" title="${esc(b.title)}">`
+      + `<div class="cover" ${cover}>${b.cover ? "" : (b.web ? "WEB" : "")}</div>`
+      + `<div class="info"><div class="title">${esc(b.title)}</div>`
+      + `<div class="page">p. ${b.page} of ${b.pages}</div><div class="track"><i style="width:${(100 * b.progress).toFixed(1)}%"></i></div>`
+      + `<div class="foot">${pills}<span class="grow"></span>${review}</div></div></div>`;
+  }).join("") + `</div>`;
+}
+
+function decksHtml(d) {
+  let html = `<div class="panel-head"><h2>Decks</h2><span class="grow"></span><a href="#" data-act="go" data-page="cards">Browse cards →</a></div>`;
+  if (!d.decks.length) return html + `<div class="muted">Your decks show here once you have cards. Each book's cards also have a deck of their own.</div>`;
+  const byParent = {};
+  for (const k of d.decks) (byParent[k.parent ?? 0] ||= []).push(k);
+  const num = (n, cls) => `<span class="n ${n ? cls : "zero"}">${comma(n)}</span>`;
+  const row = (k, depth) => {
+    const kids = byParent[k.id] || [];
+    const key = `d${k.id}`;
+    let r = `<div class="deck" data-act="deck" data-deck="${k.id}" title="${esc(k.path)} · ${plural(k.total, "card")}" style="padding-left:${8 + depth * 16}px">`
+      + `<span class="tw" data-act="twist" data-key="${key}">${kids.length ? (OPEN.has(key) ? "▾" : "▸") : ""}</span>`
+      + `<span class="name">${esc(k.name)}</span>${num(k.due, "due-c")}${num(k.new, "new-c")}`
+      + `<span class="go" data-act="deck-start" data-deck="${k.id}" title="Start reviewing this deck">${ICON.play}</span></div>`;
+    if (OPEN.has(key)) for (const c of kids) r += row(c, depth + 1);
+    return r;
+  };
+  return html + `<div class="decks"><div class="deck-head"><span class="tw"></span><span class="name">Deck</span><span class="n">Due</span><span class="n">New</span><span class="go"></span></div>`
+    + (byParent[0] || []).map(k => row(k, 0)).join("") + `</div>`;
+}
+
+document.addEventListener("click", ev => {
+  const t = ev.target.closest("[data-act]");
+  if (!t || !bridge) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  const act = t.dataset.act;
+  if (act === "start") bridge.start(t.dataset.limit || "");
+  else if (act === "open") bridge.open(+t.dataset.book);
+  else if (act === "book") bridge.reviewBook(+t.dataset.book);
+  else if (act === "deck") bridge.reviewDeck(+t.dataset.deck, false);
+  else if (act === "deck-start") bridge.reviewDeck(+t.dataset.deck, true);
+  else if (act === "twist") { const k = t.dataset.key; OPEN.has(k) ? OPEN.delete(k) : OPEN.add(k); show(DATA); }
+  else if (act === "go") bridge.go(t.dataset.page);
+  else if (act === "file" || act === "web") bridge.add(act);
+});
+
+document.addEventListener("keydown", ev => {
+  if (!bridge || !DATA || !DATA.ready || ev.ctrlKey || ev.altKey || ev.metaKey) return;
+  if (ev.key === " " || ev.key === "Enter") { ev.preventDefault(); bridge.start(""); }
+  else if (ev.key === "5") { ev.preventDefault(); bridge.start("cards"); }
+});
+</script>
+</body>
+</html>

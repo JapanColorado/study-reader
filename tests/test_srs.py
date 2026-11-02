@@ -1,6 +1,8 @@
 import json
 import time
 
+from PySide6.QtCore import Qt
+
 from study_reader import quiz, srs
 from study_reader.db import Database
 
@@ -399,11 +401,54 @@ def test_main_window_review_panel(pdf_path, tmp_path, monkeypatch):
     win._review_source(win.book_id, 2)
     assert win.reader.current_page() == 2
 
-    win.show_review_all()
-    assert win.center.currentWidget() is win.review_all and win.book_id is None
-    assert win.library.review.text() == "Review · 2"
-    win._review_chat(db.book_by_hash(db.recent_books()[0]["hash"])["id"], chat)
+    assert win.review_action.text() == "Review · 2" and win.nav.buttons["review"].badge == "2"
+    book_id = win.book_id
+    win.show_review_all()  # the book stays open behind the Review page
+    assert win.center.currentWidget() is win.review_all and win.book_id == book_id
+    assert not win.toolbar.isVisible() and not win.right.isVisible() and win.nav.book.isVisible()
+    win._review_chat(book_id, chat)
     assert win.center.currentWidget() is win.reader and win.chat.chat_id == chat
+    assert win.toolbar.isVisible() and win.right.isVisible()
+
+    win.library.reviewBookRequested.emit(book_id)  # the Library's Review button
+    assert win.page() == "review" and win.review_all.picked_book == book_id and win.review_all.card_id is not None
+    win.close()
+
+
+def test_navigating_pages_keeps_the_book_open(pdf_path, tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    from PySide6.QtWidgets import QApplication
+    from study_reader.main_window import MainWindow
+
+    QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "t.db")
+    win = MainWindow(db)
+    win.show()
+    assert win.page() == "home" and not win.toolbar.isVisible() and not win.nav.book.isVisible()
+    win.show_page("book")  # nothing open: Home
+    assert win.page() == "home"
+
+    win.open_book(pdf_path)
+    book_id = win.book_id
+    assert win.page() == "book" and win.toolbar.isVisible() and win.nav.book.isVisible()
+    assert win.nav.buttons["book"].isChecked() and win.right.isVisible()
+    win.reader.go_to(2)
+    win.show_page("library")
+    assert db.book(book_id)["last_page"] == 2  # saved on the way out
+    assert win.book_id == book_id and not win.right.isVisible() and not win.quiz_action.isEnabled()
+    rows = [win.library.list.item(i).data(Qt.ItemDataRole.UserRole + 1) for i in range(win.library.list.count())]
+    assert rows[0]["id"] == book_id and rows[0]["cards"] == 0 and not rows[0]["due"]
+    win.show_page("home")
+    assert win.home.data["reading"][0]["id"] == book_id and win.home.data["reading"][0]["cover"].startswith("file:")
+    win.show_page("book")
+    assert win.reader.current_page() == 2 and win.right.isVisible() and win.quiz_action.isEnabled()
+
+    win.close_book()
+    assert win.book_id is None and win.page() == "home" and not win.nav.book.isVisible()
+    win.home.openRequested.emit(book_id)
+    assert win.book_id == book_id and win.page() == "book"
+    win.close()
     win.close()
 
 

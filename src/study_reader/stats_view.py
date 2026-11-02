@@ -19,29 +19,32 @@ ASSETS = Path(__file__).parent / "assets"
 
 
 class StatsWindow(QWidget):
-    """A top-level window; the combo box picks the scope: all decks, one deck (with the decks
-    under it), or one book's cards."""
+    """A top-level window, or (window=False) the main window's Stats page; the combo box picks
+    the scope: all decks, one deck (with the decks under it), or one book's cards."""
 
-    def __init__(self, db: Database, parent=None):
-        super().__init__(parent, Qt.WindowType.Window)
+    def __init__(self, db: Database, parent=None, window: bool = True):
+        super().__init__(parent, Qt.WindowType.Window if window else Qt.WindowType.Widget)
         self.db = db
         self.setWindowTitle("Statistics — Study Reader")
         self.setObjectName("library")  # the window background
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
-        self.resize(1040, 820)
+        if window:
+            self.resize(1040, 820)
 
         self.scope = QComboBox()
         self.scope.setMinimumWidth(320)
+        self.scope.setMaximumWidth(440)
         self.scope.activated.connect(lambda _: self.refresh())
         refresh = QPushButton("Refresh")
         refresh.setToolTip("Recompute the statistics")
         refresh.clicked.connect(self.refresh)
-        label = QLabel("Show")
-        label.setProperty("role", "muted")
+        title = QLabel("Statistics")
+        title.setProperty("role", "title")
         top = QHBoxLayout()
-        top.addWidget(label)
-        top.addWidget(self.scope)
+        top.addWidget(title)
+        top.addSpacing(16)
         top.addStretch()
+        top.addWidget(self.scope)
         top.addWidget(refresh)
 
         self.view = QWebEngineView()
@@ -52,9 +55,13 @@ class StatsWindow(QWidget):
         self.view.load(QUrl.fromLocalFile(str(ASSETS / "stats.html")))
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 12)
-        layout.setSpacing(8)
-        layout.addLayout(top)
+        layout.setContentsMargins(28, 22, 28, 16)
+        layout.setSpacing(14)
+        head = QWidget()
+        head.setMaximumWidth(1100)  # stats.html's width
+        head.setLayout(top)
+        top.setContentsMargins(16, 0, 16, 0)
+        layout.addWidget(head, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(self.view, 1)
         theme().changed.connect(self._apply_theme)
         self._apply_theme()
@@ -75,7 +82,7 @@ class StatsWindow(QWidget):
         self._pending.clear()
 
     def _apply_theme(self) -> None:
-        self.view.page().setBackgroundColor(QColor(theme().colors["surface"]))
+        self.view.page().setBackgroundColor(QColor(theme().colors["window"]))
         self._js("setTheme", theme().colors, theme().dark)
 
     # -- scope ---------------------------------------------------------------------------

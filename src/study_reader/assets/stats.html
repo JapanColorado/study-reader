@@ -8,7 +8,7 @@
   :root { --surface:#fbfaf8; --raised:#ffffff; --fg:#1f1e1c; --muted:#6b6862; --faint:#a19d95; --border:#dedad2;
           --hover:#ebe8e1; --accent:#b8562f; --accent-fg:#ffffff; --accent-soft:#f4e2d8; --code:#f1eee8; --scroll:#cfcac1;
           --user:#efece6; --error:#c0392b; --success:#3a8f5c; --warning:#b8860b; }
-  html, body { margin:0; background:var(--surface); color:var(--fg); font:14.5px/1.6 system-ui, sans-serif; }
+  html, body { margin:0; background:var(--window, var(--surface)); color:var(--fg); font:14.5px/1.6 system-ui, sans-serif; }
   ::-webkit-scrollbar { width:11px; height:11px; }
   ::-webkit-scrollbar-thumb { background:var(--scroll); border-radius:3px; border:3px solid transparent; background-clip:padding-box; }
   ::-webkit-scrollbar-thumb:hover { background-color:var(--faint); }
@@ -69,9 +69,9 @@ const shortDate = iso => new Date(iso + "T12:00").toLocaleDateString(undefined, 
 // Series colors that read in both themes, keyed by meaning.
 function palette() {
   return {
-    new: "#5b8def", learning: css("warning"), relearning: css("error"), young: "#7cc49a",
+    new: css("new") || "#5b8def", learning: css("warning"), relearning: css("error"), young: "#7cc49a",
     mature: css("success"), suspended: css("faint"), again: css("error"), passed: css("success"),
-    first: "#5b8def", accent: css("accent"), muted: css("muted"), border: css("border"), fg: css("fg"),
+    first: css("new") || "#5b8def", accent: css("accent"), muted: css("muted"), border: css("border"), fg: css("fg"),
   };
 }
 

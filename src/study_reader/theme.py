@@ -17,19 +17,21 @@ MODES = [("system", "Match system"), ("light", "Light"), ("dark", "Dark")]
 
 # Keys are shared with transcript.html, which receives them as CSS variables.
 LIGHT = {
-    "window": "#f3f1ec", "surface": "#fbfaf8", "raised": "#ffffff", "fg": "#1f1e1c",
-    "muted": "#6b6862", "faint": "#a19d95", "border": "#dedad2", "hover": "#ebe8e1",
-    "accent": "#b8562f", "accent_hover": "#a24a27", "accent_fg": "#ffffff", "accent_soft": "#f4e2d8",
-    "canvas": "#e3e0d9", "user": "#efece6", "code": "#f1eee8", "error": "#c0392b", "scroll": "#cfcac1",
-    "success": "#3a8f5c", "warning": "#b8860b",
+    "window": "#f4f1ea", "surface": "#faf8f4", "raised": "#ffffff", "fg": "#1d1b18",
+    "muted": "#69645c", "faint": "#a39e95", "border": "#e2ddd3", "hover": "#ece8df",
+    "accent": "#b9532b", "accent_hover": "#a34723", "accent_fg": "#ffffff", "accent_soft": "#f6e4da",
+    "canvas": "#e6e2da", "user": "#efebe4", "code": "#f2efe9", "error": "#c0392b", "scroll": "#d2ccc2",
+    "success": "#2f8a57", "warning": "#a87a0a", "new": "#2f6db5",
+    "success_soft": "#e1f0e6", "new_soft": "#e3ecf8", "rail": "#ebe7de", "shadow": "rgba(60,45,30,0.10)",
     "page_bg": "#ffffff", "page_fg": "#000000",
 }
 DARK = {
-    "window": "#1a1918", "surface": "#1f1e1d", "raised": "#292725", "fg": "#ece9e2",
-    "muted": "#a09c94", "faint": "#6c6862", "border": "#363330", "hover": "#2e2c2a",
-    "accent": "#e08a63", "accent_hover": "#eb9c78", "accent_fg": "#1c1410", "accent_soft": "#3d2b22",
-    "canvas": "#131211", "user": "#2d2b29", "code": "#2a2826", "error": "#ec7063", "scroll": "#45413d",
-    "success": "#6cc28e", "warning": "#e2bd52",
+    "window": "#171615", "surface": "#1c1b19", "raised": "#22201e", "fg": "#efebe4",
+    "muted": "#a8a298", "faint": "#6f6a63", "border": "#312e2a", "hover": "#2b2926",
+    "accent": "#e5895f", "accent_hover": "#efa07c", "accent_fg": "#1d130e", "accent_soft": "#3a2a21",
+    "canvas": "#121110", "user": "#2a2826", "code": "#272522", "error": "#ef7a6c", "scroll": "#433f3a",
+    "success": "#74c69d", "warning": "#e3be5c", "new": "#7fb0e8",
+    "success_soft": "#1f3128", "new_soft": "#1f2a38", "rail": "#121110", "shadow": "rgba(0,0,0,0.35)",
     "page_bg": "#201e1c", "page_fg": "#dcd7ce",
 }
 
@@ -79,6 +81,15 @@ ICONS = {
     "search": '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
     "import": '<path d="M12 3v12"/><path d="m8 11 4 4 4-4"/>'
               '<path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4"/>',
+    "home": '<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/>'
+            '<path d="M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+    "book-open": '<path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5'
+                 'a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/>',
+    "play": '<polygon points="6 3 20 12 6 21 6 3"/>',
+    "plus": '<path d="M5 12h14"/><path d="M12 5v14"/>',
+    "brain": '<path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/>'
+             '<path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/>'
+             '<path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M12 18v-5"/>',
     "download": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
 }
 
@@ -106,8 +117,10 @@ class _LineIcon(QIconEngine):
         c = theme().colors
         if mode == QIcon.Mode.Disabled:
             return c["faint"]
-        if state == QIcon.State.On and self.role == "fg":
+        if state == QIcon.State.On and self.role in ("fg", "nav"):
             return c["accent"]
+        if self.role == "nav":  # the navigation rail: quiet until chosen
+            return c["muted"]
         return c[self.role]
 
     def scaledPixmap(self, size: QSize, mode: QIcon.Mode, state: QIcon.State, scale: float) -> QPixmap:
@@ -184,25 +197,29 @@ def _palette(c: dict) -> QPalette:
 
 STYLESHEET = Template("""
 QMainWindow, QDialog { background: $window; }
-QToolBar { background: $window; border: none; border-bottom: 1px solid $border; padding: 5px 8px; spacing: 2px; }
+QToolBar { background: $window; border: none; border-bottom: 1px solid $border; padding: 6px 10px; spacing: 3px; }
 QToolBar::separator { background: $border; width: 1px; margin: 5px 7px; }
-QToolButton { background: transparent; color: $fg; border: 1px solid transparent; border-radius: 6px; padding: 4px; }
+QToolButton { background: transparent; color: $fg; border: 1px solid transparent; border-radius: 7px; padding: 4px 5px; }
 QToolButton:hover { background: $hover; }
 QToolButton:pressed { background: $border; }
 QToolButton:checked { background: $accent_soft; color: $accent; }
 QToolButton:disabled { color: $faint; }
 QToolButton:checked:disabled { background: transparent; }
 QToolButton::menu-indicator { image: none; width: 0; }
+QToolButton[popupMode="1"] { padding-right: 16px; }
+QToolButton::menu-button { border: none; background: transparent; width: 16px; }
+QToolButton::menu-arrow { image: url($chevron_down); width: 10px; height: 10px; }
 QToolButton#send { background: $accent; border: none; border-radius: 15px; padding: 0; }
 QToolButton#send:hover { background: $accent_hover; }
 QToolButton#send:disabled { background: $border; }
 QToolButton#section { font-weight: 600; color: $muted; padding: 3px 6px 3px 2px; }
 
-QPushButton { background: $raised; color: $fg; border: 1px solid $border; border-radius: 7px; padding: 5px 12px; }
+QPushButton { background: $raised; color: $fg; border: 1px solid $border; border-radius: 8px; padding: 6px 13px; }
+QPushButton:focus { border-color: $accent; }
 QPushButton:hover { background: $hover; }
 QPushButton:pressed { background: $border; }
 QPushButton:disabled { color: $faint; }
-QPushButton[primary="true"] { background: $accent; color: $accent_fg; border-color: $accent; }
+QPushButton[primary="true"] { background: $accent; color: $accent_fg; border-color: $accent; font-weight: 600; }
 QPushButton[primary="true"]:hover { background: $accent_hover; border-color: $accent_hover; }
 
 QComboBox { background: transparent; color: $fg; border: 1px solid $border; border-radius: 6px; padding: 3px 6px 3px 9px; }
@@ -285,9 +302,20 @@ QToolTip { background: $raised; color: $fg; border: 1px solid $border; padding: 
 QWidget#sidebar { background: $window; }
 QWidget#chatPanel { background: $surface; }
 QWidget#library { background: $window; }
+QWidget#navRail { background: $rail; border-right: 1px solid $border; }
+QToolButton#navItem { color: $muted; border: none; border-radius: 11px; padding: 6px 0 5px; font-size: 8.5pt; }
+QToolButton#navItem:hover { background: $hover; color: $fg; }
+QToolButton#navItem:checked { background: $accent_soft; color: $accent; font-weight: 600; }
+QToolButton#navItem:pressed { background: $border; }
+QLineEdit#libraryFilter { background: $raised; color: $fg; border: 1px solid $border; border-radius: 8px; padding: 6px 9px;
+                          selection-background-color: $accent_soft; selection-color: $fg; }
+QLineEdit#libraryFilter:focus { border-color: $accent; }
+QMenuBar#browserMenu { background: $window; padding: 3px 6px; }
 QLabel[role="muted"] { color: $muted; }
 QLabel[role="hint"] { color: $faint; font-size: 8pt; }
 QLabel[role="heading"] { font-size: 17pt; font-weight: 600; }
+QLabel[role="title"] { font-size: 20pt; font-weight: 700; }
+QLabel#bookTitle { color: $fg; font-weight: 600; padding: 0 6px 0 4px; }
 QLabel[role="section"] { color: $muted; font-weight: 600; padding: 2px 4px; }
 QLabel[role="page"] { color: $accent; font-weight: 600; }
 

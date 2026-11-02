@@ -1,4 +1,5 @@
-"""Main window: table of contents | reader, library or review | chats, calculator, notes or review."""
+"""Main window: the navigation rail | the open book (contents | reader | chats, calculator, notes
+or review) or a page: Home, Library, Review, Cards, Stats."""
 
 from __future__ import annotations
 
@@ -23,7 +24,9 @@ from .chat_service import ChatWorker
 from .convert_dialog import ConversionManager
 from .db import Database, data_dir
 from .document import Document, file_hash
+from .home_view import HomeView
 from .library_view import LibraryView
+from .nav import PAGES, NavRail
 from .notes import NotesPanel
 from .reader_view import ReaderView
 from .review import ReviewPanel, VariantMaker
@@ -44,8 +47,8 @@ class MainWindow(QMainWindow):
         self._learn_tocs()  # once a book: section tags for quiz cards from before there were any
         self.conversions = ConversionManager(self.db, self.worker, self)  # Claude Conversion of cards
         self.conversions.cardsChanged.connect(lambda: self._on_cards_changed())
-        self.browser = None  # browser.CardBrowser, made when first opened
-        self.stats_window = None  # stats_view.StatsWindow, likewise
+        self.browser = None  # browser.CardBrowser, the Cards page, made when first shown
+        self.stats_window = None  # stats_view.StatsWindow, the Stats page, likewise
         self._optimizer: _Optimizer | None = None
         self.doc: Document | None = None
         self.book_id: int | None = None
@@ -63,13 +66,20 @@ class MainWindow(QMainWindow):
         side.addWidget(self.toc, 1)
 
         self.reader = ReaderView()
+        self.home = HomeView(self.db)
         self.library = LibraryView(self.db)
         self.variants = VariantMaker(self.db, self.worker, self)  # new numbers for reviewed calculation cards
-        self.review_all = ReviewPanel(self.db, all_books=True, variants=self.variants)  # every book's cards, from the library
+        self.review_all = ReviewPanel(self.db, all_books=True, variants=self.variants)  # every book's cards: the Review page
+        self.cards_page = _Page()  # holds the browser once made
+        self.stats_page = _Page()  # holds the statistics once made
         self.center = QStackedWidget()
-        self.center.addWidget(self.library)
-        self.center.addWidget(self.reader)
-        self.center.addWidget(self.review_all)
+        # The pages the navigation rail switches between; "book" is the open book.
+        self.pages = {
+            "home": self.home, "library": self.library, "review": self.review_all,
+            "cards": self.cards_page, "stats": self.stats_page, "book": self.reader,
+        }
+        for w in self.pages.values():
+            self.center.addWidget(w)
         self.chat = ChatPanel(self.db, self.worker, self.variants)
         self.chat.current_page = self.reader.current_page
         self.calc = CalculatorPanel(self.db)
@@ -85,15 +95,35 @@ class MainWindow(QMainWindow):
             split.addWidget(w)
         split.setStretchFactor(1, 1)
         split.setSizes([240, 800, 460])
-        self.setCentralWidget(split)
 
-        self._build_toolbar()
+        self._build_actions()
+        self.nav = NavRail(self._build_settings_menu())
+        self.nav.pageRequested.connect(self.show_page)
+        central = QWidget()
+        row = QHBoxLayout(central)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        row.addWidget(self.nav)
+        col = QVBoxLayout()
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(0)
+        col.addWidget(self.toolbar)  # the reader's: beside the rail, over the book
+        col.addWidget(split, 1)
+        row.addLayout(col, 1)
+        self.setCentralWidget(central)
+
+        self.home.startRequested.connect(self.review_everything)
+        self.home.openRequested.connect(self._open_book_id)
+        self.home.reviewBookRequested.connect(self.review_book)
+        self.home.reviewDeckRequested.connect(self._review_deck)
+        self.home.pageRequested.connect(self.show_page)
+        self.home.browseRequested.connect(self.browse)
+        self.home.webRequested.connect(self.ask_url)
         self.library.openRequested.connect(self.open_book)
         self.library.browseRequested.connect(self.browse)
         self.library.webRequested.connect(self.ask_url)
         self.library.refetchRequested.connect(self.refetch)
-        self.library.reviewRequested.connect(self.show_review_all)
-        self.library.cardsRequested.connect(self.show_browser)
+        self.library.reviewBookRequested.connect(self.review_book)
         self.web = WebImporter(data_dir() / "web", self)
         self.web.status.connect(lambda text: self._web_progress and self._web_progress.setLabelText(text))
         self.web.finished.connect(self._on_web_done)
@@ -125,15 +155,15 @@ class MainWindow(QMainWindow):
         self._save_timer = QTimer(self, interval=10_000)
         self._save_timer.timeout.connect(self._save_position)
         self._save_timer.start()
-        self.show_library()
+        self.show_page("home")
 
-    def _build_toolbar(self) -> None:
-        bar = QToolBar("Main")
+    def _build_actions(self) -> None:
+        """Window-wide actions and the reader's toolbar (shown only while reading)."""
+        bar = self.toolbar = QToolBar("Main")
         bar.setMovable(False)
         bar.setIconSize(QSize(18, 18))
         bar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         bar.setContextMenuPolicy(Qt.ContextMenuPolicy.PreventContextMenu)
-        self.addToolBar(bar)
 
         def action(text: str, shortcut, slot, icon_name: str = "", checkable: bool = False) -> QAction:
             a = QAction(text, self, checkable=checkable)
@@ -149,19 +179,27 @@ class MainWindow(QMainWindow):
         def labelled(a: QAction) -> None:
             bar.widgetForAction(a).setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
 
+        # Pages, from anywhere (the rail shows them too).
+        action("Library", "Ctrl+L", lambda: self.show_page("library"))
+        for n, (name, *_rest) in enumerate(PAGES, 1):
+            action(name, f"Alt+{n}", lambda _=False, page=name: self.show_page(page))
+        action("Book", f"Alt+{len(PAGES) + 1}", lambda: self.show_page("book"))
+        action("Open…", QKeySequence.StandardKey.Open, self.browse)
+        self.web_action = action("Open web page…", "Ctrl+Shift+O", self.ask_url)
+        action("Browse cards", "Ctrl+Shift+B", self.show_browser)
+        self.close_action = action("Close book", "Ctrl+W", self.close_book)
+
         self.toc_action = action("Contents", "F9", self._toggle_toc, "panel-left", checkable=True)
         self.toc_action.setChecked(True)
         bar.addAction(self.toc_action)
-        library = action("Library", "Ctrl+L", self.show_library, "library")
-        bar.addAction(library)
-        labelled(library)
-        bar.addAction(action("Open…", QKeySequence.StandardKey.Open, self.browse, "folder-open"))
-        bar.addAction(action("Open web page…", "Ctrl+Shift+O", self.ask_url, "globe"))
+        self.book_title = _muted()
+        self.book_title.setObjectName("bookTitle")
+        self.book_title.setMaximumWidth(280)
+        bar.addWidget(self.book_title)
         self.finished_action = action("Finished", "", self._set_finished, "check-circle", checkable=True)
         self.finished_action.setToolTip("Mark this book as finished (moves it to the library's Finished section)")
         bar.addAction(self.finished_action)
-        # Toolbar entries that only make sense with a book open; hidden in the library.
-        book_items = [bar.addSeparator()]
+        bar.addSeparator()
 
         zoom_out = action("Zoom out", "Ctrl+-", self.reader.zoom_out, "zoom-out")
         zoom_in = action("Zoom in", "Ctrl+=", self.reader.zoom_in, "zoom-in")
@@ -171,11 +209,11 @@ class MainWindow(QMainWindow):
         self.zoom_label.setMinimumWidth(42)
         self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         bar.addAction(zoom_out)
-        book_items += [bar.addWidget(self.zoom_label)]
+        bar.addWidget(self.zoom_label)
         bar.addAction(zoom_in)
         bar.addAction(fit)
         bar.addAction(self.crop_action)
-        book_items += [bar.addSeparator()]
+        bar.addSeparator()
 
         self.page_spin = QSpinBox()
         self.page_spin.setKeyboardTracking(False)
@@ -185,7 +223,9 @@ class MainWindow(QMainWindow):
         self.page_spin.setToolTip("Go to page")
         self.page_spin.valueChanged.connect(lambda v: self.reader.go_to(v - 1))
         self.page_total = _muted()
-        book_items += [bar.addWidget(self.page_spin), bar.addWidget(self.page_total), bar.addSeparator()]
+        bar.addWidget(self.page_spin)
+        bar.addWidget(self.page_total)
+        bar.addSeparator()
 
         self.region_action = action(
             "Screenshot region", "Ctrl+Shift+S", self.reader.set_region_mode, "scan", checkable=True
@@ -216,17 +256,35 @@ class MainWindow(QMainWindow):
         add_note = action("Add note", "Ctrl+Shift+N", self.reader.choose_note)
         self.book_actions = [
             zoom_out, zoom_in, fit, self.crop_action, self.region_action, self.quiz_action,
-            self.finished_action, new_chat, add_note,
-        ]
-        self.book_items = book_items + [
-            zoom_out, zoom_in, fit, self.crop_action, self.region_action, self.quiz_action,
-            self.finished_action,
+            self.finished_action, new_chat, add_note, self.close_action,
         ]
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         bar.addWidget(spacer)
 
+        # The right-hand panels; Review leads, with the open book's count on it.
+        self.review_action = action("Review", "F8", lambda on: self._toggle_right("review", on), "cards", checkable=True)
+        bar.addAction(self.review_action)
+        labelled(self.review_action)
+        self.chat_action = action("Chats", "F10", lambda on: self._toggle_right("chat", on), "message", checkable=True)
+        self.chat_action.setChecked(True)
+        bar.addAction(self.chat_action)
+        labelled(self.chat_action)
+        self.notes_action = action("Notes", "F12", lambda on: self._toggle_right("notes", on), "note", checkable=True)
+        bar.addAction(self.notes_action)
+        self.calc_action = action("Calculator", "F11", lambda on: self._toggle_right("calc", on), "calculator", checkable=True)
+        bar.addAction(self.calc_action)
+        # The right-hand slot's panels, by the name books.right_panel stores; one at most is shown.
+        self.right_panels = {
+            "chat": (self.chat_action, self.chat),
+            "calc": (self.calc_action, self.calc),
+            "notes": (self.notes_action, self.notes),
+            "review": (self.review_action, self.review),
+        }
+
+    def _build_settings_menu(self) -> QMenu:
+        """The rail's Settings menu."""
         menu = QMenu(self)
         self.theme_menu = menu.addMenu("Theme")
         group = QActionGroup(self)
@@ -251,11 +309,6 @@ class MainWindow(QMainWindow):
             a.triggered.connect(lambda _=False, v=value: self.chat.set_default_model(v))
             group.addAction(a)
         menu.addSeparator()
-        browse = menu.addAction(icon("search"), "Browse cards…")
-        browse.setShortcut(QKeySequence("Ctrl+Shift+B"))
-        browse.triggered.connect(self.show_browser)
-        self.addAction(browse)
-        menu.addAction(icon("chart"), "Statistics…").triggered.connect(lambda: self.show_stats())
         menu.addAction(icon("import"), "Migrate from Anki…").triggered.connect(self.migrate_from_anki)
         review_menu = menu.addMenu(icon("cards"), "Review settings")
         review_menu.addAction("New cards per day…").triggered.connect(self._set_new_per_day)
@@ -268,29 +321,7 @@ class MainWindow(QMainWindow):
         self.rewards_action.setChecked(gamify.enabled(self.db))
         self.rewards_action.toggled.connect(self._set_rewards)
         review_menu.addAction("Daily goal…").triggered.connect(self._set_daily_goal)
-        settings = QToolButton()
-        settings.setIcon(icon("settings"))
-        settings.setToolTip("Settings")
-        settings.setMenu(menu)
-        settings.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        bar.addWidget(settings)
-
-        self.review_action = action("Review", "F8", lambda on: self._toggle_right("review", on), "cards", checkable=True)
-        bar.addAction(self.review_action)
-        self.notes_action = action("Notes", "F12", lambda on: self._toggle_right("notes", on), "note", checkable=True)
-        bar.addAction(self.notes_action)
-        self.calc_action = action("Calculator", "F11", lambda on: self._toggle_right("calc", on), "calculator", checkable=True)
-        bar.addAction(self.calc_action)
-        self.chat_action = action("Chats", "F10", lambda on: self._toggle_right("chat", on), "message", checkable=True)
-        self.chat_action.setChecked(True)
-        bar.addAction(self.chat_action)
-        # The right-hand slot's panels, by the name books.right_panel stores; one at most is shown.
-        self.right_panels = {
-            "chat": (self.chat_action, self.chat),
-            "calc": (self.calc_action, self.calc),
-            "notes": (self.notes_action, self.notes),
-            "review": (self.review_action, self.review),
-        }
+        return menu
 
     # -- appearance ---------------------------------------------------------------
     def _set_theme(self, mode: str | None = None, dark_pages: bool | None = None) -> None:
@@ -303,7 +334,7 @@ class MainWindow(QMainWindow):
         self.dark_pages_action.setEnabled(theme().dark)
 
     def _toggle_toc(self, on: bool) -> None:
-        self.sidebar.setVisible(on and self.toc.topLevelItemCount() > 0)
+        self.sidebar.setVisible(on and self.reading and self.toc.topLevelItemCount() > 0)
         self._save_panels()
 
     def _toggle_right(self, name: str, on: bool) -> None:
@@ -331,15 +362,69 @@ class MainWindow(QMainWindow):
         self.db.update_book(self.book_id, show_toc=int(self.toc_action.isChecked()), right_panel=right)
 
     def _sync_right(self) -> None:
-        """Show whichever of chats / calculator / notes is toggled on, or none."""
+        """Show whichever of chats / calculator / notes / review is toggled on, or none."""
         panel = next((w for a, w in self.right_panels.values() if a.isChecked()), None)
         if panel:
             self.right.setCurrentWidget(panel)
-        self.right.setVisible(panel is not None and self.book_id is not None)
+        self.right.setVisible(panel is not None and self.reading)
 
-    # -- library / opening --------------------------------------------------------
+    # -- pages ----------------------------------------------------------------------
+    @property
+    def reading(self) -> bool:
+        """The open book is on screen (not another page)."""
+        return self.doc is not None and self.center.currentWidget() is self.reader
+
+    def page(self) -> str:
+        """The page on screen: a name from self.pages."""
+        return next(name for name, w in self.pages.items() if w is self.center.currentWidget())
+
+    def show_page(self, name: str, refresh: bool = True) -> None:
+        """Switch the center to a page of the rail. The open book stays open behind the other
+        pages; "book" goes back to it."""
+        if name == "book" and self.doc is None:
+            name = "home"
+        current = self.center.currentWidget()
+        if current is self.reader and name != "book":
+            self._save_position()
+            if self.region_action.isChecked():
+                self.region_action.trigger()
+        if current is self.cards_page and self.browser is not None and name != "cards":
+            self.browser.save_note()
+        if name == "cards":
+            self._ensure_browser()
+        elif name == "stats":
+            self._ensure_stats()
+        self.center.setCurrentWidget(self.pages[name])
+        self.nav.set_current(name)
+        self._set_book_ui(name == "book")
+        # The browser's own Ctrl+Shift+O (Open in book) wins while it is on screen.
+        self.web_action.setEnabled(name != "cards")
+        if name == "book":
+            self.setWindowTitle(f"{self.db.book(self.book_id)['title']} — Study Reader")
+        else:
+            title = {"library": "Library", "review": "Review", "cards": "Cards", "stats": "Statistics"}.get(name)
+            self.setWindowTitle(f"{title} — Study Reader" if title else "Study Reader")
+        if refresh:
+            if name == "home":
+                self.home.refresh()
+                self.home.focus()
+            elif name == "library":
+                self.library.refresh()
+                self.library.list.setFocus()
+            elif name == "review":
+                self.review_all.refresh()
+                self.review_all.focus()
+            elif name == "cards":
+                self.browser.refresh()
+            elif name == "stats":
+                self.stats_window.show_scope()
+        self._update_review_counts()
+
     def show_library(self) -> None:
-        """Close the open book (replies still arriving are saved) and show the library."""
+        self.show_page("library")
+
+    def close_book(self) -> None:
+        """Close the open book (replies still arriving are saved) and go Home."""
         self._save_position()
         if self.region_action.isChecked():
             self.region_action.trigger()
@@ -349,21 +434,18 @@ class MainWindow(QMainWindow):
         self.doc, self.book_id = None, None
         self.toc.clear()
         self.page_total.setText("")
-        self.setWindowTitle("Study Reader")
+        self.book_title.setText("")
         self.chat.set_book(None)
         self.calc.set_book(None)
         self.notes.set_book(None)
         self.review.set_book(None)
-        self.review_all.stop()
-        self.library.refresh()
-        self.center.setCurrentWidget(self.library)
-        self._set_book_ui(False)
+        self.nav.set_book(None)
+        self.show_page("home")
 
     def _set_book_ui(self, reading: bool) -> None:
+        self.toolbar.setVisible(reading)
         for a in self.book_actions:
             a.setEnabled(reading)
-        for a in self.book_items:
-            a.setVisible(reading)
         for a, _ in self.right_panels.values():
             a.setEnabled(reading)
         self._sync_right()
@@ -477,7 +559,6 @@ class MainWindow(QMainWindow):
         self.book_id = book["id"]
         if remember_dir:
             self.db.set_setting("last_dir", str(path).rsplit("/", 1)[0])
-        self.setWindowTitle(f"{book['title']} — Study Reader")
         srs.learn_toc(self.db, self.book_id, doc.toc())
 
         self._fill_toc()
@@ -488,8 +569,10 @@ class MainWindow(QMainWindow):
         self.page_spin.setRange(1, doc.page_count)
         self.page_spin.blockSignals(False)
         self.page_total.setText(f"of {doc.page_count}")
-        self.center.setCurrentWidget(self.reader)
-        self._set_book_ui(True)
+        self.book_title.setText(self.book_title.fontMetrics().elidedText(book["title"], Qt.TextElideMode.ElideRight, 260))
+        self.book_title.setToolTip(book["title"])
+        self.nav.set_book(book["title"])
+        self.show_page("book", refresh=False)
         self.crop_action.setChecked(bool(book["crop_margins"]))
         self.finished_action.setChecked(book["finished_at"] is not None)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
@@ -642,11 +725,21 @@ class MainWindow(QMainWindow):
 
     # -- review ---------------------------------------------------------------------
     def show_review_all(self) -> None:
-        """Review every book's cards, in the center in place of the library."""
-        self.show_library()
-        self.center.setCurrentWidget(self.review_all)
-        self.setWindowTitle("Review — Study Reader")
-        self.review_all.refresh()
+        """The Review page: every deck and book's cards."""
+        self.show_page("review")
+
+    def review_everything(self, limit: str = "") -> None:
+        """Start reviewing every deck (Home's Start review): "" or a quick session's limit."""
+        self.show_page("review")
+        self.review_all.choose_deck(None)
+        self.review_all.start(limit)
+        self.review_all.focus()
+
+    def review_book(self, book_id: int) -> None:
+        """Start reviewing one book's cards on the Review page (the Library's and Home's Review)."""
+        self.show_page("review")
+        self.review_all.choose_book(book_id)
+        self.review_all.start()
         self.review_all.focus()
 
     def _on_cards_changed(self) -> None:
@@ -655,21 +748,29 @@ class MainWindow(QMainWindow):
             if panel.card_id is None and panel.isVisible():
                 panel.refresh()
         self._update_review_counts()
-        if self.stats_window is not None and self.stats_window.isVisible():
+        if self.home.isVisible():
+            self.home.refresh()
+        elif self.library.isVisible():
+            self.library.refresh()
+        elif self.stats_window is not None and self.stats_window.isVisible():
             self.stats_window.refresh()
 
     def _update_review_counts(self) -> None:
+        """The counts on the rail's Review and the reader's Review button."""
+        everything = srs.counts(self.db, None)
+        self.nav.set_review_badge(everything["due"] + everything["new"])
         c = srs.counts(self.db, self.book_id) if self.book_id is not None else None
         waiting = c["due"] + c["new"] if c else 0
+        self.review_action.setText(f"Review · {waiting}" if waiting else "Review")
         self.review_action.setToolTip(
-            f"Review (F8) · {waiting} card{'s' * (waiting != 1)} to review" if c else "Review (F8)"
+            f"Review this book's cards (F8) · {waiting} card{'s' * (waiting != 1)} to review" if c else "Review (F8)"
         )
-        self.library.set_review_counts(srs.counts(self.db, None))
 
     def _review_source(self, book_id: int, page: int) -> None:
         """A card's page: in the open book, or the book opened with its Review panel."""
         if book_id != self.book_id and not self._open_book_id(book_id):
             return
+        self.show_page("book")
         if not self.review_action.isChecked():
             self.review_action.trigger()
         if page >= 0:
@@ -678,6 +779,7 @@ class MainWindow(QMainWindow):
     def _review_chat(self, book_id: int, chat_id: int) -> None:
         if book_id != self.book_id and not self._open_book_id(book_id):
             return
+        self.show_page("book")
         self._show_chat(lambda: self.chat.open_chat(chat_id))
 
     def _open_book_id(self, book_id: int) -> bool:
@@ -685,39 +787,42 @@ class MainWindow(QMainWindow):
         if book is None or not os.path.exists(book["path"]):
             self._warn("Could not open book", f"The book's file is missing:\n{book['path'] if book else book_id}")
             return False
+        if book_id == self.book_id and self.doc is not None:
+            self.show_page("book")
+            return True
         return self.open_book(book["path"], remember_dir=False)
 
     # -- cards: browser, statistics, Anki --------------------------------------------
-    def show_browser(self):
-        """The card browser window (made on first use)."""
+    def _ensure_browser(self) -> None:
         if self.browser is None:
             from .browser import CardBrowser
-            self.browser = CardBrowser(self.db, self.conversions, self)
+            self.browser = CardBrowser(self.db, self.conversions, embedded=True)
             self.browser.cardsChanged.connect(self._on_cards_changed)
             self.browser.bookRequested.connect(self._browser_book)
             self.browser.reviewDeckRequested.connect(self._review_deck)
             self.browser.statsRequested.connect(lambda deck: self.show_stats(deck or None))
             self.browser.migrateRequested.connect(self.migrate_from_anki)
-        else:
-            self.browser.refresh()
-        self.browser.show()
-        self.browser.raise_()
-        self.browser.activateWindow()
+            self.cards_page.set_widget(self.browser)
+
+    def _ensure_stats(self) -> None:
+        if self.stats_window is None:
+            from .stats_view import StatsWindow
+            self.stats_window = StatsWindow(self.db, window=False)
+            self.stats_page.set_widget(self.stats_window)
+
+    def show_browser(self):
+        """The Cards page (the browser, made on first use)."""
+        self.show_page("cards")
         return self.browser
 
     def show_stats(self, deck_id: int | None = None, book_id: int | None = None) -> None:
-        if self.stats_window is None:
-            from .stats_view import StatsWindow
-            self.stats_window = StatsWindow(self.db, self)
-            self.stats_window.setWindowFlag(Qt.WindowType.Window)
+        """The Stats page, for a deck, a book or (neither) everything."""
+        self.show_page("stats", refresh=False)
         self.stats_window.show_scope(deck_id=deck_id, book_id=book_id)
-        self.stats_window.show()
-        self.stats_window.raise_()
-        self.stats_window.activateWindow()
 
     def migrate_from_anki(self) -> None:
         from .anki_dialog import AnkiImportDialog
-        dialog = AnkiImportDialog(self.db, self.browser if self.browser and self.browser.isActiveWindow() else self)
+        dialog = AnkiImportDialog(self.db, self)
         if dialog.exec():
             self._on_migrated(dialog.query)
 
@@ -731,16 +836,16 @@ class MainWindow(QMainWindow):
     def _browser_book(self, book_id: int, page: int) -> None:
         if book_id != self.book_id and not self._open_book_id(book_id):
             return
-        self.raise_()
-        self.activateWindow()
+        self.show_page("book")
         if page >= 0:
             self.reader.go_to(page)
 
-    def _review_deck(self, deck_id: int) -> None:
-        self.show_review_all()
+    def _review_deck(self, deck_id: int, start: bool = False) -> None:
+        self.show_page("review")
         self.review_all.choose_deck(deck_id)
-        self.raise_()
-        self.activateWindow()
+        if start:
+            self.review_all.start()
+        self.review_all.focus()
 
     def _set_retention(self) -> None:
         r, ok = QInputDialog.getDouble(
@@ -859,6 +964,20 @@ class MainWindow(QMainWindow):
             self.browser.save_note()
         self.worker.shutdown()
         super().closeEvent(event)
+
+
+class _Page(QWidget):
+    """A center page whose content is made when it is first shown."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("library")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+
+    def set_widget(self, widget: QWidget) -> None:
+        self._layout.addWidget(widget)
 
 
 class _Optimizer(QObject):

@@ -413,8 +413,9 @@ class CardView(QWebEngineView):
 
 
 class CardBrowser(QMainWindow):
-    """A window over every card. cardsChanged: something was edited, moved, rescheduled or
-    deleted (review counts may have changed)."""
+    """A view over every card: a window of its own, or (embedded) the main window's Cards page.
+    cardsChanged: something was edited, moved, rescheduled or deleted (review counts may have
+    changed)."""
 
     cardsChanged = Signal()
     bookRequested = Signal(int, int)  # book id, page (-1 if unknown)
@@ -422,13 +423,17 @@ class CardBrowser(QMainWindow):
     statsRequested = Signal(int)  # deck id (0 = all)
     migrateRequested = Signal()
 
-    def __init__(self, db: Database, conversions=None, parent=None):
+    def __init__(self, db: Database, conversions=None, parent=None, embedded: bool = False):
         super().__init__(parent)
         self.db = db
         self.conversions = conversions  # convert_dialog.ConversionManager, for Claude Conversion
+        self.embedded = embedded
         self.setWindowTitle("Browse cards — Study Reader")
-        self.setWindowFlag(Qt.WindowType.Window)
-        self.resize(1440, 880)
+        if embedded:
+            self.setWindowFlags(Qt.WindowType.Widget)
+        else:
+            self.setWindowFlag(Qt.WindowType.Window)
+            self.resize(1440, 880)
         self._card_id: int | None = None  # the card in the editor
         self._add_dialog: AddDialog | None = None
 
@@ -589,6 +594,7 @@ class CardBrowser(QMainWindow):
     # -- menus ---------------------------------------------------------------------------
     def _build_menus(self) -> None:
         bar = self.menuBar()
+        bar.setObjectName("browserMenu")
 
         def act(menu: QMenu, text: str, slot, shortcut=None) -> QAction:
             a = menu.addAction(text)
@@ -601,8 +607,9 @@ class CardBrowser(QMainWindow):
         file = bar.addMenu("&File")
         act(file, "Add cards…", self.add_cards, "Ctrl+E")
         act(file, "Migrate from Anki…", self.migrateRequested.emit)
-        file.addSeparator()
-        act(file, "Close", self.close, "Ctrl+W")
+        if not self.embedded:
+            file.addSeparator()
+            act(file, "Close", self.close, "Ctrl+W")
         edit = bar.addMenu("&Edit")
         act(edit, "Find", lambda: (self.search_box.setFocus(), self.search_box.selectAll()), "Ctrl+F")
         act(edit, "Select all", self.table.selectAll, "Ctrl+Alt+A")
@@ -806,10 +813,11 @@ class CardBrowser(QMainWindow):
         self.editor.focus_first()
 
     def show_card(self, card_id: int) -> None:
-        """Bring the window up on one card (e.g. Edit in review)."""
-        self.show()
-        self.raise_()
-        self.activateWindow()
+        """Show one card (e.g. Edit in review), bringing the window up if it is one."""
+        if not self.embedded:
+            self.show()
+            self.raise_()
+            self.activateWindow()
         self.set_search(f"cid:{card_id}")
 
     # -- editing -------------------------------------------------------------------------

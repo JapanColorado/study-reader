@@ -14,7 +14,7 @@ from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QMessageBox, QVBoxLayout, QWidget
 
-from . import cardmodel, gamify, quiz, srs, variants
+from . import cardmodel, dashboard, gamify, quiz, srs, variants
 from .chat_service import ChatWorker, Job
 from .db import Database, media_url
 from .notes import LocalPage
@@ -163,7 +163,7 @@ class ReviewPanel(QWidget):
 
         self.view = QWebEngineView()
         self.view.setPage(LocalPage(self.view))
-        self.view.page().setBackgroundColor(QColor(theme().colors["surface"]))
+        self.view.page().setBackgroundColor(QColor(theme().colors[self._background]))
         self.channel = QWebChannel(self.view.page())
         self.channel.registerObject("review", _Bridge(self))
         self.view.page().setWebChannel(self.channel)
@@ -172,10 +172,11 @@ class ReviewPanel(QWidget):
         self.view.loadFinished.connect(self._on_loaded)
         self.view.load(QUrl.fromLocalFile(str(ASSETS / "review.html")))
 
-        self.setObjectName("chatPanel")  # same surface as the panels it swaps with
+        # A panel: the same surface as the panels it swaps with; a page: the window's.
+        self.setObjectName("library" if all_books else "chatPanel")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(*((0, 0, 0, 0) if all_books else (8, 8, 8, 8)))
         layout.addWidget(self.view)
         theme().changed.connect(self._apply_theme)
         self._apply_theme()
@@ -203,8 +204,12 @@ class ReviewPanel(QWidget):
             self.view.page().runJavaScript(js)
         self._pending.clear()
 
+    @property
+    def _background(self) -> str:
+        return "window" if self.all_books else "surface"
+
     def _apply_theme(self) -> None:
-        self.view.page().setBackgroundColor(QColor(theme().colors["surface"]))
+        self.view.page().setBackgroundColor(QColor(theme().colors[self._background]))
         self._js("setTheme", theme().colors, theme().dark)
 
     def focus(self) -> None:
@@ -306,39 +311,24 @@ class ReviewPanel(QWidget):
     def _books_overview(self, now: float) -> dict:
         """all_books: the books with cards, each with its counts and sections, for picking what to review."""
         left = srs.new_left_today(self.db, now)
-        rows = self.db.conn.execute(
-            f"SELECT c.book_id, b.title, SUM({srs.due_sql('c.')}) AS due, SUM(c.suspended=0 AND c.stage=0) AS new "
-            "FROM cards c JOIN books b ON b.id=c.book_id GROUP BY c.book_id ORDER BY b.title COLLATE NOCASE",
-            (srs.next_day(now), now),
-        ).fetchall()
+        counts = dashboard.book_counts(self.db, now)
+        titles = {r["id"]: r["title"] for r in self.db.conn.execute("SELECT id, title FROM books")}
         sections = srs.sections(self.db, None, now)
         return {
             "books": [{
-                "id": r["book_id"], "title": r["title"], "due": r["due"] or 0, "new": min(r["new"] or 0, left),
-                "sections": [{**n, "new": min(n["new"], left)} for n in sections.get(r["book_id"], [])],
-            } for r in rows],
+                "id": book_id, "title": titles[book_id], "due": c["due"], "new": c["new"],
+                "sections": [{**n, "new": min(n["new"], left)} for n in sections.get(book_id, [])],
+            } for book_id, c in sorted(counts.items(), key=lambda kv: titles.get(kv[0], "").casefold())
+              if book_id in titles],
             "book": self.picked_book,
         }
 
     def _decks_overview(self, now: float, everything: dict | None = None) -> dict:
-        """The deck list for picking what to review: each deck with its parent and counts.
-        everything: srs.counts over all decks, if already known."""
-        counts = srs.deck_counts(self.db, now)
-        # Books' own decks are left out (books have their own list), unless other decks are under them.
-        book_decks = {r[0] for r in self.db.conn.execute("SELECT deck_id FROM books WHERE deck_id IS NOT NULL")}
-        all_decks = [d for d in self.db.decks() if counts[d["id"]]["total"]]
-        shown = {d["name"] for d in all_decks if d["id"] not in book_decks}
-        keep = {"::".join(n.split("::")[:i]) for n in shown for i in range(1, n.count("::") + 2)}
-        decks = [d for d in all_decks if d["name"] in keep]
-        by_name = {d["name"]: d["id"] for d in decks}
-        left = srs.new_left_today(self.db, now)
+        """The deck list for picking what to review (dashboard.deck_rows). everything: srs.counts
+        over all decks, if already known."""
         everything = everything or srs.counts(self.db, None, now)
         return {
-            "decks": [{
-                "id": d["id"], "name": d["name"].rsplit("::", 1)[-1], "path": d["name"],
-                "parent": by_name.get(d["name"].rsplit("::", 1)[0]) if "::" in d["name"] else None,
-                "due": counts[d["id"]]["due"], "new": min(counts[d["id"]]["new"], left),
-            } for d in decks],
+            "decks": dashboard.deck_rows(self.db, now),
             "deck": self.deck_id,
             "all_due": everything["due"], "all_new": everything["new"],
         }
