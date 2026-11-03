@@ -28,7 +28,7 @@ KOKORO_VOICES = [
     ("am_puck", "Puck · US"), ("bf_emma", "Emma · UK"), ("bf_isabella", "Isabella · UK"),
     ("bm_george", "George · UK"), ("bm_fable", "Fable · UK"),
 ]
-MIN_SPEED, MAX_SPEED = 0.5, 2.5
+MIN_SPEED, MAX_SPEED = 0.5, 3.0
 
 
 class Engine(QObject):
