@@ -528,6 +528,44 @@ def test_removing_a_tag_removes_its_children(db):
     assert db.card_note(note)["tags"] == " C "
 
 
+def test_browser_columns_fit_the_table(db, chat_panel):
+    from study_reader.browser import COLUMNS_SETTING, DEFAULT_COLUMNS, WIDTHS_SETTING, CardBrowser
+
+    db.add_card_note("basic", {"front": "Gauss's law relates?", "back": "flux and charge"}, db.ensure_deck("Physics"))
+    browser = CardBrowser(db)
+    browser.resize(1600, 800)
+    browser.show()
+    header, view = browser.table.horizontalHeader(), browser.table.viewport()
+
+    def sizes():
+        return {key: header.sectionSize(i) for i, key in enumerate(browser.model.columns)}
+
+    def fits():
+        return sum(sizes().values()) == view.width()
+
+    assert fits() and sizes()["question"] > sizes()["answer"] > sizes()["due"] >= browser._compact_width("due")
+    browser.table.resize(600, 400)  # narrower than the columns' minimums: they shrink rather than scroll
+    assert fits()
+    browser.table.resize(1200, 400)
+    assert fits() and sizes()["deck"] <= 240
+
+    question = sizes()["question"]
+    header.resizeSection(0, question - 100)  # the user narrows Question: the other wide columns take the space
+    assert sizes()["question"] == question - 100 and fits()
+    browser._widths_timer.timeout.emit()
+    assert json.loads(db.get_setting(WIDTHS_SETTING, "{}")) == {"question": question - 100}
+
+    header.moveSection(header.visualIndex(browser.model.columns.index("due")), 0)  # a dragged column stays put
+    assert browser.model.columns[0] == "due" and header.logicalIndex(0) == 0
+    assert json.loads(db.get_setting(COLUMNS_SETTING, "[]"))[0] == "due"
+    assert sizes()["question"] == question - 100 and fits()
+
+    browser._reset_columns()
+    assert browser.model.columns == DEFAULT_COLUMNS and fits() and db.get_setting(WIDTHS_SETTING, "") == "{}"
+    assert all(header.visualIndex(i) == i for i in range(header.count()))
+    browser.close()
+
+
 def test_browser_editor_follows_accepted_conversions(db, chat_panel):
     from study_reader.browser import CardBrowser
     from study_reader.convert_dialog import ConversionManager

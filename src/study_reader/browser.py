@@ -11,9 +11,9 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QAbstractTableModel, QItemSelection, QItemSelectionModel, QModelIndex, Qt, QTimer, QUrl, Signal,
+    QAbstractTableModel, QEvent, QItemSelection, QItemSelectionModel, QModelIndex, Qt, QTimer, QUrl, Signal,
 )
-from PySide6.QtGui import QAction, QColor, QKeySequence
+from PySide6.QtGui import QAction, QColor, QFontMetrics, QKeySequence
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
@@ -37,7 +37,18 @@ COLUMNS = {
     "modified": "Modified", "reviewed": "Last review",
 }
 DEFAULT_COLUMNS = ["question", "answer", "deck", "due", "interval", "retrievability", "added"]
-COLUMNS_SETTING, SORT_SETTING = "browser_columns", "browser_sort"
+COLUMNS_SETTING, SORT_SETTING, WIDTHS_SETTING = "browser_columns", "browser_sort", "browser_widths"
+# Columns that share the table's width (weight, least and most width); the others are as wide
+# as their header and the longest text they can hold (SAMPLES).
+FLEX_COLUMNS = {"question": (3, 140, None), "answer": (2, 100, None), "deck": (1, 90, 240), "tags": (1, 90, 240),
+                "book": (1, 90, 240)}
+MIN_SECTION = 40
+SAMPLES = {
+    "due": ["(2026-12-31)"], "interval": ["11mo", "10.5y"], "stability": ["11mo", "10.5y"], "difficulty": ["100%"],
+    "retrievability": ["100%"], "reps": ["9999"], "lapses": ["999"], "type": list(search.TYPE_LABELS.values()),
+    "note": list(cardmodel.KIND_LABELS.values()), "added": ["2026-12-31"], "modified": ["2026-12-31"],
+    "reviewed": ["2026-12-31"],
+}
 # Anki's flag colors.
 FLAGS = {1: ("Red", "#ff6b6b"), 2: ("Orange", "#ffa94d"), 3: ("Green", "#51cf66"), 4: ("Blue", "#4dabf7"),
          5: ("Pink", "#f783ac"), 6: ("Turquoise", "#22b8cf"), 7: ("Purple", "#b197fc")}
@@ -464,6 +475,15 @@ class CardBrowser(QMainWindow):
         self.table.verticalHeader().setDefaultSectionSize(26)
         self.table.horizontalHeader().setSectionsMovable(True)
         self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.horizontalHeader().setMinimumSectionSize(MIN_SECTION)
+        self.table.horizontalHeader().sectionResized.connect(self._section_resized)
+        self.table.horizontalHeader().sectionMoved.connect(self._section_moved)
+        self._fitting = False
+        self._widths: dict[str, int] = {}  # columns the user resized, by key
+        self._widths_timer = QTimer(self, singleShot=True, interval=500)
+        self._widths_timer.timeout.connect(
+            lambda: self.db.set_setting(WIDTHS_SETTING, json.dumps(self._widths)))
+        self.table.viewport().installEventFilter(self)  # refit the columns when the table's width changes
         self.table.horizontalHeader().setSortIndicatorShown(True)
         self.table.horizontalHeader().setSectionsClickable(True)
         self.table.horizontalHeader().sectionClicked.connect(self._sort_by)
@@ -573,6 +593,11 @@ class CardBrowser(QMainWindow):
         except ValueError:
             cols = []
         self.model.set_columns(cols or list(DEFAULT_COLUMNS))
+        try:
+            widths = json.loads(self.db.get_setting(WIDTHS_SETTING, "{}"))
+            self._widths = {k: int(v) for k, v in widths.items() if k in COLUMNS and int(v) > 0}
+        except (ValueError, TypeError, AttributeError):
+            self._widths = {}
         sort, _, order = self.db.get_setting(SORT_SETTING, "added:desc").partition(":")
         self.sort = sort if sort in search.SORTS else "added"
         self.descending = order == "desc"
@@ -580,12 +605,87 @@ class CardBrowser(QMainWindow):
 
     def _fit_columns(self) -> None:
         header = self.table.horizontalHeader()
-        for i, key in enumerate(self.model.columns):
-            mode = QHeaderView.ResizeMode.Stretch if key in ("question", "answer") else QHeaderView.ResizeMode.Interactive
-            header.setSectionResizeMode(i, mode)
-            if mode == QHeaderView.ResizeMode.Interactive:
-                header.resizeSection(i, 170 if key in ("deck", "tags", "book") else 92)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self._fit_widths()
         self._show_sort_indicator()
+
+    def _compact_width(self, key: str) -> int:
+        """A column wide enough for its bold header with a sort arrow, and for its longest text."""
+        font = self.table.horizontalHeader().font()
+        font.setBold(True)
+        head = QFontMetrics(font).horizontalAdvance(COLUMNS[key]) + 12 + 18  # padding, sort arrow
+        cells = QFontMetrics(self.table.font())
+        text = max((cells.horizontalAdvance(t) for t in SAMPLES.get(key, ())), default=0) + 12 + 8  # padding, margin
+        return max(head, text)
+
+    def _fit_widths(self) -> None:
+        """Size the columns to the table: compact ones to their contents, the rest sharing what's left.
+
+        Columns the user resized keep their width; the shared ones still fill the remainder."""
+        header, cols = self.table.horizontalHeader(), self.model.columns
+        widths: dict[int, int] = {}
+        flex: list[int] = []
+        for i, key in enumerate(cols):
+            if key in self._widths:
+                widths[i] = self._widths[key]
+            elif key in FLEX_COLUMNS:
+                flex.append(i)
+            else:
+                widths[i] = self._compact_width(key)
+        width = self.table.viewport().width()
+        space = width - sum(widths.values())
+        least = sum(FLEX_COLUMNS[cols[i]][1] for i in flex)
+        if flex and space < least:  # too narrow for their minimums: shrink them alike rather than scroll
+            for i in flex:
+                widths[i] = max(space * FLEX_COLUMNS[cols[i]][1] // least, MIN_SECTION)
+            flex = []
+        free = list(flex)
+        while free:  # share the space by weight; a column held at its least or most width drops out
+            total = sum(FLEX_COLUMNS[cols[i]][0] for i in free)
+            share = {i: space * FLEX_COLUMNS[cols[i]][0] / total for i in free}
+            low = [i for i in free if share[i] < FLEX_COLUMNS[cols[i]][1]]
+            high = [i for i in free if (top := FLEX_COLUMNS[cols[i]][2]) and share[i] > top]
+            if not low and not high:
+                widths.update((i, int(share[i])) for i in free)
+                break
+            for i in low or high:
+                widths[i] = FLEX_COLUMNS[cols[i]][1 if low else 2]
+                space -= widths[i]
+                free.remove(i)
+        if cols and (left := width - sum(widths.values())) > 0:  # rounding, or nothing left to grow
+            grow = free[0] if free else header.logicalIndex(len(cols) - 1)
+            widths[grow] += left
+        self._fitting = True
+        try:
+            for i, w in widths.items():
+                if header.sectionSize(i) != w:
+                    header.resizeSection(i, w)
+        finally:
+            self._fitting = False
+
+    def eventFilter(self, obj, event) -> bool:
+        if obj is self.table.viewport() and event.type() == QEvent.Type.Resize:
+            self._fit_widths()
+        return super().eventFilter(obj, event)
+
+    def _section_resized(self, index: int, _old: int, new: int) -> None:
+        if self._fitting or not 0 <= index < len(self.model.columns):
+            return
+        self._widths[self.model.columns[index]] = new
+        self._widths_timer.start()
+        self._fit_widths()
+
+    def _section_moved(self, _logical: int, _old: int, _new: int) -> None:
+        """Keep a dragged column's place as the column order, so it lasts."""
+        header = self.table.horizontalHeader()
+        cols = [self.model.columns[header.logicalIndex(v)] for v in range(header.count())]
+        header.blockSignals(True)
+        try:
+            for v in range(header.count()):  # undo the header's own reordering; the model now has it
+                header.moveSection(header.visualIndex(v), v)
+        finally:
+            header.blockSignals(False)
+        self._set_columns(cols)
 
     def _show_sort_indicator(self) -> None:
         header = self.table.horizontalHeader()
@@ -662,7 +762,7 @@ class CardBrowser(QMainWindow):
             a.setChecked(key in self.model.columns)
             a.triggered.connect(lambda on, k=key: self._toggle_column(k, on))
         menu.addSeparator()
-        menu.addAction("Reset columns").triggered.connect(lambda: self._set_columns(list(DEFAULT_COLUMNS)))
+        menu.addAction("Reset columns").triggered.connect(self._reset_columns)
         menu.exec(self.table.horizontalHeader().mapToGlobal(pos))
 
     def _toggle_column(self, key: str, on: bool) -> None:
@@ -674,8 +774,17 @@ class CardBrowser(QMainWindow):
 
     def _set_columns(self, cols: list[str]) -> None:
         self.db.set_setting(COLUMNS_SETTING, json.dumps(cols))
+        self.save_note()
+        selected, current = self.selected_ids(), self._card_id
         self.model.set_columns(cols)
         self._fit_columns()
+        self._select(selected, current)
+
+    def _reset_columns(self) -> None:
+        self._widths = {}
+        self._widths_timer.stop()
+        self.db.set_setting(WIDTHS_SETTING, "{}")
+        self._set_columns(list(DEFAULT_COLUMNS))
 
     def _table_menu(self, pos) -> None:
         if not self.selected_ids():
