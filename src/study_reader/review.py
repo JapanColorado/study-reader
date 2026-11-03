@@ -127,7 +127,8 @@ class _Bridge(QObject):
 
     @Slot(str)
     def open(self, what: str) -> None:
-        (self.panel.browseRequested if what == "browse" else self.panel.statsRequested).emit()
+        {"browse": self.panel.browseRequested, "stats": self.panel.statsRequested,
+         "calc": self.panel.calculatorRequested}[what].emit()
 
 
 class ReviewPanel(QWidget):
@@ -141,6 +142,7 @@ class ReviewPanel(QWidget):
     browseRequested = Signal()
     statsRequested = Signal()
     editRequested = Signal(int)  # card id, to open in the browser
+    calculatorRequested = Signal()  # the Calculator button: show or hide the calculator beside it
     cardShown = Signal(object)  # the book id (None if it has none) of the card on display, each time it is drawn
 
     def __init__(self, db: Database, all_books: bool = False, variants: VariantMaker | None = None, parent=None):
@@ -162,6 +164,8 @@ class ReviewPanel(QWidget):
         self._skip: list[int] = []  # cards just answered or skipped, not to be shown again right away
         self._session: gamify.Session | None = None  # the session under way
         self._summary: dict | None = None  # how the last session went, for the overview
+        # Whether the calculator beside the panel is open; None draws no Calculator button (set_calculator).
+        self.calculator: bool | None = None
 
         self.view = QWebEngineView()
         self.view.setPage(LocalPage(self.view))
@@ -209,6 +213,11 @@ class ReviewPanel(QWidget):
     @property
     def _background(self) -> str:
         return "window" if self.all_books else "surface"
+
+    def set_calculator(self, on: bool) -> None:
+        """Draw a Calculator button showing whether the calculator beside the panel is open."""
+        self.calculator = on
+        self._js("setCalc", on)
 
     def _apply_theme(self) -> None:
         self.view.page().setBackgroundColor(QColor(theme().colors[self._background]))
@@ -287,6 +296,7 @@ class ReviewPanel(QWidget):
             "new_per_day": srs.new_per_day(self.db),
             "game": gamify.status(self.db, now) if gamify.enabled(self.db) else None,
             "quick": {"cards": gamify.QUICK_CARDS, "minutes": gamify.QUICK_SECONDS // 60},
+            "calc": self.calculator,
         }
         if self.all_books:
             overview.update(self._decks_overview(now, c if self.scope is None and self.deck is None else None))
@@ -406,6 +416,7 @@ class ReviewPanel(QWidget):
             "remaining": {"due": c["due"], "new": c["new"]},
             "session": self._session.progress(c["due"] + c["new"]) if self._session else None,
             "rewards": gamify.enabled(self.db),
+            "calc": self.calculator,
         })
 
     def check(self, card_id: int, response: dict) -> None:

@@ -146,6 +146,11 @@ class MainWindow(QMainWindow):
 
         self._build_actions()
         self.review_calc.setVisible(self.review_calc_action.isChecked())
+        # Both review panels' Calculator buttons, lit while their calculator is open.
+        for panel, a in ((self.review_all, self.review_calc_action), (self.review, self.calc_action)):
+            panel.set_calculator(a.isChecked())
+            a.toggled.connect(panel.set_calculator)
+            panel.calculatorRequested.connect(a.trigger)
         self.nav = NavRail(self._build_settings_menu())
         self.nav.pageRequested.connect(self.show_page)
         central = QWidget()

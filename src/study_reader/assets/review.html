@@ -24,6 +24,8 @@
   html.page #root { max-width:760px; }
   html.page .card .q { font-size:16px; padding:20px 24px 22px; }
   html.page .bar { font-size:13px; }
+  header .head-row { display:flex; align-items:center; gap:8px; }
+  header .head-row h1 { flex:1; min-width:0; }
   header .crumbs { color:var(--muted); font-size:13px; margin-top:2px; }
   header .crumbs a { color:var(--muted); text-decoration:none; } header .crumbs a:hover { color:var(--accent); }
   .stack > * + * { margin-top:14px; }
@@ -75,6 +77,10 @@
                text-transform:uppercase; letter-spacing:0.04em; }
   .deck-head .name { flex:1; } .deck-head .n { width:44px; text-align:right; }
   .links { display:flex; gap:6px; justify-content:center; }
+  [data-act="calc"] { display:inline-flex; align-items:center; gap:5px; }
+  [data-act="calc"] svg { width:14px; height:14px; flex:none; stroke:currentColor; fill:none; stroke-width:2;
+                          stroke-linecap:round; stroke-linejoin:round; }
+  [data-act="calc"].on { color:var(--accent); }
   .ach-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(170px, 1fr)); gap:4px; margin-top:8px; }
   .ach { display:flex; gap:8px; align-items:center; padding:4px 6px; border-radius:7px; font-size:12.5px; line-height:1.3; }
   .ach .i { font-size:20px; flex:none; }
@@ -160,6 +166,16 @@ const num = (n, cls) => `<span class="n ${cls}${n ? "" : " zero"}">${n}</span>`;
 const twist = (key, has) => `<span class="tw" data-act="twist" data-key="${esc(key)}">${has ? (OPEN.has(key) ? "▾" : "▸") : ""}</span>`;
 
 const PLAY = `<svg viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></svg>`;
+// The desktop's Calculator button (theme.py's "calculator" icon), and setCalc to show it open or closed.
+const CALC_ICON = `<svg viewBox="0 0 24 24"><rect width="16" height="20" x="4" y="2" rx="2"/><path d="M8 6h8"/><path d="M16 14v4"/>`
+  + `<path d="M16 10h.01"/><path d="M12 10h.01"/><path d="M8 10h.01"/><path d="M12 14h.01"/><path d="M8 14h.01"/>`
+  + `<path d="M12 18h.01"/><path d="M8 18h.01"/></svg>`;
+const CALC_TITLE = "Show or hide the calculator (F11)";
+function setCalc(on) {
+  if (LAST) LAST.calc = on;
+  if (CARD) CARD.calc = on;
+  document.querySelectorAll('[data-act="calc"]').forEach(el => el.classList.toggle("on", on));
+}
 let LAST = null;  // the overview last shown, to redraw when the picker's tab changes
 let PICK = null;  // the picker's tab on the Review page: "decks" or "books" (null: by what is picked)
 
@@ -258,7 +274,9 @@ function headerHtml(o) {
   let crumbs;
   if (o.all) crumbs = o.title ? `<a href="#" data-act="deck" data-deck="0">← Every deck and book</a>` : "Every deck and book";
   else crumbs = o.section ? `<a href="#" data-act="section" data-book="0" data-tag="">← The whole book</a>` : "This book's cards";
-  return `<header><h1>${o.title ? esc(o.title) : "Review"}</h1><div class="crumbs">${crumbs}</div></header>`;
+  // The desktop's Calculator button comes with o.calc (whether it is open), which the app never sends.
+  const calc = o.calc == null ? "" : `<a class="btn ghost calc${o.calc ? " on" : ""}" href="#" data-act="calc" title="${CALC_TITLE}">${CALC_ICON}Calculator</a>`;
+  return `<header><div class="head-row"><h1>${o.title ? esc(o.title) : "Review"}</h1>${calc}</div><div class="crumbs">${crumbs}</div></header>`;
 }
 
 function showOverview(o) {
@@ -378,9 +396,11 @@ function showCard(c) {
     ["suspend", "Suspend", "Leave this card out of review (the quiz's “In review” toggle brings it back)"],
     ["delete", "Delete", "Delete this card and its history"],
   ];
+  if (!c.actions && c.calc != null) actions.unshift(["calc", "Calculator", CALC_TITLE]);
   let html = `<div class="bar"><a href="#" data-act="stop" title="Back to the overview">← Overview</a><span class="grow"></span>`
     + `<span class="count"><span class="due">${c.remaining.due}</span> due · <span class="new">${c.remaining.new}</span> new</span>`
-    + actions.map(([act, label, title]) => `<a href="#" data-act="${act}" title="${esc(title)}">${esc(label)}</a>`).join("") + `</div>`;
+    + actions.map(([act, label, title]) => `<a href="#" data-act="${act}" title="${esc(title)}"`
+      + `${act === "calc" ? ` class="calc${c.calc ? " on" : ""}">${CALC_ICON}` : ">"}${esc(label)}</a>`).join("") + `</div>`;
   if (FLAGS_OPEN) html += `<div class="flags">${[1, 2, 3, 4, 5, 6, 7].map(n => `<button data-act="setflag" data-k="${n}"`
     + ` class="${c.flag === n ? "on" : ""}" style="background:${FLAG_COLORS[n]}" title="${FLAG_NAMES[n]}"></button>`).join("")}`
     + `<button class="none" data-act="setflag" data-k="0" title="No flag">✕</button></div>`;
@@ -476,7 +496,7 @@ document.addEventListener("click", ev => {
   else if (act === "deck") bridge.chooseDeck(+target.dataset.deck);
   else if (act === "book") bridge.chooseBook(+target.dataset.book);
   else if (act === "section") bridge.chooseSection(+target.dataset.book, target.dataset.tag);
-  else if (act === "browse" || act === "stats") bridge.open(act);
+  else if (act === "browse" || act === "stats" || act === "calc") bridge.open(act);
   else if (!CARD) return;
   else if (act === "rate") { FLAGS_OPEN = false; bridge.rate(CARD.id, +target.dataset.k); }
   else if (act === "flag") { FLAGS_OPEN = !FLAGS_OPEN; showCard(CARD); }

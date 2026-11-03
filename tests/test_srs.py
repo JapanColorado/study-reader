@@ -517,6 +517,21 @@ def test_calculator_beside_review(pdf_path, tmp_path, monkeypatch):
     assert win.review_calc.isVisible()
     win.review_calc.closeRequested.emit()
     assert not win.review_calc.isVisible() and db.get_setting("review_calc") == "0"
+
+    # Each review panel's Calculator button toggles its own calculator and shows whether it's open.
+    shown = []
+    monkeypatch.setattr(win.review_all, "_js", lambda f, *args: shown.append((f, args)))
+    bridge = win.review_all.channel.registeredObjects()["review"]
+    bridge.open("calc")
+    assert win.review_calc.isVisible() and win.review_all.calculator is True and ("setCalc", (True,)) in shown
+    win.review_all.refresh()
+    assert shown[-1][1][0]["calc"] is True
+    bridge.open("calc")
+    assert not win.review_calc.isVisible() and win.review_all.calculator is False
+    win.show_page("book")
+    assert win.review.calculator is False  # F11 closed the book's calculator above
+    win.review.channel.registeredObjects()["review"].open("calc")
+    assert win.calc_action.isChecked() and win.calc.isVisible() and win.review.calculator is True
     win.close()
 
 
