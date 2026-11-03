@@ -40,6 +40,9 @@ XREF_DARK = (QColor(36, 32, 64), QColor(62, 52, 118))
 # Reading aloud: the sentence, and the word in it, blended like the highlighter.
 SPEECH_LIGHT = (QColor(208, 228, 255), QColor(255, 200, 100))
 SPEECH_DARK = (QColor(30, 52, 82), QColor(122, 88, 24))
+# Find (Ctrl+F): every match, and the current one.
+FIND_LIGHT = (QColor(190, 236, 170), QColor(255, 165, 70))
+FIND_DARK = (QColor(34, 78, 40), QColor(150, 84, 18))
 FOLLOW_PAUSE = 8.0  # s after the user scrolls before reading aloud moves the view again
 CLICK_SLOP = 4  # px a press may move and still count as a click
 LINK_SLOP = 2.0  # pt around a link that still hits it (footnote markers are tiny)
@@ -55,6 +58,7 @@ class ReaderView(QAbstractScrollArea):
     highlightClicked = Signal(list, list, QPoint)  # snippets and notes under the click, global position
     readRequested = Signal(object, bool)  # selected words by page; whether to read on past them
     speechClicked = Signal(int, float, float)  # a click while reading aloud: page, x, y
+    escapePressed = Signal()  # Escape with nothing selected
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -83,6 +87,8 @@ class ReaderView(QAbstractScrollArea):
         self._back: list[tuple[int, float]] = []  # positions to return to after following links
         self._speech: tuple[dict, dict | None] | None = None  # read-aloud (sentence, word) rects by page
         self.speech_active = False  # clicks jump the reading voice
+        self._find: dict[int, list] = {}  # find matches: page -> rects of each match
+        self._find_current: tuple[int, list] | None = None
         self._last_nav = 0.0  # when the user last scrolled or jumped
         self.verticalScrollBar().actionTriggered.connect(self._user_moved)
 
@@ -142,6 +148,7 @@ class ReaderView(QAbstractScrollArea):
         self._back = []
         self._back_bar.hide()
         self._speech = None
+        self._find, self._find_current = {}, None
         self.clear_selection()
         self._content_box = None
         self.crop = crop
@@ -417,6 +424,57 @@ class ReaderView(QAbstractScrollArea):
             p.fillRect(self._to_view(page, rect, r).adjusted(-1, 0, 1, 0), colors[1])
         p.restore()
 
+    # -- find ----------------------------------------------------------------------
+    def set_find(self, by_page: dict[int, list], current: tuple[int, list] | None) -> None:
+        """Highlight find matches ({page: [rects of a match, ...]}) and the current one."""
+        self._find, self._find_current = by_page, current
+        self.viewport().update()
+
+    def clear_find(self) -> None:
+        if self._find or self._find_current:
+            self._find, self._find_current = {}, None
+            self.viewport().update()
+
+    def show_match(self, page: int, rects: list) -> None:
+        """Scroll a match into view, unless it already is."""
+        if not rects or not 0 <= page < len(self._tops):
+            return
+        x0, y0 = min(r[0] for r in rects), min(r[1] for r in rects)
+        x1, y1 = max(r[2] for r in rects), max(r[3] for r in rects)
+        cx, cy = self._clips[page][:2]
+        top = self._tops[page] + (y0 - cy) * self.zoom
+        bottom = self._tops[page] + (y1 - cy) * self.zoom
+        v, h = self.verticalScrollBar(), self.horizontalScrollBar()
+        self._user_moved()
+        if not (v.value() + 0.1 * self.viewport().height() <= top and bottom <= v.value() + 0.9 * self.viewport().height()):
+            v.setValue(int(top - 0.35 * self.viewport().height()))
+        if h.maximum() > 0:
+            left = self._page_rect(page).x() + h.value() + (x0 - self._clips[page][0]) * self.zoom
+            right = left + (x1 - x0) * self.zoom
+            if left < h.value() or right > h.value() + self.viewport().width():
+                h.setValue(int(left - 0.3 * self.viewport().width()))
+        self._check_page()
+
+    def _paint_find(self, p: QPainter, page: int, rect: QRectF) -> None:
+        matches = self._find.get(page)
+        current = self._find_current if self._find_current and self._find_current[0] == page else None
+        if not matches and not current:
+            return
+        dark = theme().pages_dark
+        normal, strong = FIND_DARK if dark else FIND_LIGHT
+        p.save()
+        p.setCompositionMode(
+            QPainter.CompositionMode.CompositionMode_Screen if dark else QPainter.CompositionMode.CompositionMode_Multiply
+        )
+        for rects in matches or ():
+            if current and rects is current[1]:
+                continue
+            for r in rects:
+                p.fillRect(self._to_view(page, rect, r).adjusted(-1, 0, 1, 0), normal)
+        for r in current[1] if current else ():
+            p.fillRect(self._to_view(page, rect, r).adjusted(-1, 0, 1, 0), strong)
+        p.restore()
+
     def set_zoom(self, zoom: float, keep_fit: bool = False) -> None:
         self.fit_mode = self.fit_mode and keep_fit
         zoom = min(max(zoom, MIN_ZOOM), MAX_ZOOM)
@@ -510,6 +568,7 @@ class ReaderView(QAbstractScrollArea):
             self._paint_links(p, i, rect)
             self._paint_marks(p, i, rect)
             self._paint_speech(p, i, rect)
+            self._paint_find(p, i, rect)
             for r in line_rects(self._selection.get(i, [])):
                 p.fillRect(self._to_view(i, rect, r), SELECT_COLOR)
             if self._region and self._region[0] == i:
@@ -767,6 +826,9 @@ class ReaderView(QAbstractScrollArea):
         ):
             self.go_back()
         elif event.key() == Qt.Key.Key_Escape:
-            self.clear_selection()
+            if self.has_selection():
+                self.clear_selection()
+            else:
+                self.escapePressed.emit()
         else:
             super().keyPressEvent(event)

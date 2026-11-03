@@ -24,6 +24,7 @@ from .chat_service import ChatWorker
 from .convert_dialog import ConversionManager
 from .db import Database, data_dir
 from .document import Document, file_hash
+from .find_view import BookFind
 from .home_view import HomeView
 from .library_view import LibraryView
 from .nav import PAGES, NavRail
@@ -66,10 +67,17 @@ class MainWindow(QMainWindow):
         side = QVBoxLayout(self.sidebar)
         side.setContentsMargins(8, 10, 4, 8)
         side.setSpacing(6)
-        side.addWidget(_section("Contents"))
-        side.addWidget(self.toc, 1)
-
+        self.sidebar_title = _section("Contents")
+        side.addWidget(self.sidebar_title)
         self.reader = ReaderView()
+        self.find = BookFind(self.reader, self)  # Ctrl+F; its results take the contents' place
+        self.find.activeChanged.connect(self._on_find_active)
+        self.find.summaryChanged.connect(lambda text: self.find.active and self.sidebar_title.setText(text))
+        self.side_stack = QStackedWidget()
+        self.side_stack.addWidget(self.toc)
+        self.side_stack.addWidget(self.find.list)
+        side.addWidget(self.side_stack, 1)
+
         self.home = HomeView(self.db)
         self.read_aloud = ReadAloud(self.db, self.reader, self)
         self.read_aloud.renderRequested.connect(self.render_on_colab)
@@ -212,6 +220,9 @@ class MainWindow(QMainWindow):
         self.web_action = action("Open web page…", "Ctrl+Shift+O", self.ask_url)
         action("Browse cards", "Ctrl+Shift+B", self.show_browser)
         self.close_action = action("Close book", "Ctrl+W", self.close_book)
+        find = action("Find in book", QKeySequence.StandardKey.Find, self.find.open, "search")
+        find_next = action("Find next", "F3", self.find.next)
+        find_prev = action("Find previous", "Shift+F3", self.find.prev)
 
         self.toc_action = action("Contents", "F9", self._toggle_toc, "panel-left", checkable=True)
         self.toc_action.setChecked(True)
@@ -237,6 +248,7 @@ class MainWindow(QMainWindow):
         bar.addAction(zoom_in)
         bar.addAction(fit)
         bar.addAction(self.crop_action)
+        bar.addAction(find)
         bar.addSeparator()
 
         self.page_spin = QSpinBox()
@@ -290,6 +302,7 @@ class MainWindow(QMainWindow):
         self.book_actions = [
             zoom_out, zoom_in, fit, self.crop_action, self.region_action, self.quiz_action,
             self.finished_action, new_chat, add_note, self.close_action, self.read_action, self.play_action,
+            find, find_next, find_prev,
         ]
         self._on_reading(False)
 
@@ -391,8 +404,23 @@ class MainWindow(QMainWindow):
         self.dark_pages_action.setEnabled(theme().dark)
 
     def _toggle_toc(self, on: bool) -> None:
-        self.sidebar.setVisible(on and self.reading and self.toc.topLevelItemCount() > 0)
+        if self.find.active and not on:
+            self.find.close()  # the button hides the results too
+        self._sync_sidebar()
         self._save_panels()
+
+    def _sync_sidebar(self) -> None:
+        """The sidebar shows find results while the find bar is open, else the contents if toggled on."""
+        has_toc = self.reading and self.toc.topLevelItemCount() > 0
+        finding = self.reading and self.find.active
+        self.toc_action.setEnabled(has_toc)
+        self.side_stack.setCurrentWidget(self.find.list if finding else self.toc)
+        if not finding:
+            self.sidebar_title.setText("Contents")
+        self.sidebar.setVisible(finding or (has_toc and self.toc_action.isChecked()))
+
+    def _on_find_active(self, on: bool) -> None:
+        self._sync_sidebar()
 
     def _toggle_right(self, name: str, on: bool) -> None:
         if on:
@@ -487,6 +515,7 @@ class MainWindow(QMainWindow):
         if self.region_action.isChecked():
             self.region_action.trigger()
         self.read_aloud.set_document(None)
+        self.find.set_document(None)
         self.reader.set_document(None)
         if self.doc:
             self.doc.close()
@@ -508,9 +537,7 @@ class MainWindow(QMainWindow):
         for a, _ in self.right_panels.values():
             a.setEnabled(reading)
         self._sync_right()
-        has_toc = reading and self.toc.topLevelItemCount() > 0
-        self.toc_action.setEnabled(has_toc)
-        self.sidebar.setVisible(has_toc and self.toc_action.isChecked())
+        self._sync_sidebar()
 
     def browse(self) -> None:
         start = self.db.get_setting("last_dir")
@@ -620,6 +647,7 @@ class MainWindow(QMainWindow):
             self.db.set_setting("last_dir", str(path).rsplit("/", 1)[0])
         srs.learn_toc(self.db, self.book_id, doc.toc())
 
+        self.find.set_document(doc)
         self._fill_toc()
         self.toc_action.setChecked(bool(book["show_toc"]))
         for name, (a, _) in self.right_panels.items():

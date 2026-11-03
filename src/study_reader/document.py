@@ -146,6 +146,14 @@ class Document:
             self._words[index] = words
         return self._words[index]
 
+    def search_words(self, index: int) -> list[Word]:
+        """The page's words for finding text in: in reading order if that has been worked out
+        already, else in PyMuPDF's order, since ordering them is most of the cost of ``words``
+        and a search only needs the order where a match runs from one block into another."""
+        if index in self._words:
+            return self._words[index]
+        return [Word(w[0], w[1], w[2], w[3], w[4], w[5], w[6]) for w in self.doc[index].get_text("words", sort=False)]
+
     def _lines(self, index: int) -> list[Line]:
         """The page's lines, in the same order as its words."""
         if index not in self._line_cache:

@@ -317,6 +317,10 @@ QToolButton#navItem:pressed { background: $border; }
 QLineEdit#libraryFilter { background: $raised; color: $fg; border: 1px solid $border; border-radius: 8px; padding: 6px 9px;
                           selection-background-color: $accent_soft; selection-color: $fg; }
 QLineEdit#libraryFilter:focus { border-color: $accent; }
+QLineEdit#findInput { background: $surface; color: $fg; border: 1px solid $border; border-radius: 7px; padding: 4px 8px;
+                      selection-background-color: $accent_soft; selection-color: $fg; }
+QLineEdit#findInput:focus { border-color: $accent; }
+QListView#findResults { background: $window; border: none; }
 QMenuBar#browserMenu { background: $window; padding: 3px 6px; }
 QLabel[role="muted"] { color: $muted; }
 QLabel[role="hint"] { color: $faint; font-size: 8pt; }
