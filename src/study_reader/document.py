@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -25,6 +26,9 @@ FOOTNOTE_MARK = re.compile(r"[(\[]?(\d{1,3}|[*†‡§¶‖#]{1,3})[.)\]]?")
 SUPERSCRIPT, BOLD = 1, 16  # PyMuPDF span flags
 BACKREF = re.compile(r"(?<!\S)[\^↩↑][\ufe0e\ufe0f]?(?!\S)")  # "back to the text" links in notes
 LABEL = re.compile(r"\s*(fig(?:ure|\.)?|table|exhibit|chart|box|listing|algorithm)\s*(\d+(?:[.\-–]\d+)*)(?![\d.]\d)", re.I)
+# Reading order: how many lines above a block another must start to be read before it, and
+# the size in points of the cells of the grid that _in_columns looks for gutters in.
+JUMP_LINES, COLUMN_CELL = 3, 2.0
 # Page margins of web-page snapshots (web_render prints with them), in points: left, top, right, bottom.
 WEB_MARGINS = (46, 44, 46, 44)
 
@@ -130,17 +134,26 @@ class Document:
         return (float(box[0]) - CROP_PAD, float(box[1]) - CROP_PAD, float(box[2]) + CROP_PAD, float(box[3]) + CROP_PAD)
 
     def words(self, index: int) -> list[Word]:
+        """The page's words in reading order (see ``reading_order``)."""
         if index not in self._words:
-            self._words[index] = [
+            words = [
                 Word(w[0], w[1], w[2], w[3], w[4], w[5], w[6])
                 for w in self.doc[index].get_text("words", sort=False)
             ]
+            if not self.doc.is_reflowable and not self.web_snapshot:
+                rank = reading_order(words)
+                words.sort(key=lambda w: rank[w.block])  # stable: lines and words keep their order
+            self._words[index] = words
         return self._words[index]
 
     def _lines(self, index: int) -> list[Line]:
+        """The page's lines, in the same order as its words."""
         if index not in self._line_cache:
+            # Without images, so blocks are numbered as in words().
+            blocks = self.doc[index].get_text("dict", flags=pymupdf.TEXTFLAGS_WORDS, sort=False)["blocks"]
+            order = {w.block: k for k, w in reversed(list(enumerate(self.words(index))))}
             out = []
-            for b in self.doc[index].get_text("dict", sort=False)["blocks"]:
+            for b in sorted(blocks, key=lambda b: order.get(b["number"], len(order))):
                 for ln in b.get("lines", []):
                     spans = [s for s in ln["spans"] if s["text"].strip()]
                     if spans:
@@ -379,11 +392,23 @@ def marker_at(lines: list[Line], rect: Rect) -> tuple[str, bool] | None:
 
 
 def footnote_starts(lines: list[Line], page_height: float) -> dict[str, Line]:
-    """The first line of each footnote in the lower part of a page, by marker."""
+    """The first line of each footnote in the lower part of a page, by marker: a line that
+    opens with a raised marker and doesn't go on from text to its left. Numbered lists and
+    bullets (a smaller number or symbol on the baseline) and math (an exponent where a line
+    wraps) look the same otherwise."""
     starts: dict[str, Line] = {}
     for ln in lines:
-        if ln.y0 > 0.4 * page_height and is_footnote_start(ln):
-            starts.setdefault(_mark_key(ln.spans[0]["text"]), ln)
+        if not (ln.y0 > 0.4 * page_height and is_footnote_start(ln)):
+            continue
+        mark, text = ln.spans[0], ln.spans[1]
+        raised = text["origin"][1] - mark["origin"][1] >= 0.2 * text["size"]
+        after = any(
+            o is not ln and o.x0 < ln.x0 - 1 and o.x1 > ln.x0 - text["size"]
+            and min(o.y1, ln.y1) - max(o.y0, ln.y0) > 0.5 * min(o.y1 - o.y0, ln.y1 - ln.y0)
+            for o in lines
+        )
+        if raised and not after:
+            starts.setdefault(_mark_key(mark["text"]), ln)
     return starts
 
 
@@ -418,6 +443,100 @@ def footnote_refs(lines: list[Line], page_height: float) -> list[tuple[Rect, flo
             if raised and len(word) >= 2 and not word[-1].isdigit():
                 out.append((tuple(span["bbox"]), note.x0, note.y0))
     return out
+
+
+# -- reading order -------------------------------------------------------------
+
+def reading_order(words: list[Word]) -> dict[int, int]:
+    """Each block's place in reading order. A PDF's own order is usually right, but some
+    books draw a page's blocks out of order (a new section before the boxed problem above
+    it). So a block is moved after every block well above it (on a page set in columns,
+    only those above it in its own column), and a label in the margin goes before the text
+    it starts beside. Small jumps are left alone: math is drawn a symbol at a time, in an
+    order that reads better than top to bottom."""
+    boxes: dict[int, list[float]] = {}
+    for w in words:
+        b = boxes.setdefault(w.block, [w.x0, w.y0, w.x1, w.y1])
+        b[0], b[1], b[2], b[3] = min(b[0], w.x0), min(b[1], w.y0), max(b[2], w.x1), max(b[3], w.y1)
+    line = _line_height(words)
+    columns = _in_columns(words, line)
+    margin = margin_blocks(words)
+    before: dict[int, int] = {k: 0 for k in boxes}  # blocks that must come first, still unplaced
+    after: dict[int, list[int]] = {k: [] for k in boxes}
+    for a, ra in boxes.items():
+        for b, rb in boxes.items():
+            if ra[3] <= rb[1] + 1 and ra[1] < rb[1] - JUMP_LINES * line and (
+                not columns or min(ra[2], rb[2]) - max(ra[0], rb[0]) > 1
+            ):
+                after[a].append(b)
+                before[b] += 1
+    ready = [k for k, n in before.items() if not n]
+    heapq.heapify(ready)
+    rank: dict[int, int] = {}
+    while ready:
+        k = heapq.heappop(ready)
+        labels = [j for j in ready if j in margin and boxes[j][1] < boxes[k][1] + line]
+        if labels and k not in margin:
+            heapq.heappush(ready, k)
+            k = min(labels, key=lambda j: boxes[j][1])
+            ready.remove(k)
+            heapq.heapify(ready)
+        rank[k] = len(rank)
+        for b in after[k]:
+            before[b] -= 1
+            if not before[b]:
+                heapq.heappush(ready, b)
+    return rank
+
+
+def margin_blocks(words: list[Word]) -> set[int]:
+    """Blocks wholly left of where most lines start: labels in the margin ("Solved
+    Problem 6.4")."""
+    starts: Counter[int] = Counter()
+    right: dict[int, float] = {}
+    prev = None
+    for w in words:
+        if (w.block, w.line) != prev:
+            starts[round(w.x0)] += 1
+            prev = (w.block, w.line)
+        right[w.block] = max(right.get(w.block, w.x1), w.x1)
+    if not starts:
+        return set()
+    left = starts.most_common(1)[0][0]
+    return {b for b, x1 in right.items() if x1 < left - 2}
+
+
+def _line_height(words: list[Word]) -> float:
+    heights = sorted(w.y1 - w.y0 for w in words if w.y1 > w.y0)
+    return heights[len(heights) // 2] if heights else 10.0
+
+
+def _in_columns(words: list[Word], line: float) -> bool:
+    """Whether the page is set in columns: a blank strip at least most of a line wide runs
+    down at least half the text's height with text on both sides of it most of the way.
+    (A margin with the odd label in it doesn't count.)"""
+    if len(words) < 20:
+        return False
+    c = COLUMN_CELL
+    grid = np.zeros((int(max(w.y1 for w in words) / c) + 2, int(max(w.x1 for w in words) / c) + 2), bool)
+    for w in words:
+        grid[max(int(w.y0 / c), 0) : int(w.y1 / c) + 1, max(int(w.x0 / c), 0) : int(w.x1 / c) + 1] = True
+    rows = np.flatnonzero(grid.any(axis=1))
+    grid = grid[rows[0] : rows[-1] + 1]
+    height, width = grid.shape
+    g = max(int(0.8 * line / c), 2)
+    if width <= g + 2:
+        return False
+    sums = np.cumsum(np.pad(grid, ((0, 0), (1, 0))), axis=1)
+    free = (sums[:, g:] - sums[:, :-g]) == 0  # free[y, x]: no text in cells x … x+g-1
+    left = sums[:, : width - g + 1] > 0  # text before x
+    right = (sums[:, -1:] - sums[:, g:]) > 0  # text after x+g-1
+    # Label each vertical run of free cells, then measure the runs all at once.
+    starts = free & ~np.vstack([np.zeros((1, free.shape[1]), bool), free[:-1]])
+    ids = (np.cumsum(starts, axis=0) + np.arange(free.shape[1]) * (height + 1))[free]
+    length = np.bincount(ids)
+    sides = np.minimum(np.bincount(ids, left[free]), np.bincount(ids, right[free]))
+    return bool(np.any((length >= 0.5 * height) & (sides > 0.4 * length)))
 
 
 # -- selection geometry --------------------------------------------------------

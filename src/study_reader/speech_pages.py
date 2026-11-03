@@ -12,7 +12,9 @@ import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 
-from .document import BOLD, LABEL, Document, Rect, Word, _label, _line_text, footnote_starts, line_rects
+from .document import (
+    BOLD, LABEL, Document, Rect, Word, _label, _line_text, footnote_starts, line_rects, margin_blocks,
+)
 from .speech_text import MAX_CHARS, SOFT_CHARS, Utterance, ends_sentence, speak_word, tex_to_speech
 
 EDGE_BAND = 0.12  # of the page height, where running headers and footers live
@@ -184,6 +186,7 @@ class BookText:
         median = statistics.median(heights) if heights else 10.0
         web = self.doc.web_snapshot
         headings = self._heading_lines(page)
+        margin = margin_blocks(words)
         toks: list[_Tok] = []
         prev: Word | None = None  # the last body word kept
         i = 0
@@ -200,7 +203,11 @@ class BookText:
                 i = j
                 continue
             new_line = prev is None or (w.block, w.line) != (prev.block, prev.line)
-            brk = bool(prev) and new_line and w.y0 - prev.y1 > PARA_GAP * (prev.y1 - prev.y0)
+            # A gap above the line, or into or out of a label in the margin.
+            brk = bool(prev) and new_line and (
+                w.y0 - prev.y1 > PARA_GAP * (prev.y1 - prev.y0)
+                or (w.block != prev.block and bool({w.block, prev.block} & margin))
+            )
             text = w.text
             if self._marker_glued(page, w):
                 text = TRAILING_MARK.sub("", text)

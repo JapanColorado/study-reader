@@ -142,3 +142,45 @@ def test_skipped_is_cached(tmp_path):
     doc.new_page(width=400, height=300).insert_text((40, 60), "Hello there.", fontsize=12)
     book = BookText(_save(doc, tmp_path))
     assert book.skipped(0) is book.skipped(0)
+
+
+def test_numbered_steps_and_wrapped_math_are_not_footnotes(tmp_path):
+    doc = pymupdf.open()
+    page = doc.new_page(width=400, height=300)
+    page.insert_text((40, 60), "Solve it in two steps.", fontsize=11)
+    page.insert_text((40, 160), "2. ", fontsize=9, fontname="hebo")  # smaller, on the baseline
+    page.insert_text((52, 160), "Substitute and simplify.", fontsize=11)
+    page.insert_text((40, 200), "The price is p", fontsize=11)
+    x = 40 + pymupdf.get_text_length("The price is p", fontsize=11)
+    page.insert_text((x, 196), "2", fontsize=7)  # an exponent that starts its own line
+    page.insert_text((x + 4, 200), " squared.", fontsize=11)
+    texts = _texts(BookText(_save(doc, tmp_path)))
+    assert "Substitute and simplify." in texts and "squared." in " ".join(texts)
+
+
+def test_blocks_drawn_out_of_order_are_read_top_to_bottom(tmp_path):
+    doc = pymupdf.open()
+    page = doc.new_page(width=400, height=400)
+    # The new section is drawn first, then the problem above it, then its margin label.
+    page.insert_text((120, 250), "Returns to Scale", fontsize=16)
+    page.insert_text((120, 280), "Scale is the next topic.", fontsize=11)
+    page.insert_text((120, 60), "What is the elasticity?", fontsize=11)
+    page.insert_text((120, 74), "It is one.", fontsize=11)
+    page.insert_text((120, 88), "That settles it.", fontsize=11)
+    page.insert_text((30, 60), "Problem 6.4", fontsize=9)
+    assert _texts(BookText(_save(doc, tmp_path))) == [
+        "Problem 6.4", "What is the elasticity?", "It is one.", "That settles it.",
+        "Returns to Scale.", "Scale is the next topic.",
+    ]
+
+
+def test_two_columns_are_read_column_by_column(tmp_path):
+    doc = pymupdf.open()
+    page = doc.new_page(width=400, height=400)
+    for i in range(16):
+        page.insert_text((40, 60 + 18 * i), f"Left line {i} goes here.", fontsize=11)
+    for i in range(16):
+        page.insert_text((220, 60 + 18 * i), f"Right line {i} goes here.", fontsize=11)
+    texts = _texts(BookText(_save(doc, tmp_path)))
+    assert texts[:2] == ["Left line 0 goes here.", "Left line 1 goes here."]
+    assert texts[16] == "Right line 0 goes here."
