@@ -4,7 +4,9 @@ which review shows the next time the card comes up (cards.variant), so a remembe
 doesn't stand in for doing the problem. It is asked in a fresh session without the book (the
 problem and its solution are enough), to keep it cheap. Questions Claude marked "varies": false
 when writing the quiz are never asked about; for older ones without the mark Claude may decline
-(a concept rather than a calculation), and that is remembered. Qt-free."""
+(a concept rather than a calculation), and that is remembered. The card browser can turn a
+question's "varies" on or off, and the ENABLED_SETTING turns new versions off for every card
+(review then shows the cards' own questions). Qt-free."""
 
 from __future__ import annotations
 
@@ -14,6 +16,7 @@ import re
 from . import quiz
 
 TYPES = ("numeric", "free")
+ENABLED_SETTING = "variants"  # "0": no new versions, and review shows the cards' own questions
 SKIP = {"skip": True}
 # Fields of a question that aren't part of the problem itself.
 _EXTRA = ("page", "tags", "revises", "section", "answer_latex", "html", "varies")
@@ -23,6 +26,10 @@ def _load(card) -> dict | None:
     return json.loads(card["variant"]) if card["variant"] else None
 
 
+def enabled(db) -> bool:
+    return db.get_setting(ENABLED_SETTING, "1") != "0"
+
+
 def wants_variant(card) -> bool:
     """A card whose next version is worth asking for: a numeric or free-response question not
     known to have nothing to vary."""
@@ -30,10 +37,13 @@ def wants_variant(card) -> bool:
     return q.get("type") in TYPES and q.get("varies") is not False and _load(card) != SKIP
 
 
-def question(card) -> dict:
-    """The question review shows: the latest version with new numbers, else the card's own."""
+def question(card, db=None) -> dict:
+    """The question review shows: the latest version with new numbers, else the card's own.
+    db: to show the card's own while new versions are turned off."""
     variant = _load(card)
-    return variant if variant and variant != SKIP else json.loads(card["data"])
+    if variant and variant != SKIP and (db is None or enabled(db)):
+        return variant
+    return json.loads(card["data"])
 
 
 def is_varied(card) -> bool:
@@ -66,9 +76,11 @@ def request(original: dict, last: dict | None = None, book: str = "", title: str
         "short expression like \"3/8\" or \"sqrt(2)/2\", with \"unit\" and \"tolerance\" if the original "
         "has them (rescaled to the new answer); for \"free\", \"answer\" is a model answer and \"rubric\" "
         "what a full-credit answer must contain. \"explanation\" briefly shows the worked solution.\n\n"
-        "If the question has no givens that could change (it asks about a concept, a definition or a "
-        "fixed fact rather than posing a calculation or worked problem), the JSON is {\"skip\": true}.\n\n"
-        "End your reply with the JSON object in a ```json fence: {\"type\", \"question\", \"answer\", "
+        + ("If the question has no givens that could change, ask about the same idea in other words or "
+           "from another angle instead.\n\n" if original.get("varies") is True else
+           "If the question has no givens that could change (it asks about a concept, a definition or a "
+           "fixed fact rather than posing a calculation or worked problem), the JSON is {\"skip\": true}.\n\n")
+        + "End your reply with the JSON object in a ```json fence: {\"type\", \"question\", \"answer\", "
         "\"explanation\", ...} in the quiz format. Double every LaTeX backslash (\"$\\\\frac{a}{b}$\")."
     )
     return "\n\n".join(parts)

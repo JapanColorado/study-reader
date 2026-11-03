@@ -481,6 +481,10 @@ class CardBrowser(QMainWindow):
         self.editor_status.setWordWrap(True)
         self.editor_status.setProperty("role", "muted")
         self._save_timer = QTimer(self, singleShot=True, interval=700)
+        # Edits that couldn't be saved yet (a question switched to a type whose answer isn't
+        # filled in yet), by note id: (the note's updated_at then, editor draft, why not), shown
+        # again when the note is, rather than the stored version.
+        self._drafts: dict[int, tuple[float, dict, str]] = {}
         self._save_timer.timeout.connect(self.save_note)
         self.card_line = QLabel()
         self.card_line.setProperty("role", "muted")
@@ -790,6 +794,14 @@ class CardBrowser(QMainWindow):
         self._card_id = card["id"] if card else None
         self.editor.load(card["note_id"] if card else None)
         self.editor_status.clear()
+        draft = self._drafts.get(card["note_id"]) if card else None
+        if draft is not None:
+            note = self.db.card_note(card["note_id"])
+            if note is not None and note["updated_at"] == draft[0]:
+                self.editor.restore(draft[1])
+                self._show_not_saved(draft[2])
+            else:  # changed since (or gone): the draft is out of date
+                del self._drafts[card["note_id"]]
         self._show_card_line(card)
         self.preview.js("showPreview", json.loads(card["data"]) if card else None, "both")
         self.undo_convert_action.setEnabled(card is not None and convert.accepted_conversion(self.db, card["id"]) is not None)
@@ -828,11 +840,15 @@ class CardBrowser(QMainWindow):
             return
         self._save_timer.stop()
         before = {c["ord"] for c in self.db.note_cards(self.editor.note_id)}
+        note = self.db.card_note(self.editor.note_id)
         try:
             self.editor.save()
         except cardmodel.NoteError as e:
-            self.editor_status.setText(f"<span style='color:{theme().colors['error']}'>Not saved: {e}</span>")
+            if note is not None:
+                self._drafts[note["id"]] = (note["updated_at"], self.editor.draft(), str(e))
+            self._show_not_saved(str(e))
             return
+        self._drafts.pop(self.editor.note_id, None)
         self.editor_status.setText("Saved.")
         cards = self.db.note_cards(self.editor.note_id)
         self.model.invalidate([c["id"] for c in cards])
@@ -842,6 +858,9 @@ class CardBrowser(QMainWindow):
         if {c["ord"] for c in cards} != before:  # deletions added or removed: cards come and go
             QTimer.singleShot(0, self.search)
         self.cardsChanged.emit()
+
+    def _show_not_saved(self, why: str) -> None:
+        self.editor_status.setText(f"<span style='color:{theme().colors['error']}'>Not saved: {why}</span>")
 
     def add_cards(self) -> None:
         if self._add_dialog is None:

@@ -11,11 +11,11 @@ from pathlib import Path
 from PySide6.QtCore import QMimeData, QStringListModel, Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
-    QComboBox, QCompleter, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+    QCheckBox, QComboBox, QCompleter, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
     QPlainTextEdit, QPushButton, QSpinBox, QStackedWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
-from . import cardmodel, quiz
+from . import cardmodel, quiz, variants
 from .db import Database, media_dir
 
 QUIZ_TYPES = [("choice", "Multiple choice"), ("truefalse", "True or false"), ("numeric", "Numeric"),
@@ -97,7 +97,9 @@ class NoteEditor(QWidget):
         self.note_id: int | None = None
         self.kind = "basic"
         self._extra: dict = {}  # fields the editor doesn't show (an occlusion's image and shapes)
-        self._varies: bool | None = None  # a quiz question's "varies" (variants.py), which it doesn't show either
+        self._varies: bool | None = None  # a quiz question's "varies" (variants.py); None: not marked
+        self._skipped = False  # Claude found nothing to vary in the loaded question (variants.SKIP)
+        self._q_type: str | None = None  # the question type shown, to carry its answer over to a new one
         self._loading = False
         self._known_tags: list[str] | None = None  # for completion, read when first needed after a load
 
@@ -168,13 +170,17 @@ class NoteEditor(QWidget):
         self.q_tolerance = QDoubleSpinBox(decimals=6, maximum=1e12, specialValueText="1% of the answer")
         self.q_rubric = FieldEdit("The key points a full answer covers, shown when you rate it (optional)")
         self.q_explanation = FieldEdit("Why the answer is right (shown after answering)")
+        self.q_varies = QCheckBox("New numbers after each review", toolTip=(
+            "After each review Claude writes a fresh version of this problem (new givens, perhaps a new "
+            "setting) for the next time it comes up. Settings → Review settings turns this off for every card."))
+        self.q_varies.clicked.connect(self._varies_clicked)
         self.q_rows: dict[str, tuple] = {}
         for key, label, w in (("type", "Type", self.q_type), ("question", "Question", self.q_question),
                               ("choices", "Choices", self.q_choices), ("correct", "Correct choice", self.q_correct),
                               ("tf", "Answer", self.q_tf), ("answer", "Answer", self.q_answer),
                               ("number", "Answer", self.q_number), ("unit", "Unit", self.q_unit),
                               ("tolerance", "Tolerance", self.q_tolerance), ("rubric", "Rubric", self.q_rubric),
-                              ("explanation", "Explanation", self.q_explanation)):
+                              ("explanation", "Explanation", self.q_explanation), ("varies", "", self.q_varies)):
             lab = QLabel(label)
             form.addRow(lab, w)
             self.q_rows[key] = (lab, w)
@@ -208,6 +214,7 @@ class NoteEditor(QWidget):
         layout.addWidget(self.pages, 1)
         layout.addLayout(tags_row)
         self.set_kind("basic")
+        self._q_type = self.q_type.currentData()
 
     # -- loading -------------------------------------------------------------------------
     def load(self, note_id: int | None) -> None:
@@ -215,6 +222,8 @@ class NoteEditor(QWidget):
         note = self.db.card_note(note_id) if note_id is not None else None
         self.note_id = note["id"] if note else None
         self._known_tags = None
+        self._skipped = note is not None and any(
+            c["variant"] and json.loads(c["variant"]) == variants.SKIP for c in self.db.note_cards(note["id"]))
         self.setEnabled(note is not None)
         if note is None:
             self._loading = True
@@ -271,6 +280,7 @@ class NoteEditor(QWidget):
         self.q_correct.setValue(1)
         self._extra = {}
         self._varies = None
+        self.q_varies.setChecked(True)
 
     def _load_quiz(self, q: dict) -> None:
         self._varies = q.get("varies")
@@ -287,19 +297,95 @@ class NoteEditor(QWidget):
         self.q_unit.setText(str(q.get("unit", "")))
         self.q_tolerance.setValue(float(q.get("tolerance") or 0))
         self.q_rubric.setPlainText(str(q.get("rubric", "")))
+        self.q_varies.setChecked(self._varies is not False and not self._skipped)
         self._quiz_type_changed()
 
     def _quiz_type_changed(self) -> None:
         t = self.q_type.currentData()
+        if not self._loading and self._q_type not in (None, t):
+            self._carry_answer(self._q_type, t)
+        self._q_type = t
         rows = {"type", "question", "explanation"} | {
-            "choice": {"choices", "correct"}, "truefalse": {"tf"}, "numeric": {"number", "unit", "tolerance"},
-            "free": {"answer", "rubric"},
+            "choice": {"choices", "correct"}, "truefalse": {"tf"}, "numeric": {"number", "unit", "tolerance", "varies"},
+            "free": {"answer", "rubric", "varies"},
         }[t]
         for key, (label, w) in self.q_rows.items():
             label.setVisible(key in rows)
             w.setVisible(key in rows)
         self.q_rows["answer"][0].setText("Model answer" if t == "free" else "Answer")
         self._changed()
+
+    def _carry_answer(self, old: str, new: str) -> None:
+        """Switching a question's type: fill the new type's empty answer from the old one's, so
+        the question can be saved as it is (it can't when the new answer is missing, and the
+        browser would show the old type again)."""
+        choices = [c.strip() for c in self.q_choices.toPlainText().splitlines() if c.strip()]
+        if old == "choice":
+            i = self.q_correct.value() - 1
+            answer = choices[i] if 0 <= i < len(choices) else ""
+        elif old == "truefalse":
+            answer = self.q_tf.currentText()
+        elif old == "numeric":
+            answer = " ".join(p for p in (self.q_number.text().strip(), self.q_unit.text().strip()) if p)
+        else:
+            answer = self.q_answer.toPlainText().strip()
+        if new == "free" and not self.q_answer.toPlainText().strip():
+            self.q_answer.setPlainText(answer)
+        elif new == "numeric" and not self.q_number.text().strip():
+            try:
+                quiz.expected_value(answer)
+            except ValueError:
+                answer = ""
+            self.q_number.setText(answer)
+        elif new == "truefalse" and answer.lower() in ("true", "false"):
+            self.q_tf.setCurrentIndex(0 if answer.lower() == "true" else 1)
+        elif new == "choice" and not choices:
+            if old == "truefalse":
+                self.q_choices.setPlainText("True\nFalse")
+                self.q_correct.setValue(self.q_tf.currentIndex() + 1)
+            elif answer:
+                self.q_choices.setPlainText(answer + "\n")  # the right one; the others are to add
+                self.q_correct.setValue(1)
+
+    def _varies_clicked(self, on: bool) -> None:
+        self._varies = on
+        self._changed()
+
+    # -- draft -----------------------------------------------------------------------------
+    def draft(self) -> dict:
+        """Everything as entered, saved or not, for restore()."""
+        return {
+            "note_id": self.note_id, "kind": self.kind, "extra": dict(self._extra), "varies": self._varies,
+            "fields": {k: e.toPlainText() for k, e in self.fields.items()}, "tags": self.tags.text(),
+            "type": self.q_type.currentData(), "question": self.q_question.toPlainText(),
+            "choices": self.q_choices.toPlainText(), "correct": self.q_correct.value(), "tf": self.q_tf.currentIndex(),
+            "answer": self.q_answer.toPlainText(), "number": self.q_number.text(), "unit": self.q_unit.text(),
+            "tolerance": self.q_tolerance.value(), "rubric": self.q_rubric.toPlainText(),
+            "explanation": self.q_explanation.toPlainText(), "varies_box": self.q_varies.isChecked(),
+        }
+
+    def restore(self, d: dict) -> None:
+        """Show a draft() of the loaded note again."""
+        self._loading = True
+        try:
+            self.set_kind(d["kind"])
+            self._extra, self._varies = dict(d["extra"]), d["varies"]
+            for key, edit in self.fields.items():
+                edit.setPlainText(d["fields"].get(key, ""))
+            self.tags.setText(d["tags"])
+            self.q_type.setCurrentIndex(max(self.q_type.findData(d["type"]), 0))
+            for w, key in ((self.q_question, "question"), (self.q_choices, "choices"), (self.q_answer, "answer"),
+                           (self.q_rubric, "rubric"), (self.q_explanation, "explanation")):
+                w.setPlainText(d[key])
+            self.q_number.setText(d["number"])
+            self.q_unit.setText(d["unit"])
+            self.q_correct.setValue(d["correct"])
+            self.q_tf.setCurrentIndex(d["tf"])
+            self.q_tolerance.setValue(d["tolerance"])
+            self.q_varies.setChecked(d["varies_box"])
+            self._quiz_type_changed()
+        finally:
+            self._loading = False
 
     # -- values --------------------------------------------------------------------------
     def values(self) -> tuple[str, dict, list[str]]:

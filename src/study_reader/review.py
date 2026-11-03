@@ -54,7 +54,8 @@ class VariantMaker(QObject):
 
     def after_review(self, card_id: int) -> None:
         card = self.db.card(card_id)
-        if card is None or card_id in self._pending or not variants.wants_variant(card):
+        if card is None or card_id in self._pending or not variants.enabled(self.db) \
+                or not variants.wants_variant(card):
             return
         self._pending[card_id] = card["data"]
         last = variants.question(card) if variants.is_varied(card) else None
@@ -381,7 +382,7 @@ class ReviewPanel(QWidget):
     def _show_card(self) -> None:
         card = self.db.card(self.card_id)
         if card["data"] != self._shown_data:
-            self._question, self._shown_data = variants.question(card), card["data"]
+            self._question, self._shown_data = variants.question(card, self.db), card["data"]
         now = time.time()
         a = self._answer
         c = srs.counts(self.db, self.scope, now, deck=self.deck, tag=self.section)

@@ -588,3 +588,54 @@ def test_stopping_conversions(db, chat_panel):
     assert worker.conversions_stopped and not manager.busy() and db.conversions() == []
     worker.converted.emit(batch_id, json.dumps({"cards": [{"id": i, "action": "keep"} for i in ids]}))
     assert db.conversions() == []  # a reply that arrives anyway is ignored
+
+
+def test_switching_a_questions_type_in_the_browser(db, chat_panel):
+    from study_reader.browser import CardBrowser
+
+    deck = db.ensure_deck("D")
+    free = db.add_card_note("quiz", {"type": "free", "question": "Rinse time in seconds?", "answer": "41"}, deck)
+    choice = db.add_card_note("quiz", {"type": "choice", "question": "Pick", "choices": ["tea", "milk"], "answer": 1}, deck)
+    browser = CardBrowser(db)
+    browser.show()
+    browser.set_search("")
+    e = browser.editor
+    fields = lambda note: json.loads(db.card_note(note)["fields"])
+
+    def show(note):
+        browser.table.selectRow(next(r for r, c in enumerate(browser.model.ids) if db.card(c)["note_id"] == note))
+        assert e.note_id == note
+
+    def switch(t):
+        e.q_type.setCurrentIndex(e.q_type.findData(t))
+        browser.save_note()
+
+    # The answer comes along, so the new type saves at once.
+    show(free)
+    switch("numeric")
+    assert fields(free)["type"] == "numeric" and fields(free)["answer"] == 41
+    switch("free")
+    assert fields(free)["type"] == "free" and fields(free)["answer"] == "41"
+    show(choice)
+    switch("free")
+    assert fields(choice)["answer"] == "milk"
+    switch("truefalse")
+    switch("choice")
+    assert fields(choice)["choices"] == ["tea", "milk"]  # what was entered is still there
+
+    # A type whose answer is missing isn't saved yet, but the switch isn't lost on leaving the card.
+    show(free)
+    e.q_answer.setPlainText("Because tea.")
+    switch("choice")
+    assert "Not saved" in browser.editor_status.text() and fields(free)["type"] == "free"
+    show(choice)
+    show(free)
+    assert e.q_type.currentData() == "choice" and "Not saved" in browser.editor_status.text()
+    assert e.q_choices.toPlainText().strip() == "Because tea."
+    e.q_choices.setPlainText("Because tea.\nBecause milk.")
+    browser.save_note()
+    assert fields(free)["type"] == "choice" and fields(free)["choices"] == ["Because tea.", "Because milk."]
+    show(choice)
+    show(free)
+    assert browser.editor_status.text() == "" and e.q_type.currentData() == "choice"
+    browser.close()

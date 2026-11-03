@@ -159,3 +159,46 @@ def test_migration_adds_the_variant_column(tmp_path):
     conn.close()
     db = Database(tmp_path / "t.db")
     assert "variant" in {r["name"] for r in db.conn.execute("PRAGMA table_info(cards)")}
+
+
+def test_new_versions_can_be_turned_off(chat_panel, tmp_path):
+    from study_reader import phone_sync
+
+    review, worker, db, reply, shown = _review(chat_panel)
+    numeric = db.card_for(reply, 0, 2)["id"]
+    db.update_card(numeric, variant=json.dumps({**NUMERIC, "answer": "7"}))
+    db.set_setting(variants.ENABLED_SETTING, "0")
+    card = db.card(numeric)
+    assert variants.question(card, db) == srs.question(card) and variants.question(card)["answer"] == "7"
+    review.variants.after_review(numeric)
+    assert worker.variants == []
+    phone_sync.export_snapshot(db, tmp_path)
+    snap = sqlite3.connect(tmp_path / phone_sync.SNAPSHOT)
+    assert snap.execute("SELECT variant FROM cards WHERE id=?", (numeric,)).fetchone() == ("",)
+
+    db.set_setting(variants.ENABLED_SETTING, "1")
+    assert variants.question(db.card(numeric), db)["answer"] == "7"
+    review.variants.after_review(numeric)
+    assert worker.variants[-1][1] == numeric
+
+
+def test_a_cards_new_versions_are_switched_in_the_browser(chat_panel):
+    from study_reader.browser import CardBrowser
+
+    review, worker, db, reply, shown = _review(chat_panel)
+    free = db.card_for(reply, 0, 3)["id"]
+    db.update_card(free, variant=json.dumps(variants.SKIP))  # Claude found nothing to vary
+    browser = CardBrowser(db)
+    browser.show()
+    browser.set_search(f"cid:{free}")
+    e = browser.editor
+    assert e.q_varies.isVisible() and not e.q_varies.isChecked()
+    e.q_varies.click()  # on: asked again, and told to rephrase rather than skip
+    browser.save_note()
+    card = db.card(free)
+    assert srs.question(card)["varies"] is True and variants.wants_variant(card)
+    assert "skip" not in variants.request(srs.question(card))
+    e.q_varies.click()
+    browser.save_note()
+    assert srs.question(db.card(free))["varies"] is False and not variants.wants_variant(db.card(free))
+    browser.close()

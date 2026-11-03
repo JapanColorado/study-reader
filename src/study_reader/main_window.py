@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import gamify, quiz, srs
+from . import gamify, quiz, srs, variants
 from .calculator import CalculatorPanel
 from .chat_panel import MODELS, ChatPanel
 from .chat_service import ChatWorker
@@ -354,6 +354,7 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction(icon("import"), "Migrate from Anki…").triggered.connect(self.migrate_from_anki)
         review_menu = menu.addMenu(icon("cards"), "Review settings")
+        review_menu.setToolTipsVisible(True)
         review_menu.addAction("New cards per day…").triggered.connect(self._set_new_per_day)
         review_menu.addAction("Desired retention…").triggered.connect(self._set_retention)
         review_menu.addAction("Optimize FSRS parameters…").triggered.connect(self._optimize)
@@ -364,6 +365,15 @@ class MainWindow(QMainWindow):
         self.rewards_action.setChecked(gamify.enabled(self.db))
         self.rewards_action.toggled.connect(self._set_rewards)
         review_menu.addAction("Daily goal…").triggered.connect(self._set_daily_goal)
+        review_menu.addSeparator()
+        self.variants_action = review_menu.addAction("New numbers for problems after each review")
+        self.variants_action.setToolTip(
+            "After you review a numeric or free-response card, Claude writes a fresh version of the problem "
+            "for next time. Off: cards always show their own question. Single cards can be turned off in "
+            "the card browser.")
+        self.variants_action.setCheckable(True)
+        self.variants_action.setChecked(variants.enabled(self.db))
+        self.variants_action.toggled.connect(self._set_variants)
         menu.addAction(icon("cards"), "Phone sync…").triggered.connect(lambda: PhoneSyncDialog(self.phone_sync, self).exec())
         return menu
 
@@ -966,6 +976,10 @@ class MainWindow(QMainWindow):
 
     def _set_rewards(self, on: bool) -> None:
         self.db.set_setting(gamify.ENABLED_SETTING, "1" if on else "0")
+        self._on_cards_changed()
+
+    def _set_variants(self, on: bool) -> None:
+        self.db.set_setting(variants.ENABLED_SETTING, "1" if on else "0")
         self._on_cards_changed()
 
     def _set_daily_goal(self) -> None:

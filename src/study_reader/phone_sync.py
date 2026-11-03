@@ -45,7 +45,7 @@ from pathlib import Path
 
 from fsrs import Card, Rating, State
 
-from . import gamify, srs
+from . import gamify, srs, variants
 from .db import Database, media_dir
 
 FORMAT = 1
@@ -283,7 +283,7 @@ def _fingerprint(db: Database, root: Path) -> str:
         c.execute("SELECT group_concat(id||':'||name, '|') FROM decks").fetchone(),
         c.execute("SELECT group_concat(id||':'||title||':'||COALESCE(length(toc), 0)||':'||COALESCE(deck_id, ''), '|') "
                   "FROM books").fetchone(),
-        [db.get_setting(k) for k in SETTINGS],
+        [db.get_setting(k) for k in (*SETTINGS, variants.ENABLED_SETTING)],
         sorted(_acks(db, root)),
         _media_listing(),
     ]
@@ -324,8 +324,10 @@ def export_snapshot(db: Database, root: Path, now: float | None = None) -> Path:
         ])
         snap.executemany("INSERT INTO card_notes VALUES (?,?,?)", db.conn.execute("SELECT id, kind, tags FROM card_notes"))
         cols = ", ".join(CARD_COLUMNS)
+        # With new versions turned off (variants.ENABLED_SETTING) the phone shows the cards' own questions.
+        shown = cols.replace("variant", "variant" if variants.enabled(db) else "'' AS variant")
         snap.executemany(f"INSERT INTO cards ({cols}) VALUES ({', '.join('?' * len(CARD_COLUMNS))})",
-                         db.conn.execute(f"SELECT {cols} FROM cards"))
+                         db.conn.execute(f"SELECT {shown} FROM cards"))
         snap.executemany("INSERT INTO reviews VALUES (?,?,?,?,?,?,?)", db.conn.execute(
             "SELECT id, card_id, rating, source, reviewed_at, duration, was_new FROM reviews"))
         gamify.load(db, now)  # made from the log the first time, so the phone starts from the same state
