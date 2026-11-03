@@ -39,6 +39,10 @@ from .web_import import WebImportError, normalize_url
 from .web_render import WebImporter
 
 
+# The right-hand panels that may be open together: the calculator under the review.
+COMBINED = {"review", "calc"}
+
+
 class MainWindow(QMainWindow):
     def __init__(self, db: Database | None = None):
         super().__init__()
@@ -87,12 +91,22 @@ class MainWindow(QMainWindow):
         self.library = LibraryView(self.db)
         self.variants = VariantMaker(self.db, self.worker, self)  # new numbers for reviewed calculation cards
         self.review_all = ReviewPanel(self.db, all_books=True, variants=self.variants)  # every book's cards: the Review page
+        # The Review page's calculator (F11 there), beside the cards: the history of the book of the card under review.
+        self.review_calc = CalculatorPanel(self.db, shared=True, closable=True)
+        self.review_calc.closeRequested.connect(lambda: self.review_calc_action.trigger())
+        self.review_all.cardShown.connect(self._review_card_book)
+        self.review_page = QSplitter()
+        self.review_page.setChildrenCollapsible(False)
+        self.review_page.addWidget(self.review_all)
+        self.review_page.addWidget(self.review_calc)
+        self.review_page.setStretchFactor(0, 1)
+        self.review_page.setSizes([1000, 420])
         self.cards_page = _Page()  # holds the browser once made
         self.stats_page = _Page()  # holds the statistics once made
         self.center = QStackedWidget()
         # The pages the navigation rail switches between; "book" is the open book.
         self.pages = {
-            "home": self.home, "library": self.library, "review": self.review_all,
+            "home": self.home, "library": self.library, "review": self.review_page,
             "cards": self.cards_page, "stats": self.stats_page, "book": self.book_view,
         }
         for w in self.pages.values():
@@ -102,8 +116,17 @@ class MainWindow(QMainWindow):
         self.calc = CalculatorPanel(self.db)
         self.notes = NotesPanel(self.db)
         self.review = ReviewPanel(self.db, variants=self.variants)
-        self.right = QStackedWidget()  # chats, the calculator, notes and review take turns in the same slot
-        for w in (self.chat, self.calc, self.notes, self.review):
+        for a, b in ((self.calc, self.review_calc), (self.review_calc, self.calc)):
+            a.historyChanged.connect(lambda book_id, b=b: b.saves and b.book_id == book_id and b.reload())
+        # Review and the calculator may be open together, the calculator under the cards.
+        self.review_split = QSplitter(Qt.Orientation.Vertical)
+        self.review_split.setChildrenCollapsible(False)
+        self.review_split.addWidget(self.review)
+        self.review_split.addWidget(self.calc)
+        self.review_split.setStretchFactor(0, 3)
+        self.review_split.setStretchFactor(1, 2)
+        self.right = QStackedWidget()  # chats, notes and review / the calculator take turns in the same slot
+        for w in (self.chat, self.notes, self.review_split):
             self.right.addWidget(w)
 
         split = QSplitter()
@@ -114,6 +137,7 @@ class MainWindow(QMainWindow):
         split.setSizes([240, 800, 460])
 
         self._build_actions()
+        self.review_calc.setVisible(self.review_calc_action.isChecked())
         self.nav = NavRail(self._build_settings_menu())
         self.nav.pageRequested.connect(self.show_page)
         central = QWidget()
@@ -309,7 +333,11 @@ class MainWindow(QMainWindow):
         bar.addAction(self.notes_action)
         self.calc_action = action("Calculator", "F11", lambda on: self._toggle_right("calc", on), "calculator", checkable=True)
         bar.addAction(self.calc_action)
-        # The right-hand slot's panels, by the name books.right_panel stores; one at most is shown.
+        # The Review page's calculator; F11 is this or the book's, whichever screen is up.
+        self.review_calc_action = action("Calculator", "F11", self._toggle_review_calc, "calculator", checkable=True)
+        self.review_calc_action.setChecked(self.db.get_setting("review_calc") == "1")
+        # The right-hand slot's panels, by the names books.right_panel stores ("+"-joined); one
+        # at most is shown, except that review and the calculator may be open together.
         self.right_panels = {
             "chat": (self.chat_action, self.chat),
             "calc": (self.calc_action, self.calc),
@@ -397,7 +425,7 @@ class MainWindow(QMainWindow):
     def _toggle_right(self, name: str, on: bool) -> None:
         if on:
             for other, (a, _) in self.right_panels.items():
-                if other != name:
+                if other != name and {name, other} != COMBINED:
                     a.setChecked(False)
         self._sync_right()
         self._save_panels()
@@ -406,6 +434,22 @@ class MainWindow(QMainWindow):
         if on and name == "review" and self.right.isVisible():
             self.review.refresh()
             self.review.focus()
+        if not on and name == "calc" and self.review_action.isChecked() and self.right.isVisible():
+            self.review.focus()
+
+    def _toggle_review_calc(self, on: bool) -> None:
+        """F11 on the Review page: the calculator beside the cards (remembered)."""
+        self.db.set_setting("review_calc", "1" if on else "0")
+        self.review_calc.setVisible(on)
+        if on:
+            self.review_calc.focus_input()
+        else:
+            self.review_all.focus()
+
+    def _review_card_book(self, book_id: int | None) -> None:
+        """A card came up on the Review page: its book's calculator history (or the shared one)."""
+        if book_id != self.review_calc.book_id:
+            self.review_calc.set_book(book_id)
 
     def _set_finished(self, on: bool) -> None:
         if self.book_id is not None:
@@ -415,15 +459,18 @@ class MainWindow(QMainWindow):
         """Remember per book which sidebars are open, so reopening it restores them."""
         if self.book_id is None:
             return
-        right = next((name for name, (a, _) in self.right_panels.items() if a.isChecked()), "")
+        right = "+".join(name for name, (a, _) in self.right_panels.items() if a.isChecked())
         self.db.update_book(self.book_id, show_toc=int(self.toc_action.isChecked()), right_panel=right)
 
     def _sync_right(self) -> None:
-        """Show whichever of chats / calculator / notes / review is toggled on, or none."""
-        panel = next((w for a, w in self.right_panels.values() if a.isChecked()), None)
-        if panel:
-            self.right.setCurrentWidget(panel)
-        self.right.setVisible(panel is not None and self.reading)
+        """Show whichever of chats / calculator / notes / review is toggled on (review and the
+        calculator may be both), or none."""
+        on = [w for a, w in self.right_panels.values() if a.isChecked()]
+        for w in (self.review, self.calc):
+            w.setVisible(w in on)
+        if on:
+            self.right.setCurrentWidget(self.review_split if on[0] in (self.review, self.calc) else on[0])
+        self.right.setVisible(bool(on) and self.reading)
 
     # -- pages ----------------------------------------------------------------------
     @property
@@ -455,6 +502,7 @@ class MainWindow(QMainWindow):
         self.center.setCurrentWidget(self.pages[name])
         self.nav.set_current(name)
         self._set_book_ui(name == "book")
+        self.review_calc_action.setEnabled(name == "review")
         # The browser's own Ctrl+Shift+O (Open in book) wins while it is on screen.
         self.web_action.setEnabled(name != "cards")
         if name == "book":
@@ -622,8 +670,9 @@ class MainWindow(QMainWindow):
 
         self._fill_toc()
         self.toc_action.setChecked(bool(book["show_toc"]))
+        shown = set(book["right_panel"].split("+"))
         for name, (a, _) in self.right_panels.items():
-            a.setChecked(book["right_panel"] == name)
+            a.setChecked(name in shown)
         self.page_spin.blockSignals(True)
         self.page_spin.setRange(1, doc.page_count)
         self.page_spin.blockSignals(False)

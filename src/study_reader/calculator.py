@@ -11,7 +11,7 @@ from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QPoint, QSize, Qt, QUrl, Slot
+from PySide6.QtCore import QObject, QPoint, QSize, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QColor, QCursor, QGuiApplication
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -272,11 +272,18 @@ class _Bridge(QObject):
 
 
 class CalculatorPanel(QWidget):
-    """Header and hint in Qt; history and the math-field input in calculator.html."""
+    """Header and hint in Qt; history and the math-field input in calculator.html. There are two:
+    the open book's, and the Review page's (shared=True), which shows the history of the book of
+    the card under review and, for a card with no book, a shared one (book_id None). closable: a
+    button in the header asks to hide it (closeRequested)."""
 
-    def __init__(self, db: Database, parent=None):
+    historyChanged = Signal(object)  # the book id (None: the shared history) whose saved history changed
+    closeRequested = Signal()
+
+    def __init__(self, db: Database, shared: bool = False, closable: bool = False, parent=None):
         super().__init__(parent)
         self.db = db
+        self.shared = shared
         self.book_id: int | None = None
         self.calc = Calculator(degrees=db.get_setting("calc_angle") == "deg")
         self.entries: list[dict] = []  # {key, id?, expr, latex, result, value}, oldest first
@@ -308,6 +315,13 @@ class CalculatorPanel(QWidget):
         header.addWidget(self.angle)
         header.addWidget(help_btn)
         header.addWidget(self.clear_btn)
+        if closable:
+            close_btn = QToolButton()
+            close_btn.setIcon(icon("x"))
+            close_btn.setIconSize(QSize(17, 17))
+            close_btn.setToolTip("Hide the calculator (F11)")
+            close_btn.clicked.connect(self.closeRequested)
+            header.addWidget(close_btn)
 
         self.view = QWebEngineView()
         self.view.page().setBackgroundColor(QColor(theme().colors["surface"]))
@@ -367,17 +381,33 @@ class CalculatorPanel(QWidget):
         }
 
     # -- book / history --------------------------------------------------------------
+    @property
+    def saves(self) -> bool:
+        """Whether calculations are kept: with a book, or in the shared history."""
+        return self.book_id is not None or self.shared
+
     def set_book(self, book_id: int | None) -> None:
+        """Show a book's history (None: none, or for the Review page's, the shared one); the input clears."""
         self.book_id = book_id
+        self.clear_btn.setToolTip("Clear this book's calculator history" if book_id is not None
+                                  else "Clear the calculator history of cards with no book")
+        self._load()
+        self._set_input("")
+
+    def reload(self) -> None:
+        """The history was changed by the other calculator: show it again, keeping the input."""
+        self._load()
+        self._js("refreshPreview")
+
+    def _load(self) -> None:
         self.calc.variables.clear()
         self.calc.ans = None
         self.entries = []
-        rows = self.db.calculations(book_id) if book_id is not None else []
+        rows = self.db.calculations(self.book_id) if self.saves else []
         for row in rows:
             self._restore(row)
             self.entries.append(self._keyed(dict(row)))
         self._js("setEntries", [self._page_entry(e) for e in self.entries])
-        self._set_input("")
         self._sync_empty()
 
     def _keyed(self, entry: dict) -> dict:
@@ -393,14 +423,19 @@ class CalculatorPanel(QWidget):
         self.calc.ans = value
 
     def clear_history(self) -> None:
-        if self.book_id is not None:
+        if self.saves:
             self.db.clear_calculations(self.book_id)
         self.set_book(self.book_id)
+        if self.saves:
+            self.historyChanged.emit(self.book_id)
 
     def submit(self, latex: str) -> bool:
         """Evaluates the math field's LaTeX; on success it joins the history and the field clears."""
         if not latex.strip():
             return False
+        if self.book_id is not None and self.db.book(self.book_id) is None:
+            self.book_id = None  # removed from the library meanwhile: its history went with it
+            self._load()
         try:
             expr = latex_to_expr(latex)
             _, value = self.calc.evaluate(expr)
@@ -408,7 +443,7 @@ class CalculatorPanel(QWidget):
             self._show_preview(error=str(e))
             return False
         entry = {"expr": expr, "latex": latex, "result": format_value(value), "value": store_value(value)}
-        if self.book_id is not None:
+        if self.saves:
             entry["id"] = self.db.add_calculation(
                 self.book_id, expr, entry["result"], entry["value"], latex,
             )
@@ -416,6 +451,8 @@ class CalculatorPanel(QWidget):
         self._js("addEntry", self._page_entry(entry))
         self._set_input("")
         self._sync_empty()
+        if self.saves:
+            self.historyChanged.emit(self.book_id)
         return True
 
     def _sync_empty(self) -> None:
@@ -448,6 +485,8 @@ class CalculatorPanel(QWidget):
         self.entries.remove(entry)
         self._js("removeEntry", entry["key"])
         self._sync_empty()
+        if "id" in entry:
+            self.historyChanged.emit(self.book_id)
 
     # -- input -------------------------------------------------------------------------
     def _set_input(self, latex: str, focus: bool = False) -> None:

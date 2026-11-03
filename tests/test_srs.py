@@ -397,14 +397,14 @@ def test_main_window_review_panel(pdf_path, tmp_path, monkeypatch):
     assert "2 cards to review" in win.review_action.toolTip()
 
     win.review_action.trigger()
-    assert win.right.currentWidget() is win.review and db.book(win.book_id)["right_panel"] == "review"
+    assert win.review.isVisible() and db.book(win.book_id)["right_panel"] == "review"
     win._review_source(win.book_id, 2)
     assert win.reader.current_page() == 2
 
     assert win.review_action.text() == "Review · 2" and win.nav.buttons["review"].badge == "2"
     book_id = win.book_id
     win.show_review_all()  # the book stays open behind the Review page
-    assert win.center.currentWidget() is win.review_all and win.book_id == book_id
+    assert win.page() == "review" and win.book_id == book_id
     assert not win.toolbar.isVisible() and not win.right.isVisible() and win.nav.book.isVisible()
     win._review_chat(book_id, chat)
     assert win.center.currentWidget() is win.book_view and win.chat.chat_id == chat
@@ -449,6 +449,74 @@ def test_navigating_pages_keeps_the_book_open(pdf_path, tmp_path, monkeypatch):
     win.home.openRequested.emit(book_id)
     assert win.book_id == book_id and win.page() == "book"
     win.close()
+    win.close()
+
+
+def test_calculator_beside_review(pdf_path, tmp_path, monkeypatch):
+    """In a book the calculator can sit under the review; on the Review page F11 opens one beside
+    the cards, showing the history of the card's book (or, without one, a shared history)."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+    from study_reader.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "t.db")
+    win = MainWindow(db)
+    win.show()
+    win.activateWindow()
+    win.open_book(pdf_path)
+    book_id = win.book_id
+    chat = db.create_chat(book_id, "Quiz")
+    reply = db.add_message(chat, "assistant", CARDS)
+    srs.add_quiz_cards(db, book_id, reply, CARDS)
+    db.add_card_note("basic", {"front": "Loose", "back": "card"}, db.ensure_deck("Loose"))
+
+    win.review_action.trigger()
+    win.calc_action.trigger()  # joins the review instead of replacing it
+    assert win.review_action.isChecked() and win.review.isVisible() and win.calc.isVisible()
+    assert db.book(book_id)["right_panel"] == "calc+review"
+    win.notes_action.trigger()  # the others still take the whole slot
+    assert not win.review_action.isChecked() and not win.calc_action.isChecked() and win.notes.isVisible()
+    win.calc_action.trigger()
+    win.review_action.trigger()
+    win.show_library()
+    win.open_book(pdf_path)
+    assert win.review.isVisible() and win.calc.isVisible() and not win.notes_action.isChecked()
+    win.calc_action.trigger()
+    assert win.review.isVisible() and not win.calc.isVisible() and db.book(book_id)["right_panel"] == "review"
+    win.calc_action.trigger()
+
+    win.show_review_all()
+    assert not win.review_calc.isVisible() and not win.calc_action.isEnabled()
+    app.processEvents()
+    QTest.keyClick(win, Qt.Key.Key_F11)
+    assert win.review_calc.isVisible() and win.calc_action.isChecked()  # the book's is left alone
+    assert db.get_setting("review_calc") == "1"
+    assert win.review_calc.book_id is None  # before any card: the shared history
+
+    win.review_all.choose_deck(None)
+    win.review_all.start()
+    seen = set()
+    for _ in range(3):
+        card = db.card(win.review_all.card_id)
+        assert win.review_calc.book_id == card["book_id"]
+        seen.add(card["book_id"])
+        win.review_all.act(card["id"], "skip")
+    assert seen == {book_id, None}
+
+    win.review_calc.set_book(book_id)
+    win.review_calc.submit(r"6\cdot7")  # saved to the card's book, and the book's calculator sees it
+    assert win.calc.entries[-1]["result"] == "42" and db.calculations(book_id)[-1]["result"] == "42"
+
+    win.show_page("book")
+    QTest.keyClick(win, Qt.Key.Key_F11)  # in the book, F11 is the book's calculator
+    assert not win.calc_action.isChecked() and db.get_setting("review_calc") == "1"
+    win.show_review_all()
+    assert win.review_calc.isVisible()
+    win.review_calc.closeRequested.emit()
+    assert not win.review_calc.isVisible() and db.get_setting("review_calc") == "0"
     win.close()
 
 

@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS books (
     zoom REAL NOT NULL DEFAULT 0,   -- 0 = fit width
     crop_margins INTEGER NOT NULL DEFAULT 0,
     show_toc INTEGER NOT NULL DEFAULT 1,
-    right_panel TEXT NOT NULL DEFAULT 'chat', -- 'chat' | 'calc' | 'notes' | '' (collapsed)
+    right_panel TEXT NOT NULL DEFAULT 'chat', -- 'chat' | 'calc' | 'notes' | 'review' | 'calc+review' (both) | '' (collapsed)
     show_chat_list INTEGER NOT NULL DEFAULT 1,
     base_session_id TEXT,
     context_mode TEXT,              -- NULL (not prepared) | 'full' | 'partial'
@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS snippets (
 );
 CREATE TABLE IF NOT EXISTS calculations (
     id INTEGER PRIMARY KEY,
-    book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    book_id INTEGER REFERENCES books(id) ON DELETE CASCADE, -- NULL: the Review page's, for cards with no book
     expr TEXT NOT NULL,             -- plain expression, as the calculator evaluates it
     latex TEXT NOT NULL DEFAULT '', -- as typed in the math field ('' for rows from before it)
     result TEXT NOT NULL,           -- as displayed
@@ -278,6 +278,18 @@ class Database:
         calc_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(calculations)")}
         if "latex" not in calc_cols:
             self.conn.execute("ALTER TABLE calculations ADD COLUMN latex TEXT NOT NULL DEFAULT ''")
+        if any(r["name"] == "book_id" and r["notnull"] for r in self.conn.execute("PRAGMA table_info(calculations)")):
+            # book_id became optional (the Review page's history for cards with no book): rebuild
+            # the table. Nothing refers to it, so foreign keys can stay on.
+            self.conn.execute("DROP TABLE IF EXISTS calculations_new")  # left by an earlier attempt that failed
+            new_schema = SCHEMA[SCHEMA.index("CREATE TABLE IF NOT EXISTS calculations ("):]
+            new_schema = new_schema[:new_schema.index(";") + 1]
+            with self.conn:
+                self.conn.execute(new_schema.replace("calculations (", "calculations_new (", 1))
+                self.conn.execute("INSERT INTO calculations_new (id, book_id, expr, latex, result, value, created_at) "
+                                  "SELECT id, book_id, expr, latex, result, value, created_at FROM calculations")
+                self.conn.execute("DROP TABLE calculations")
+                self.conn.execute("ALTER TABLE calculations_new RENAME TO calculations")
         if "deck_id" not in book_cols:
             # The deck a book's new quiz cards go into (made when its first card is).
             self.conn.execute("ALTER TABLE books ADD COLUMN deck_id INTEGER REFERENCES decks(id) ON DELETE SET NULL")
@@ -548,7 +560,8 @@ class Database:
             self.conn.execute("DELETE FROM notes WHERE id=?", (note_id,))
 
     # -- calculator -----------------------------------------------------------
-    def add_calculation(self, book_id: int, expr: str, result: str, value: str, latex: str = "") -> int:
+    # A book_id of None is the Review page's shared history, for cards with no book.
+    def add_calculation(self, book_id: int | None, expr: str, result: str, value: str, latex: str = "") -> int:
         with self.conn:
             cur = self.conn.execute(
                 "INSERT INTO calculations (book_id, expr, latex, result, value, created_at) VALUES (?,?,?,?,?,?)",
@@ -556,16 +569,16 @@ class Database:
             )
         return cur.lastrowid
 
-    def calculations(self, book_id: int) -> list[sqlite3.Row]:
-        return self.conn.execute("SELECT * FROM calculations WHERE book_id=? ORDER BY id", (book_id,)).fetchall()
+    def calculations(self, book_id: int | None) -> list[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM calculations WHERE book_id IS ? ORDER BY id", (book_id,)).fetchall()
 
     def delete_calculation(self, calc_id: int) -> None:
         with self.conn:
             self.conn.execute("DELETE FROM calculations WHERE id=?", (calc_id,))
 
-    def clear_calculations(self, book_id: int) -> None:
+    def clear_calculations(self, book_id: int | None) -> None:
         with self.conn:
-            self.conn.execute("DELETE FROM calculations WHERE book_id=?", (book_id,))
+            self.conn.execute("DELETE FROM calculations WHERE book_id IS ?", (book_id,))
 
     # -- decks -----------------------------------------------------------------
     def decks(self) -> list[sqlite3.Row]:
