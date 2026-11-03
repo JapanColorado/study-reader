@@ -230,7 +230,7 @@ def test_asking_highlights_and_shows_chats(pdf_path, tmp_path, monkeypatch):
     win.show()
     win.open_book(pdf_path)
     win.calc_action.trigger()  # the calculator has the right-hand slot
-    assert win.right.currentWidget() is win.calc
+    assert win.calc.isVisible() and not win.review.isVisible()
 
     words = win.doc.words(0)
     win.reader._selection = {0: words[:3]}
@@ -266,7 +266,7 @@ def test_sidebars_stay_collapsed_when_book_is_reopened(pdf_path, tmp_path, monke
     win.calc_action.trigger()
     win.show_library()
     win.open_book(pdf_path)
-    assert win.calc_action.isChecked() and win.right.currentWidget() is win.calc and win.right.isVisible()
+    assert win.calc_action.isChecked() and win.calc.isVisible() and win.right.isVisible()
 
 
 def test_mark_book_finished(pdf_path, tmp_path, monkeypatch):

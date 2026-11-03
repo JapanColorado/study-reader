@@ -475,7 +475,7 @@ def test_main_window_cards_menu(pdf_path, tmp_path, monkeypatch):
     assert win.center.currentWidget() is win.cards_page and browser.isVisible() and not browser.isWindow()
     assert win.nav.buttons["cards"].isChecked() and not win.web_action.isEnabled()  # its Ctrl+Shift+O wins
     browser.reviewDeckRequested.emit(deck)
-    assert win.center.currentWidget() is win.review_all and win.review_all.deck_id == deck
+    assert win.page() == "review" and win.review_all.deck_id == deck
     assert win.web_action.isEnabled()
     win.review_all.start()
     win.review_all.act(win.review_all.card_id, "edit")

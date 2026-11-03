@@ -141,6 +141,7 @@ class ReviewPanel(QWidget):
     browseRequested = Signal()
     statsRequested = Signal()
     editRequested = Signal(int)  # card id, to open in the browser
+    cardShown = Signal(object)  # the book id (None if it has none) of the card on display, each time it is drawn
 
     def __init__(self, db: Database, all_books: bool = False, variants: VariantMaker | None = None, parent=None):
         super().__init__(parent)
@@ -388,6 +389,7 @@ class ReviewPanel(QWidget):
         c = srs.counts(self.db, self.scope, now, deck=self.deck, tag=self.section)
         book = self.db.book(card["book_id"]) if card["book_id"] is not None else None
         deck = self.db.deck(card["deck_id"])
+        self.cardShown.emit(card["book_id"])
         self._js("showCard", {
             "id": card["id"],
             "question": self._question,

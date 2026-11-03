@@ -164,3 +164,72 @@ def test_calculations_gain_latex_column(tmp_path):
     conn.close()
     db = Database(path)
     assert db.calculations(1)[0]["latex"] == ""
+
+
+def test_shared_history_has_no_book(tmp_path):
+    """The Review page keeps one history for cards with no book (book_id NULL)."""
+    db = Database(tmp_path / "t.db")
+    book = db.upsert_book("h", "/a.pdf", "A", 1)["id"]
+    db.add_calculation(None, "1 + 1", "2", "2")
+    db.add_calculation(book, "2 + 2", "4", "4")
+    assert [r["expr"] for r in db.calculations(None)] == ["1 + 1"]
+    assert [r["expr"] for r in db.calculations(book)] == ["2 + 2"]
+    db.clear_calculations(None)
+    assert db.calculations(None) == [] and len(db.calculations(book)) == 1
+
+
+def test_calculations_book_becomes_optional(tmp_path):
+    """Databases from when every calculation had a book get the table rebuilt, rows kept."""
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        "CREATE TABLE books (id INTEGER PRIMARY KEY, hash TEXT UNIQUE, path TEXT, title TEXT, page_count INTEGER,"
+        " opened_at REAL);"
+        "CREATE TABLE calculations (id INTEGER PRIMARY KEY,"
+        " book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE, expr TEXT NOT NULL,"
+        " latex TEXT NOT NULL DEFAULT '', result TEXT NOT NULL, value TEXT NOT NULL, created_at REAL NOT NULL);"
+        "INSERT INTO books (id, hash, path, title, page_count, opened_at) VALUES (1, 'h', '/a.pdf', 'A', 1, 0);"
+        "INSERT INTO calculations (id, book_id, expr, latex, result, value, created_at)"
+        " VALUES (7, 1, '1 + 1', '1+1', '2', '2', 0);"
+    )
+    conn.commit()
+    conn.close()
+    db = Database(path)
+    (row,) = db.calculations(1)
+    assert (row["id"], row["expr"], row["latex"]) == (7, "1 + 1", "1+1")
+    assert db.add_calculation(None, "3", "3", "3")
+    db.delete_book(1)  # still goes with its book
+    assert db.calculations(1) == [] and len(db.calculations(None)) == 1
+    Database(path)  # and opens again without rebuilding
+
+
+def test_review_calculator_shares_a_history_without_a_book(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from study_reader.calculator import CalculatorPanel
+
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "t.db")
+    book = db.upsert_book("h", "/a.pdf", "A", 1)["id"]
+    plain, shared = CalculatorPanel(db), CalculatorPanel(db, shared=True)
+    assert not plain.saves and shared.saves
+    plain.submit("1+1")  # no book: not kept
+    shared.submit("2+3")  # no book: the shared history
+    assert db.calculations(None)[0]["expr"] == "2+3" and len(db.calculations(None)) == 1
+
+    changed = []
+    shared.historyChanged.connect(changed.append)
+    shared.set_book(book)
+    shared.submit("x=4")
+    assert changed == [book] and db.calculations(book)[0]["expr"] == "x=4"
+    plain.set_book(book)
+    plain.submit("x+1")
+    assert shared.entries[-1]["expr"] == "x=4"
+    shared.reload()  # the other one changed it
+    assert [e["expr"] for e in shared.entries] == ["x=4", "x+1"] and shared.calc.ans == 5
+    shared.clear_history()
+    assert changed[-1] == book and db.calculations(book) == [] and len(db.calculations(None)) == 1
+
+    db.delete_book(book)  # removed while its history is up: what comes next is kept in the shared one
+    assert shared.submit("7")
+    assert shared.book_id is None and [r["expr"] for r in db.calculations(None)] == ["2+3", "7"]
