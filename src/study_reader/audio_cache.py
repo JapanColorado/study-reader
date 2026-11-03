@@ -1,17 +1,18 @@
 """Read-aloud audio rendered ahead of time on Colab (Qt-free).
 
-The app writes a book's sentences to ``<folder>/books/<book key>/request.json`` in a
-shared Google Drive folder; the Colab notebook (assets/colab_render.ipynb) renders them
-with Kokoro into ``audio/part-NNNN.opus`` (Ogg Opus) plus ``part-NNNN.json``, which maps
-each sentence's key to ``[speed, start sample, samples, tokens]``. The app copies the
-parts into its data folder (``sync``) and plays from there (``AudioCache``), stretching
-the audio when the reading speed differs from the one it was rendered at."""
+colab_render.py has a Colab GPU render a book's sentences with Kokoro (assets/kokoro_render.py)
+into ``audio/part-*.opus`` (Ogg Opus) plus ``part-*.json``, which maps each sentence's key to
+``[speed, start sample, samples, tokens]``, and downloads the parts into the book's folder in
+the app's data folder, where ``AudioCache`` plays them, stretching the audio when the reading
+speed differs from the one it was rendered at. Parts the old Drive notebook made
+(``part-NNNN``) are still copied from the shared Drive folder (``sync``)."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import re
 import shutil
 from collections import OrderedDict
 from pathlib import Path
@@ -23,9 +24,6 @@ RATE = 24000
 # rate on textbook sentences: 3% here, 6% at 1.5×, 16% at 2×), so faster reading is made
 # at this speed and then sped up (stretch), which keeps every word.
 NATIVE_SPEED = 1.3
-REQUEST = "request.json"
-NOTEBOOK = "study_reader_render.ipynb"
-FORMAT_VERSION = 1
 OPEN_PARTS = 4  # decoders kept open
 
 
@@ -43,44 +41,25 @@ def render_speed(speed: float) -> float:
     return round(min(speed, NATIVE_SPEED), 2)
 
 
-def write_request(folder: Path, title: str, voice: str, speed: float, texts) -> int:
-    """Ask Colab to render a book's sentences (texts in reading order); the count asked for."""
-    folder.mkdir(parents=True, exist_ok=True)
-    seen, sentences = set(), []
-    for text in texts:
-        key = sentence_key(voice, text)
-        if key not in seen:
-            seen.add(key)
-            sentences.append([key, text])
-    data = {"version": FORMAT_VERSION, "title": title, "voice": voice, "speed": render_speed(speed),
-            "sentences": sentences}
-    tmp = folder / (REQUEST + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False))
-    os.replace(tmp, folder / REQUEST)
-    return len(sentences)
-
-
-def read_request(folder: Path) -> dict | None:
-    try:
-        return json.loads((folder / REQUEST).read_text())
-    except (OSError, ValueError):
-        return None
+def _drive_parts(folder: Path) -> list[Path]:
+    return sorted(p for p in folder.glob("part-*.json") if re.fullmatch(r"part-\d+\.json", p.name))
 
 
 def sync(src: Path, dst: Path) -> int:
-    """Copy rendered parts that are new or changed from the shared folder, and drop the ones
-    removed there; how many changed. Each part's audio is copied before its index (and its
+    """Copy parts the Drive notebook rendered that are new or changed from the shared folder,
+    and drop the ones removed there; how many changed. Only its parts (part-NNNN) are touched,
+    not the ones colab_render downloads. Each part's audio is copied before its index (and its
     index removed first), so a half-copied part is never used."""
     if not src.is_dir():
         return 0
     dst.mkdir(parents=True, exist_ok=True)
     copied = 0
-    for index in sorted(dst.glob("part-*.json")):
+    for index in _drive_parts(dst):
         if not (src / index.name).exists():
             index.unlink()
             index.with_suffix(".opus").unlink(missing_ok=True)
             copied += 1
-    for index in sorted(src.glob("part-*.json")):
+    for index in _drive_parts(src):
         audio = index.with_suffix(".opus")
         if not audio.exists():
             continue

@@ -1,26 +1,22 @@
-"""Rendering a book's read-aloud audio on Colab: sending its sentences to the shared Drive
-folder, showing how far the notebook has got, and copying finished audio into the app."""
+"""Rendering a book's read-aloud audio on Colab: queueing it for colab_render's watcher (which
+drives a Colab GPU through the colab CLI), showing how far it has got, and copying audio the old
+Drive notebook made into the app."""
 
 from __future__ import annotations
 
-import json
-import shutil
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout,
-)
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QVBoxLayout
 
-from .audio_cache import NOTEBOOK, AudioCache, book_key, read_request, render_speed, sync, write_request
+from . import colab_render as cr
+from .audio_cache import AudioCache, book_key, render_speed, sync
 from .db import Database, data_dir
 
+# The shared Drive folder the old notebook rendered into; its audio is still copied in.
 FOLDER_SETTING = "tts_colab_folder"
 DEFAULT_FOLDER = Path.home() / "Google-Drive" / "study-reader-tts"
-NOTEBOOK_ASSET = Path(__file__).parent / "assets" / "colab_render.ipynb"
-COLAB_URL = "https://colab.research.google.com/"
 
 
 def colab_folder(db: Database) -> Path:
@@ -56,7 +52,7 @@ class _Task(QObject):
 
 
 class AudioSync(QObject):
-    """Copies a book's finished audio from the shared folder into the app's data folder."""
+    """Copies a book's audio the Drive notebook finished into the app's data folder."""
 
     synced = Signal(str, int)  # book hash, parts copied (-1: the copy failed)
 
@@ -99,34 +95,95 @@ def book_sentences(path: str, progress=None) -> list[str]:
         doc.close()
 
 
+class ColabRender(QObject):
+    """The app's side of colab_render: queues books, keeps the watcher going, and reports what
+    it does (it runs in its own process, so it carries on after the app closes)."""
+
+    changed = Signal()
+    synced = Signal(str, int)  # book hash, parts downloaded since the last look
+    CHECK_MS = 3000
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.base = cr.colab_dir()
+        self._mtime = None
+        self.state = cr.read_state(self.base)
+        self._copied = {k: b.get("copied", 0) for k, b in self.state.get("books", {}).items()}
+        self._timer = QTimer(self, interval=self.CHECK_MS)
+        self._timer.timeout.connect(self._check)
+        self._timer.start()
+
+    def resume(self) -> None:
+        """At startup: carry on with what was queued, or release a VM left running."""
+        if cr.failure(self.base) is None and (cr.pending(self.base) or self.state.get("session")):
+            self._ensure_watcher()
+
+    def _ensure_watcher(self) -> None:
+        if not cr.watcher_running(self.base):
+            cr.start_watcher(self.base)
+
+    @property
+    def running(self) -> bool:
+        return cr.watcher_running(self.base)
+
+    def render(self, file_hash: str, title: str, voice: str, speed: float, gpu: str, texts, drive=None) -> int:
+        n = cr.queue(self.base, file_hash, title, voice, speed, gpu, texts, drive)
+        self._ensure_watcher()
+        self.changed.emit()
+        return n
+
+    def stop(self) -> None:
+        cr.request_stop(self.base)
+        self._ensure_watcher()
+        self.changed.emit()
+
+    def _check(self) -> None:
+        try:
+            mtime = (self.base / "state.json").stat().st_mtime
+        except OSError:
+            return
+        if mtime == self._mtime:
+            return
+        self._mtime = mtime
+        self.state = cr.read_state(self.base)
+        for key, book in self.state.get("books", {}).items():
+            copied = book.get("copied", 0)
+            if copied > self._copied.get(key, 0) and book.get("hash"):
+                self.synced.emit(book["hash"], copied - self._copied.get(key, 0))
+            self._copied[key] = copied
+        self.changed.emit()
+
+
 class RenderDialog(QDialog):
-    """Send the open book to Colab, see how much is rendered, and copy it here."""
+    """Render the open book's audio on a Colab GPU and see how far it has got."""
 
     progress = Signal(int, int)  # page, pages (from the export thread)
 
-    def __init__(self, db: Database, book: dict, voice: str, speed: float, audio_sync: AudioSync, parent=None):
+    def __init__(self, db: Database, book: dict, voice: str, speed: float, colab: ColabRender, parent=None):
         super().__init__(parent)
-        self.db, self.book, self.voice, self.speed, self.audio_sync = db, book, voice, speed, audio_sync
+        self.db, self.book, self.voice, self.speed, self.colab = db, book, voice, speed, colab
         self.setWindowTitle("Render audio on Colab")
         self.setMinimumWidth(560)
         col = QVBoxLayout(self)
         intro = QLabel(
             "Colab's GPUs make the whole book's audio in a fraction of the time your computer takes, "
-            "so reading aloud starts at once and never pauses.<ol>"
-            "<li><b>Send to Colab</b> writes the book's sentences to the folder below, which Google Drive shares with Colab.</li>"
-            f"<li>Open Colab, then <i>File → Open notebook → Google Drive</i> and open <b>{NOTEBOOK}</b> in that folder. "
-            "Choose a GPU runtime and <i>Run all</i>. It renders every book waiting there and can be rerun to finish.</li>"
-            "<li>Finished audio is copied here when you open the book, or with <b>Copy rendered audio</b>.</li></ol>"
+            "so reading aloud starts at once and never pauses. Study Reader rents a GPU through the "
+            "<code>colab</code> CLI, copies each finished part here as it goes, and releases the GPU "
+            "when the book is done. It carries on after you quit, while this computer is on; "
+            "if it is interrupted, rendering again picks up where it stopped."
         )
         intro.setWordWrap(True)
         intro.setTextFormat(Qt.TextFormat.RichText)
         col.addWidget(intro)
         row = QHBoxLayout()
-        self.folder = QLineEdit(str(colab_folder(db)), readOnly=True)
-        row.addWidget(self.folder, 1)
-        change = QPushButton("Change…")
-        change.clicked.connect(self._choose_folder)
-        row.addWidget(change)
+        row.addWidget(QLabel("GPU:"))
+        self.gpu = QComboBox()
+        self.gpu.addItems(cr.GPUS)
+        self.gpu.setCurrentText(db.get_setting(cr.GPU_SETTING, cr.DEFAULT_GPU))
+        self.gpu.setToolTip("Used when a new Colab VM starts. A T4 is plenty for Kokoro; the others are faster and cost more compute units.")
+        self.gpu.currentTextChanged.connect(lambda g: db.set_setting(cr.GPU_SETTING, g))
+        row.addWidget(self.gpu)
+        row.addStretch(1)
         col.addLayout(row)
         self.status = QLabel()
         self.status.setWordWrap(True)
@@ -134,29 +191,22 @@ class RenderDialog(QDialog):
         col.addWidget(self.status)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
-        self.send_btn = buttons.addButton("Send to Colab", QDialogButtonBox.ButtonRole.ActionRole)
+        self.send_btn = buttons.addButton("Render on Colab", QDialogButtonBox.ButtonRole.ActionRole)
         self.send_btn.clicked.connect(self.send)
-        self.copy_btn = buttons.addButton("Copy rendered audio", QDialogButtonBox.ButtonRole.ActionRole)
-        self.copy_btn.clicked.connect(self.copy)
-        colab = buttons.addButton("Open Colab", QDialogButtonBox.ButtonRole.ActionRole)
-        colab.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(COLAB_URL)))
+        self.stop_btn = buttons.addButton("Stop rendering", QDialogButtonBox.ButtonRole.ActionRole)
+        self.stop_btn.setToolTip("Release the Colab GPU and drop every book waiting to render (audio already here stays)")
+        self.stop_btn.clicked.connect(self.stop)
         col.addWidget(buttons)
         self.progress.connect(lambda p, n: self.status.setText(f"Reading the book for its sentences… page {p + 1} of {n}"))
-        audio_sync.synced.connect(self._on_synced)
-        self.finished.connect(lambda: audio_sync.synced.disconnect(self._on_synced))
+        colab.changed.connect(self.refresh)
+        self.finished.connect(lambda: colab.changed.disconnect(self.refresh))
         self._task: _Task | None = None
+        self._exporting = False
         self.refresh()
 
     @property
     def hash(self) -> str:
         return self.book["hash"]
-
-    def _choose_folder(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Folder shared with Colab", self.folder.text())
-        if folder:
-            self.db.set_setting(FOLDER_SETTING, folder)
-            self.folder.setText(folder)
-            self.refresh()
 
     def _run(self, fn, done) -> None:
         self._task = task = _Task(self)
@@ -165,65 +215,80 @@ class RenderDialog(QDialog):
         task.run(fn)
 
     def _busy(self, busy: bool, text: str = "") -> None:
-        self.send_btn.setEnabled(not busy)
-        self.copy_btn.setEnabled(not busy)
+        self._exporting = busy
+        self.send_btn.setEnabled(not busy and cr.colab_exe() is not None)
         if text:
             self.status.setText(text)
 
     def refresh(self) -> None:
-        remote, local = remote_audio(self.db, self.hash), local_audio(self.hash)
+        if self._exporting:
+            return
+        base, local, file_hash = self.colab.base, local_audio(self.hash), self.hash
 
         def status():
-            request = read_request(remote)
-            try:
-                rendered = json.loads((remote / "status.json").read_text())
-            except (OSError, ValueError):
-                rendered = None
-            here = AudioCache(local).count(k for k, _ in request["sentences"]) if request else len(AudioCache(local))
-            return request, rendered, here
+            request = cr.request(base, file_hash)
+            if request:  # made at the speed asked for: audio at other speeds is stretched, not redone
+                have = cr.rendered_keys(local, request["speed"])
+                here = sum(k in have for k, _ in request["sentences"])
+            else:
+                here = len(AudioCache(local))
+            return request, here, cr.read_state(base), cr.failure(base), cr.watcher_running(base)
 
-        self._busy(True, "Checking the shared folder…")
         self._run(status, self._show_status)
 
     def _show_status(self, result) -> None:
-        request, rendered, here = result
+        request, here, state, failed, running = result
         self._busy(False)
-        if not request:
-            self.status.setText(
-                f"Not sent yet. {here:,} sentences of this book are here already." if here else "Not sent yet.")
+        active = running or bool(state.get("session"))
+        self.stop_btn.setEnabled(active and not failed)
+        if cr.colab_exe() is None:
+            self.status.setText("The <code>colab</code> CLI isn't installed. Install it with "
+                                "<code>uv tool install google-colab-cli</code> and sign in by running "
+                                "<code>colab sessions</code> in a terminal once.")
+            self.status.setTextFormat(Qt.TextFormat.RichText)
             return
-        total = len(request["sentences"])
-        lines = [f"Sent {total:,} sentences (voice {request['voice']}, made at {request['speed']:g}×)."]
-        if rendered:
-            lines.append(f"Rendered on Colab: {rendered.get('rendered', 0):,} of {rendered.get('total', total):,}.")
+        self.status.setTextFormat(Qt.TextFormat.PlainText)
+        lines = []
+        if not request:
+            lines.append(f"Not rendered yet. {here:,} sentences of this book are here already." if here else "Not rendered yet.")
         else:
-            lines.append("Not rendered yet: run the notebook.")
-        lines.append(f"Copied here: {here:,} of {total:,}.")
-        if request["voice"] != self.voice or abs(request["speed"] - render_speed(self.speed)) > 0.01:
-            lines.append(f"You now read with {self.voice} at {self.speed:g}×: send again to render that.")
-        self.status.setText(" ".join(lines))
+            total = len(request["sentences"])
+            what = f"{total:,} sentences (voice {request['voice']}, made at {request['speed']:g}×)"
+            run = state.get("runs", {}).get(request["key"], {})
+            if request["done"]:
+                lines.append(f"Rendered all {what}.")
+            elif failed:
+                lines.append(f"Waiting to render {what}.")
+            elif run.get("id") == request["id"]:
+                lines.append(f"Rendering the {run['total']:,} of its {what} that weren't here yet.")
+            else:
+                lines.append(f"Getting ready to render {what}: first, what isn't here yet.")
+            lines.append(f"Here: {here:,} of {total:,}.")
+            if request["voice"] != self.voice or abs(request["speed"] - render_speed(self.speed)) > 0.01:
+                lines.append(f"You now read with {self.voice} at {self.speed:g}×: render again for that.")
+        if failed:
+            lines.append(f"\nRendering stopped: {failed}\nRender on Colab tries again, carrying on where it stopped.")
+        elif active and state.get("message"):
+            lines.append(f"\nColab: {state['message']}")
+        elif state.get("phase") in ("done", "stopped") and state.get("message"):
+            lines.append(f"\n{state['message']}")
+        self.status.setText(" ".join(lines).replace(" \n", "\n\n"))
 
     def send(self) -> None:
-        folder, path, title = colab_folder(self.db), self.book["path"], self.book["title"]
-        remote = remote_audio(self.db, self.hash)
-        if not folder.parent.exists():
-            self.status.setText(f"{folder.parent} doesn't exist. Is Google Drive mounted? Or pick another folder.")
-            return
+        path, title, file_hash = self.book["path"], self.book["title"], self.hash
+        voice, speed, gpu = self.voice, self.speed, self.gpu.currentText()
 
         def export():
-            texts = book_sentences(path, lambda p, n: self.progress.emit(p, n))
-            count = write_request(remote, title, self.voice, self.speed, texts)
-            shutil.copyfile(NOTEBOOK_ASSET, folder / NOTEBOOK)
-            return count
+            return book_sentences(path, lambda p, n: self.progress.emit(p, n))
 
-        self._busy(True, "Reading the book for its sentences…")
-        self._run(export, lambda n: (self._busy(False), self.refresh()))
-
-    def copy(self) -> None:
-        self._busy(True, "Copying rendered audio…")
-        self.audio_sync.start(self.hash)
-
-    def _on_synced(self, file_hash: str, copied: int) -> None:
-        if file_hash == self.hash:
+        def queue(texts):
+            self._busy(False)
+            self.colab.render(file_hash, title, voice, speed, gpu, texts, remote_audio(self.db, file_hash) / "audio")
             self.refresh()
 
+        self._busy(True, "Reading the book for its sentences…")
+        self._run(export, queue)
+
+    def stop(self) -> None:
+        self.colab.stop()
+        self.status.setText("Stopping, and releasing the Colab GPU…")

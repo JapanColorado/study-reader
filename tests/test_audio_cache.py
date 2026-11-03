@@ -1,6 +1,4 @@
-import ast
 import json
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,9 +7,7 @@ import pymupdf
 import pytest
 import soundfile as sf
 
-from study_reader.audio_cache import (
-    RATE, AudioCache, read_request, sentence_key, stretch, sync, write_request,
-)
+from study_reader.audio_cache import RATE, AudioCache, render_speed, sentence_key, stretch, sync
 from study_reader.db import Database
 
 ASSETS = Path(__file__).parent.parent / "src" / "study_reader" / "assets"
@@ -36,15 +32,6 @@ def _part(folder: Path, name: str, sentences: dict, speed: float = 1.0):
         pos += len(clip)
     sf.write(folder / f"{name}.opus", np.concatenate(clips), RATE, format="OGG", subtype="OPUS")
     (folder / f"{name}.json").write_text(json.dumps({"version": 1, "rate": RATE, "items": items}))
-
-
-def test_requests_list_each_sentence_once(tmp_path):
-    n = write_request(tmp_path / "b", "Zorblatts", "af_heart", 1.25, ["One.", "Two.", "One."])
-    req = read_request(tmp_path / "b")
-    assert n == 2 and req["speed"] == 1.25 and req["voice"] == "af_heart"
-    assert req["sentences"] == [[sentence_key("af_heart", "One."), "One."], [sentence_key("af_heart", "Two."), "Two."]]
-    assert sentence_key("af_heart", "One.") != sentence_key("am_michael", "One.")
-    assert read_request(tmp_path / "missing") is None
 
 
 def test_cached_sentences_play_at_any_speed(tmp_path):
@@ -76,6 +63,8 @@ def test_sync_copies_new_parts_and_skips_unfinished_ones(tmp_path):
     (src / "part-0000.json").unlink()  # the notebook removed a part made at an old speed
     (src / "part-0000.opus").unlink()
     assert sync(src, dst) == 1 and sorted(p.name for p in dst.iterdir()) == ["part-0001.json", "part-0001.opus"]
+    _part(dst, "part-a1b2c3-0000", {"Red fish.": 0.5})  # downloaded from a Colab VM, not on Drive
+    assert sync(src, dst) == 0 and (dst / "part-a1b2c3-0000.json").exists()
 
 
 def test_stretch_keeps_pitch_and_scales_length():
@@ -114,19 +103,6 @@ def test_job_audio_uses_the_cache_before_kokoro(tmp_path):
     assert len(audio) == RATE // 10
 
 
-def test_render_notebook_is_valid_and_points_at_the_default_folder():
-    from study_reader.render_dialog import DEFAULT_FOLDER
-
-    nb = json.loads((ASSETS / "colab_render.ipynb").read_text())
-    code = [c["source"] for c in nb["cells"] if c["cell_type"] == "code"]
-    for src in code:
-        lines = [line for line in src.splitlines() if not line.lstrip().startswith(("!", "%%"))]
-        ast.parse("\n".join(lines))
-    assert any(src.startswith("%%writefile /content/render_books.py") for src in code)
-    assert "/content/kokoro-env/bin/python" in code[-1]  # Kokoro runs in its own Python 3.12
-    assert f'FOLDER = "/content/drive/MyDrive/{DEFAULT_FOLDER.name}"' in code[0]
-
-
 def test_book_sentences_match_what_is_read(pdf_path):
     from study_reader.document import Document
     from study_reader.render_dialog import book_sentences
@@ -138,55 +114,11 @@ def test_book_sentences_match_what_is_read(pdf_path):
     assert pages == [(0, 3), (1, 3), (2, 3)]
 
 
-def _wait(app, cond, timeout=10, msg=lambda: ""):
-    end = time.time() + timeout
-    while not cond() and time.time() < end:
-        app.processEvents()
-        time.sleep(0.01)
-    assert cond(), msg()
-
-
-def test_render_dialog_sends_and_copies(pdf_path, tmp_path, monkeypatch):
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
-    from PySide6.QtWidgets import QApplication
-    from study_reader.document import file_hash
-    from study_reader.render_dialog import (
-        FOLDER_SETTING, NOTEBOOK, AudioSync, RenderDialog, local_audio, remote_audio,
-    )
-
-    app = QApplication.instance() or QApplication([])
-    db = Database(tmp_path / "t.db")
-    db.set_setting(FOLDER_SETTING, str(tmp_path / "drive" / "study-reader-tts"))
-    (tmp_path / "drive").mkdir()
-    book = db.upsert_book(file_hash(pdf_path), pdf_path, "Zorblatts", 3)
-    sync_ = AudioSync(db)
-    dlg = RenderDialog(db, book, "af_heart", 1.3, sync_)
-    _wait(app, lambda: dlg.send_btn.isEnabled())
-    assert "Not sent yet" in dlg.status.text()
-    dlg.send()
-    _wait(app, lambda: "Sent 6 sentences" in dlg.status.text(), msg=dlg.status.text)
-    remote = remote_audio(db, book["hash"])
-    assert read_request(remote)["speed"] == 1.3
-    assert (remote.parent.parent / NOTEBOOK).exists()
-    texts = [t for _, t in read_request(remote)["sentences"]]
-    _part(remote / "audio", "part-0000", {t: 0.5 for t in texts[:2]})
-    (remote / "status.json").write_text(json.dumps({"rendered": 2, "total": 6}))
-    dlg.copy()
-    _wait(app, lambda: "Copied here: 2 of 6" in dlg.status.text(), msg=dlg.status.text)
-    assert "Rendered on Colab: 2 of 6" in dlg.status.text()
-    assert len(AudioCache(local_audio(book["hash"]))) == 2
-    dlg.voice = "am_michael"
-    dlg.refresh()
-    _wait(app, lambda: "send again" in dlg.status.text())
-
-
 def test_fast_reading_is_made_at_kokoros_safe_speed_and_sped_up(tmp_path):
     from study_reader.audio_cache import NATIVE_SPEED
     from study_reader.tts_engines import synthesize
 
-    write_request(tmp_path, "Z", "af_heart", 2.0, ["One."])
-    assert read_request(tmp_path)["speed"] == NATIVE_SPEED
+    assert render_speed(2.0) == NATIVE_SPEED and render_speed(1.1) == 1.1
     calls = []
     tok = SimpleNamespace(text="One", start_ts=0.2, end_ts=0.6)
 

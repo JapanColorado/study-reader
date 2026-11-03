@@ -30,7 +30,7 @@ from .nav import PAGES, NavRail
 from .notes import NotesPanel
 from .phone_sync_dialog import PhoneSync, PhoneSyncDialog
 from .read_aloud import ReadAloud
-from .render_dialog import AudioSync, RenderDialog, local_audio
+from .render_dialog import AudioSync, ColabRender, RenderDialog, local_audio
 from .reader_view import ReaderView
 from .review import ReviewPanel, VariantMaker
 from .theme import MODES, icon, theme
@@ -73,8 +73,11 @@ class MainWindow(QMainWindow):
         self.home = HomeView(self.db)
         self.read_aloud = ReadAloud(self.db, self.reader, self)
         self.read_aloud.renderRequested.connect(self.render_on_colab)
-        self.audio_sync = AudioSync(self.db, self)  # read-aloud audio rendered on Colab, copied here
+        self.audio_sync = AudioSync(self.db, self)  # audio the old Drive notebook rendered, copied here
         self.audio_sync.synced.connect(self._on_audio_synced)
+        self.colab = ColabRender(self)  # read-aloud audio rendered on a Colab GPU through the colab CLI
+        self.colab.synced.connect(self._on_audio_synced)
+        self.colab.resume()
         self.book_view = QWidget()  # the reader, with the read-aloud bar under it
         col = QVBoxLayout(self.book_view)
         col.setContentsMargins(0, 0, 0, 0)
@@ -637,7 +640,7 @@ class MainWindow(QMainWindow):
         finally:
             QApplication.restoreOverrideCursor()
         self.read_aloud.set_document(doc, local_audio(book["hash"]))
-        self.audio_sync.start(book["hash"])  # bring in any audio Colab has finished since
+        self.audio_sync.start(book["hash"])  # bring in any audio the Drive notebook has finished since
         self._on_page_changed(self.reader.current_page())
         self.chat.set_book(self.book_id)
         self.calc.set_book(self.book_id)
@@ -1026,7 +1029,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Render audio on Colab", "Open a book first.")
             return
         voice = self.db.get_setting("tts_voice:kokoro", "af_heart")
-        RenderDialog(self.db, self.db.book(self.book_id), voice, self.read_aloud.speed, self.audio_sync, self).exec()
+        RenderDialog(self.db, self.db.book(self.book_id), voice, self.read_aloud.speed, self.colab, self).exec()
 
     def _on_audio_synced(self, file_hash: str, copied: int) -> None:
         if copied > 0 and self.book_id is not None and self.db.book(self.book_id)["hash"] == file_hash:

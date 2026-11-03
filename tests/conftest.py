@@ -109,6 +109,16 @@ def chat_panel(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_colab(monkeypatch):
+    """Tests never start the Colab watcher (which would rent a GPU); the calls are recorded."""
+    from study_reader import colab_render
+
+    started = []
+    monkeypatch.setattr(colab_render, "start_watcher", lambda base: started.append(base))
+    return started
+
+
+@pytest.fixture(autouse=True)
 def _no_kokoro(monkeypatch):
     """Opening a book warms up read-aloud's Kokoro voice; tests never load it."""
     from study_reader import tts_engines
