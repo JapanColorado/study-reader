@@ -39,6 +39,7 @@ class Engine(QObject):
     finished = Signal(int)  # uid fully played
     failed = Signal(str)
     status = Signal(str)  # e.g. "Loading Kokoro…"; "" when ready
+    outputChanged = Signal()  # sound now goes elsewhere (say, headphones connected): what was queued is gone
     lookahead = 0  # utterances to queue beyond the one playing
     lookahead_chars = 0  # ...or more, until this much text is queued
     word_timing = False
@@ -379,6 +380,8 @@ class KokoroEngine(Engine):
         self._timer.timeout.connect(self._tick)
         self._watch = QTimer(self, interval=1000)  # notices the process dying
         self._watch.timeout.connect(self._check_alive)
+        self._devices = None  # QMediaDevices, made with the sink
+        self._device_id = b""
 
     def voices(self) -> list[tuple[str, str]]:
         return KOKORO_VOICES
@@ -438,6 +441,10 @@ class KokoroEngine(Engine):
         from PySide6.QtMultimedia import QAudio, QAudioFormat, QAudioSink, QMediaDevices
 
         device = QMediaDevices.defaultAudioOutput()
+        if self._devices is None:
+            # A sink plays on the device it was made for, even after the default changes.
+            self._devices = QMediaDevices(self)
+            self._devices.audioOutputsChanged.connect(self._outputs_changed)
         if device.isNull():
             self._fail("Kokoro couldn't start: there is no audio output device")
             return False
@@ -453,6 +460,7 @@ class KokoroEngine(Engine):
         self._fmt = (fmt.sampleRate(), fmt.channelCount(), kinds.get(fmt.sampleFormat(), "int16"))
         width = 4 if self._fmt[2] == "float" else 2
         self._pcm = PcmQueue(fmt.sampleRate() * fmt.channelCount() * width, fmt.channelCount() * width)
+        self._device_id = bytes(device.id())
         self._sink = QAudioSink(device, fmt, self)
         self._sink.setBufferSize(int(self._pcm.bytes_per_second * 0.1))
         self._sink.stateChanged.connect(self._sink_state)
@@ -460,8 +468,33 @@ class KokoroEngine(Engine):
         self._dev = _PcmDevice(self._pcm, self)
         self._dev.open(QIODevice.OpenModeFlag.ReadOnly)
         self._sink.start(self._dev)
+        if self._paused:
+            self._sink.suspend()
         self._timer.start()
         return True
+
+    def _outputs_changed(self) -> None:
+        """Move to the new default output: the next sentence made gets a sink there."""
+        from PySide6.QtMultimedia import QMediaDevices
+
+        if self._sink is None or self._closing or bytes(QMediaDevices.defaultAudioOutput().id()) == self._device_id:
+            return
+        self._bump()
+        self._waiting = 0
+        self._drop_sink()
+        self.outputChanged.emit()
+
+    def _drop_sink(self) -> None:
+        """Throw the sink away (the next sentence made gets a new one). Starting a stopped
+        QAudioSink again leaves its old PulseAudio stream behind, so it is never reused."""
+        self._timer.stop()
+        self._sink.stop()
+        self._sink.deleteLater()
+        self._sink = None
+        self._dev.close()
+        self._dev.deleteLater()
+        self._dev = None
+        self._pcm.reset()
 
     def _sink_state(self, _state) -> None:
         from PySide6.QtMultimedia import QAudio
@@ -523,13 +556,7 @@ class KokoroEngine(Engine):
         if keep_current:
             self._pcm.drop_unstarted()
             return
-        self._sink.stop()
-        self._pcm.reset()
-        if not self._dev.isOpen():
-            self._dev.open(QIODevice.OpenModeFlag.ReadOnly)
-        self._sink.start(self._dev)
-        if self._paused:
-            self._sink.suspend()
+        self._drop_sink()
 
     def pause(self) -> None:
         self._paused = True

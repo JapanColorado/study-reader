@@ -479,3 +479,35 @@ def test_rendered_audio_starts_at_a_whole_sentence_and_isnt_split(reading):
     ctl._items, ctl._source = [Utterance(long)], None
     ctl._jump(0)
     assert [u.text for u in ctl._items] == [long]  # already rendered: played whole
+
+
+def test_a_new_audio_output_gets_the_sentence_again(reading):
+    ctl = reading.ctl
+    ctl.start_from_view()
+    (engine,) = reading.engines
+    engine.play_one()  # "One fish." heard; now on "Two fish."
+    engine.outputChanged.emit()  # say, headphones connected: what was queued went nowhere
+    assert [t for _, t in engine.queue][0] == "Two fish." and ctl._cur == 1
+
+
+def test_kokoro_moves_to_a_new_default_output(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtMultimedia import QMediaDevices
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    engine = tts_engines.KokoroEngine()
+    stopped = []
+    engine._sink = SimpleNamespace(stop=lambda: stopped.append(1), deleteLater=lambda: None)
+    engine._dev = SimpleNamespace(close=lambda: None, deleteLater=lambda: None)
+    engine._device_id = b"speakers"
+    moved = []
+    engine.outputChanged.connect(lambda: moved.append(1))
+    current = [b"speakers"]
+    monkeypatch.setattr(QMediaDevices, "defaultAudioOutput", staticmethod(lambda: SimpleNamespace(id=lambda: current[0])))
+    engine._outputs_changed()  # another device came or went: still the same default
+    assert not moved and engine._sink is not None
+    current[0] = b"headphones"
+    gen = engine._gen
+    engine._outputs_changed()
+    assert moved and stopped and engine._sink is None and engine._gen == gen + 1

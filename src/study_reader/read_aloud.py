@@ -69,6 +69,7 @@ class ReadAloud(QObject):
             self.engine.finished.connect(self._on_finished)
             self.engine.failed.connect(self._on_failed)
             self.engine.status.connect(self.bar.set_status)
+            self.engine.outputChanged.connect(self._on_output_changed)
             voices = self.engine.voices()
             default = voices[0][0] if voices and self.engine.name == "kokoro" else ""
             voice = self.db.get_setting(f"tts_voice:{self.engine.name}", default)
@@ -96,6 +97,10 @@ class ReadAloud(QObject):
         self.stop()
         self.bar.set_status(f"No speech engine is available: {message}")
         self.bar.show()
+
+    def _on_output_changed(self) -> None:
+        if self.active:  # say the sentence again where the sound goes now
+            self._jump(self._cur)
 
     def set_engine(self, name: str) -> None:
         self.engine_name, self._fallback = name, False
