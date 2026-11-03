@@ -5,6 +5,8 @@ Drive notebook made into the app."""
 from __future__ import annotations
 
 import threading
+import time
+from html import escape
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
@@ -166,11 +168,9 @@ class RenderDialog(QDialog):
         self.setMinimumWidth(560)
         col = QVBoxLayout(self)
         intro = QLabel(
-            "Colab's GPUs make the whole book's audio in a fraction of the time your computer takes, "
-            "so reading aloud starts at once and never pauses. Study Reader rents a GPU through the "
-            "<code>colab</code> CLI, copies each finished part here as it goes, and releases the GPU "
-            "when the book is done. It carries on after you quit, while this computer is on; "
-            "if it is interrupted, rendering again picks up where it stopped."
+            "Renders this book's audio on a Colab GPU (rented through the <code>colab</code> CLI), "
+            "so reading aloud starts at once and never waits on your computer. Each finished part is "
+            "copied here as it goes, and the GPU is released when every book is done."
         )
         intro.setWordWrap(True)
         intro.setTextFormat(Qt.TextFormat.RichText)
@@ -218,6 +218,7 @@ class RenderDialog(QDialog):
         self._exporting = busy
         self.send_btn.setEnabled(not busy and cr.colab_exe() is not None)
         if text:
+            self.status.setTextFormat(Qt.TextFormat.PlainText)
             self.status.setText(text)
 
     def refresh(self) -> None:
@@ -232,47 +233,97 @@ class RenderDialog(QDialog):
                 here = sum(k in have for k, _ in request["sentences"])
             else:
                 here = len(AudioCache(local))
-            return request, here, cr.read_state(base), cr.failure(base), cr.watcher_running(base)
+            running = cr.watcher_running(base)
+            stopping = (base / "stop").exists()
+            return request, here, cr.read_state(base), cr.failure(base), running, stopping
 
         self._run(status, self._show_status)
 
     def _show_status(self, result) -> None:
-        request, here, state, failed, running = result
+        request, here, state, failed, running, stopping = result
         self._busy(False)
-        active = running or bool(state.get("session"))
-        self.stop_btn.setEnabled(active and not failed)
         if cr.colab_exe() is None:
+            self.stop_btn.setEnabled(False)
+            self.status.setTextFormat(Qt.TextFormat.RichText)
             self.status.setText("The <code>colab</code> CLI isn't installed. Install it with "
                                 "<code>uv tool install google-colab-cli</code> and sign in by running "
                                 "<code>colab sessions</code> in a terminal once.")
-            self.status.setTextFormat(Qt.TextFormat.RichText)
             return
-        self.status.setTextFormat(Qt.TextFormat.PlainText)
-        lines = []
-        if not request:
-            lines.append(f"Not rendered yet. {here:,} sentences of this book are here already." if here else "Not rendered yet.")
-        else:
+        headline, details, rendering = self.describe(request, here, state, failed, running, stopping, time.time())
+        active = (running or bool(state.get("session"))) and not failed
+        self.stop_btn.setEnabled(active and not stopping)
+        self.send_btn.setEnabled(not rendering)
+        self.send_btn.setToolTip("Already rendering this book on Colab" if rendering else "")
+        self.status.setTextFormat(Qt.TextFormat.RichText)
+        self.status.setText(f"<p><b>{escape(headline)}</b></p>" + "".join(
+            f"<p>{escape(d).replace(chr(10), '<br>')}</p>" for d in details))
+        self._fit()
+
+    def _fit(self) -> None:
+        """Grow to show the whole status (never shrink, so it doesn't jump about)."""
+        layout = self.layout()
+        need = layout.totalHeightForWidth(self.width()) if layout.hasHeightForWidth() else layout.sizeHint().height()
+        if need > self.height():
+            self.resize(self.width(), need)
+
+    def describe(self, request, here, state, failed, running, stopping, now) -> tuple[str, list[str], bool]:
+        """The status as a headline and the lines under it, and whether this book is being
+        rendered (so sending it again would do nothing)."""
+        active = (running or bool(state.get("session"))) and not failed
+        runs = state.get("runs", {})
+        books = state.get("books", {})
+        others = [books.get(k, {}).get("title") or "another book"
+                  for k in runs if not request or k != request["key"]]
+        details: list[str] = []
+        if request:
             total = len(request["sentences"])
-            what = f"{total:,} sentences (voice {request['voice']}, made at {request['speed']:g}×)"
-            run = state.get("runs", {}).get(request["key"], {})
-            if request["done"]:
-                lines.append(f"Rendered all {what}.")
-            elif failed:
-                lines.append(f"Waiting to render {what}.")
-            elif run.get("id") == request["id"]:
-                lines.append(f"Rendering the {run['total']:,} of its {what} that weren't here yet.")
-            else:
-                lines.append(f"Getting ready to render {what}: first, what isn't here yet.")
-            lines.append(f"Here: {here:,} of {total:,}.")
-            if request["voice"] != self.voice or abs(request["speed"] - render_speed(self.speed)) > 0.01:
-                lines.append(f"You now read with {self.voice} at {self.speed:g}×: render again for that.")
+            what = f"voice {request['voice']}, made at {request['speed']:g}×"
+            changed = request["voice"] != self.voice or abs(request["speed"] - render_speed(self.speed)) > 0.01
+            again = f"You now read with {self.voice} at {self.speed:g}×: Render on Colab again for that."
         if failed:
-            lines.append(f"\nRendering stopped: {failed}\nRender on Colab tries again, carrying on where it stopped.")
-        elif active and state.get("message"):
-            lines.append(f"\nColab: {state['message']}")
-        elif state.get("phase") in ("done", "stopped") and state.get("message"):
-            lines.append(f"\n{state['message']}")
-        self.status.setText(" ".join(lines).replace(" \n", "\n\n"))
+            details.append(failed)
+            details.append("Render on Colab tries again, carrying on where it stopped.")
+            if request:
+                details.insert(0, f"{here:,} of {total:,} sentences are here.")
+            return "Not rendering: Colab stopped with an error.", details, False
+        if stopping and active:
+            return "Stopping, and releasing the Colab GPU…", details, True
+        if request and not request["done"]:
+            details.append(f"{here:,} of {total:,} sentences are here ({what}).")
+            just_sent = now - request.get("queued", 0) < 60
+            if active or just_sent:
+                run = runs.get(request["key"], {})
+                if run.get("id") == request["id"]:
+                    headline = "Rendering on Colab now."
+                    details.append(f"Rendering the {run['total']:,} that weren't here yet.")
+                elif others:
+                    headline = "Waiting its turn on Colab."
+                    details.append(f"Colab is rendering {others[0]} first.")
+                else:
+                    headline = "Starting on Colab…"
+                if state.get("message") and active:
+                    details.append(f"Colab: {state['message']}")
+                details.append("This keeps going if you close this window or quit Study Reader, "
+                               "as long as the computer stays on.")
+                if changed:
+                    details.append(again)
+                return headline, details, not changed
+            details.append("Render on Colab carries on where it stopped.")
+            return "Not rendering: paused partway.", details, False
+        if request:  # done
+            headline = f"Rendered: all {total:,} sentences are here."
+            details.append(f"Made with {what}.")
+            if changed:
+                details.append(again)
+        else:
+            headline = "Not rendered yet."
+            if here:
+                details.append(f"{here:,} sentences of this book are here already.")
+        if active and others:
+            details.append(f"Colab is rendering {others[0]} now; this book would wait its turn.")
+        elif not active and state.get("phase") in ("done", "stopped") and state.get("message"):
+            details.append(state["message"])
+        return headline, details, False
 
     def send(self) -> None:
         path, title, file_hash = self.book["path"], self.book["title"], self.hash
@@ -291,4 +342,6 @@ class RenderDialog(QDialog):
 
     def stop(self) -> None:
         self.colab.stop()
-        self.status.setText("Stopping, and releasing the Colab GPU…")
+        self.stop_btn.setEnabled(False)
+        self.status.setTextFormat(Qt.TextFormat.RichText)
+        self.status.setText("<p><b>Stopping, and releasing the Colab GPU…</b></p>")

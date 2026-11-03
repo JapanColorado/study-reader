@@ -192,8 +192,10 @@ class Colab:
         return stdout
 
     def sessions(self) -> set[str]:
-        """Our sessions Colab still has (others' show as [?])."""
-        return set(re.findall(r"^\[([^\]?][^\]]*)\]", self._run("sessions", timeout=90), re.M))
+        """Our sessions Colab still has (others' show as [?], and the CLI's own messages start
+        "[colab]", as in "[colab] No active sessions found on server.")."""
+        out = self._run("sessions", timeout=90)
+        return {n for n in re.findall(r"^\[([^\]]*)\]", out, re.M) if n.startswith(SESSION_PREFIX)}
 
     def new(self, name: str, gpu: str) -> None:
         try:

@@ -236,6 +236,8 @@ def test_cli_wrapper_reads_results_sessions_and_sign_in_trouble(tmp_path):
         cli.exec("s", "def _main(): pass")
     cli = _fake_cli(tmp_path, 'echo "[study-reader-tts-abc123] gpu-t4 | T4"; echo "[?] gpu-t4-other | T4"\n')
     assert cli.sessions() == {"study-reader-tts-abc123"}
+    cli = _fake_cli(tmp_path, 'echo "[colab] No active sessions found on server."\n')
+    assert cli.sessions() == set()  # the CLI's own message, not a session called "colab"
     cli = _fake_cli(tmp_path, 'echo "Please visit this URL to authorize"; echo "EOFError" >&2; exit 1\n')
     with pytest.raises(cr.AuthError):
         cli.sessions()
@@ -286,7 +288,8 @@ def test_render_dialog_queues_the_book_and_reports_progress(pdf_path, tmp_path, 
     dlg.gpu.setCurrentText("L4")
     assert db.get_setting(cr.GPU_SETTING) == "L4"
     dlg.send()
-    _wait(app, lambda: "Getting ready to render 6 sentences" in dlg.status.text(), msg=dlg.status.text)
+    _wait(app, lambda: "Starting on Colab" in dlg.status.text(), msg=dlg.status.text)
+    assert "0 of 6 sentences are here" in dlg.status.text() and not dlg.send_btn.isEnabled()
     req = cr.request(colab.base, book["hash"])
     assert req["gpu"] == "L4" and req["speed"] == 1.3 and _no_colab == [colab.base]
     texts = [t for _, t in req["sentences"]]
@@ -299,20 +302,49 @@ def test_render_dialog_queues_the_book_and_reports_progress(pdf_path, tmp_path, 
     colab._check()
     assert synced == [(book["hash"], 1)]
     _part(local_audio(book["hash"]), "part-abcdef-0001", {texts[2]: 0.3}, speed=1.0)  # another speed: still to do
-    _wait(app, lambda: "Here: 2 of 6" in dlg.status.text(), msg=dlg.status.text)
+    _wait(app, lambda: "2 of 6 sentences are here" in dlg.status.text(), msg=dlg.status.text)
     assert "Colab: Rendering Zorblatts" in dlg.status.text() and dlg.stop_btn.isEnabled()
-    assert "Rendering the 4 of its 6 sentences" in dlg.status.text()
+    assert "Rendering on Colab now" in dlg.status.text() and "Rendering the 4 that weren" in dlg.status.text()
+    assert not dlg.send_btn.isEnabled()  # already rendering this book
     dlg.voice = "am_michael"
     dlg.refresh()
-    _wait(app, lambda: "render again" in dlg.status.text())
+    _wait(app, lambda: "again for that" in dlg.status.text())
+    assert dlg.send_btn.isEnabled()  # a different voice is a different render
     dlg.stop()
     assert (colab.base / "stop").exists()
     (colab.base / "failed").write_text("Colab wouldn't start a L4.")
     dlg.refresh()
-    _wait(app, lambda: "Rendering stopped: Colab wouldn't start" in dlg.status.text(), msg=dlg.status.text)
+    _wait(app, lambda: "stopped with an error" in dlg.status.text(), msg=dlg.status.text)
+    assert "Colab wouldn" in dlg.status.text() and dlg.send_btn.isEnabled() and not dlg.stop_btn.isEnabled()
     colab2 = ColabRender()
     colab2.resume()
     assert len(_no_colab) == 2  # the stop request started one; a failure doesn't resume
+
+
+def test_render_dialog_says_whether_colab_is_working_on_the_book(pdf_path, tmp_path, monkeypatch, _no_colab):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    from PySide6.QtWidgets import QApplication
+    from study_reader.render_dialog import ColabRender, RenderDialog
+
+    QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "t.db")
+    book = db.upsert_book("abc", pdf_path, "Zorblatts", 3)
+    dlg = RenderDialog(db, book, "af_heart", 1.3, ColabRender())
+    req = {"key": "k", "id": "1", "voice": "af_heart", "speed": 1.3, "sentences": [["a", "A."], ["b", "B."]],
+           "queued": 0, "done": False}
+    busy = {"session": "s", "runs": {"other": {"id": "9", "total": 5}}, "books": {"other": {"title": "Gizmos"}}}
+    head, lines, rendering = dlg.describe(req, 1, busy, None, True, False, 1000)
+    assert head == "Waiting its turn on Colab." and "Colab is rendering Gizmos first." in lines and rendering
+    head, lines, rendering = dlg.describe(req, 1, {}, None, False, False, 1000)
+    assert head == "Not rendering: paused partway." and not rendering
+    head, _, rendering = dlg.describe(req, 1, {}, None, False, False, 30)  # just sent: the watcher is starting
+    assert head == "Starting on Colab…" and rendering
+    head, lines, rendering = dlg.describe(dict(req, done=True), 2, busy, None, True, False, 1000)
+    assert head == "Rendered: all 2 sentences are here." and not rendering
+    assert any("Gizmos now" in line for line in lines)
+    head, _, rendering = dlg.describe(None, 0, busy, None, True, True, 1000)
+    assert head.startswith("Stopping") and rendering
 
 
 def test_a_hung_cli_call_is_killed(tmp_path, monkeypatch):
