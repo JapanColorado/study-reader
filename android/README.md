@@ -35,6 +35,8 @@ edits, new cards and setting changes come from the computer.
 
 ## Building
 
+Every push to `main` that passes CI publishes a signed APK on the [Releases page](https://github.com/JapanColorado/study-reader/releases). To install it and get updates automatically, add `https://github.com/JapanColorado/study-reader` as a GitHub source in [Obtainium](https://github.com/ImranR98/Obtainium) with "Filter releases by tag" set to `^android-v`.
+
 Everything goes through pixi (it provides the JDK):
 
 ```sh

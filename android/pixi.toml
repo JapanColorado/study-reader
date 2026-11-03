@@ -20,5 +20,6 @@ install-debug = { cmd = "./gradlew installDebug", description = "Build and insta
 run = { cmd = "adb shell am start -n dev.russell.studyreader/.MainActivity", depends-on = ["install"], description = "Install the release APK and launch it" }
 test = { cmd = "./gradlew :core:test", description = "JVM tests of the shared logic (FSRS, grading, queue, rewards, sync)" }
 lint = { cmd = "./gradlew lintDebug", description = "Android lint" }
+check = { cmd = "./gradlew lintDebug :core:test --continue", description = "Everything CI checks before a release (lint + core tests)" }
 clean = { cmd = "./gradlew clean", description = "Delete build outputs" }
 logs = { cmd = "adb logcat --pid=$(adb shell pidof -s dev.russell.studyreader)", description = "Logcat for the running app" }

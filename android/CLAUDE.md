@@ -19,6 +19,12 @@ Android SDK: `~/Android/Sdk`. Parity fixtures are made by the desktop's Python, 
 `PYTHONPATH=../src /home/russell/Projects/study-reader/.pixi/envs/default/bin/python scripts/<name>.py`
 (`fsrs_fixtures.py`, `grading_fixtures.py`, `queue_fixtures.py`).
 
+@~/Projects/Android-Apps/CLAUDE.md
+
+## Releases
+
+Every push to `main` that passes `../.github/workflows/android.yml` (the same checks as `pixi run check`) publishes a signed APK as a GitHub release tagged `android-v<versionName>`. Obtainium on the phone installs it. Pushes that touch only docs don't release. `versionCode` is the commit count and `versionName` is `<base>.<count>`: bump the base in `app/build.gradle.kts` by hand, never hard-code `versionCode`, and never rewrite `main`'s history. CI signs with the keystore in the repo secrets, which must stay the key the installed app was signed with (the workflow's `EXPECTED_CERT_SHA256` enforces this). The shared change → emulator → push loop is in `~/Projects/Android-Apps/CLAUDE.md`.
+
 ## Architecture
 
 - `core/` is plain Kotlin/JVM (no Android), so it is unit-tested with sqlite-jdbc (`JdbcSql` in tests). It
