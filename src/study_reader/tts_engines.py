@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 import numpy as np
 from PySide6.QtCore import QIODevice, QObject, QTimer, Signal
 
+from .audio_cache import AudioCache
+
 RATE = 24000  # Kokoro's sample rate
 REPO = "hexgrad/Kokoro-82M"
 LATENCY = 0.08  # s between audio handed to the device and heard
@@ -44,6 +46,17 @@ class Engine(QObject):
 
     def voices(self) -> list[tuple[str, str]]:
         return []
+
+    def has(self, text: str) -> bool:
+        """Whether the sentence was rendered ahead of time (and so plays at once)."""
+        return False
+
+    def cached(self) -> int:
+        """How many sentences are rendered ahead of time for the open book."""
+        return 0
+
+    def set_cache(self, folder) -> None:
+        """Play sentences rendered on Colab from this folder (None: none)."""
 
     def warm(self) -> None:
         """Get ready to speak (load models) before the first sentence is asked for."""
@@ -184,11 +197,14 @@ def to_format(samples: np.ndarray, rate: int, channels: int, kind: str) -> bytes
 
 def synthesize(pipeline, text: str, voice: str, speed: float, pause: float) -> tuple[np.ndarray, list]:
     """Kokoro's audio for one utterance (float samples at RATE, with ``pause`` s of
-    silence after) and its word timings against ``text``."""
+    silence after) and its word timings against ``text``. Above NATIVE_SPEED it is made at
+    that speed and sped up, as Kokoro's own speed setting drops words when pushed."""
+    from .audio_cache import render_speed, stretch
     from .speech_text import align_tokens
 
+    made = render_speed(speed)
     chunks, toks, t0 = [], [], 0.0
-    for result in pipeline(text, voice=voice, speed=speed, split_pattern=None):
+    for result in pipeline(text, voice=voice, speed=made, split_pattern=None):
         audio = result.audio
         if audio is None:
             continue
@@ -198,8 +214,12 @@ def synthesize(pipeline, text: str, voice: str, speed: float, pause: float) -> t
             toks.append((t.text, t0 + t.start_ts if ok else None, t0 + t.end_ts if ok else None))
         chunks.append(audio)
         t0 += len(audio) / RATE
-    chunks.append(np.zeros(int(pause * RATE), dtype=np.float32))
-    return np.concatenate(chunks), align_tokens(text, toks)
+    audio = np.concatenate(chunks) if chunks else np.zeros(0, np.float32)
+    if speed > made + 1e-3:
+        audio = stretch(audio, speed / made)
+        k = made / speed
+        toks = [(t, a * k if a is not None else None, b * k if b is not None else None) for t, a, b in toks]
+    return np.concatenate([audio, np.zeros(int(pause * RATE), dtype=np.float32)]), align_tokens(text, toks)
 
 
 # -- Kokoro ---------------------------------------------------------------------------------
@@ -234,10 +254,65 @@ def _fetch(name: str, note: str, put) -> str:
         return hf_hub_download(REPO, name)
 
 
-def kokoro_worker(jobs, results, gen, voice: str) -> None:
-    """Kokoro's own process: loads the model, then makes each job's audio, skipping jobs
-    from before the app's latest clear() (``gen`` is shared with it)."""
+class _Kokoro:
+    """The model and its pipelines and voices, loaded the first time a sentence needs it."""
+
+    def __init__(self, put):
+        self.put, self.model = put, None
+        self.pipelines: dict[str, object] = {}
+        self.packs: dict[str, str] = {}
+
+    def load(self, voice: str) -> None:
+        if self.model is not None:
+            return
+        self.put(("status", "Loading Kokoro…"))
+        from kokoro import KModel
+
+        config = _fetch("config.json", "Downloading Kokoro…", self.put)
+        weights = _fetch("kokoro-v1_0.pth", "Downloading Kokoro…", self.put)
+        self.model = KModel(repo_id=REPO, config=config, model=weights).eval()
+        synthesize(self.pipeline(voice[0]), "Ready.", self.pack(voice), 1.0, 0.0)  # the first run is slow
+        self.put(("status", ""))
+
+    def pipeline(self, lang: str):
+        if lang not in self.pipelines:
+            from kokoro import KPipeline
+
+            self.pipelines[lang] = KPipeline(lang_code=lang, repo_id=REPO, model=self.model)
+        return self.pipelines[lang]
+
+    def pack(self, voice: str) -> str:
+        if voice not in self.packs:
+            self.packs[voice] = _fetch(f"voices/{voice}.pt", f"Downloading the {voice} voice…", self.put)
+            if self.model is not None:
+                self.put(("status", ""))
+        return self.packs[voice]
+
+
+def job_audio(job, cache, kokoro) -> tuple[np.ndarray, list]:
+    """A sentence's samples (with its pause after) and word timings: rendered on Colab
+    if the cache has it, else made by Kokoro now (whose loading errors propagate)."""
+    _, _, text, voice, speed, pause = job
+    silence = np.zeros(int(pause * RATE), dtype=np.float32)
+    if not text.strip():
+        return silence, []
+    if cache is not None and (hit := cache.get(voice, text, speed)) is not None:
+        return np.concatenate([hit[0], silence]), hit[1]
+    kokoro.load(voice)
+    try:
+        return synthesize(kokoro.pipeline(voice[0]), text, kokoro.pack(voice), speed, pause)
+    except Exception as e:  # noqa: BLE001 - skip the sentence, keep reading
+        kokoro.put(("status", f"Couldn't read a sentence: {e}"))
+        return silence, []
+
+
+def kokoro_worker(jobs, results, gen, cache_dir: str | None) -> None:
+    """Kokoro's own process: makes each job's audio (from the Colab cache when it can),
+    skipping jobs from before the app's latest clear() (``gen`` is shared with it).
+    Other messages: ("warm", voice) loads the model now, ("cache", folder) switches cache."""
     import multiprocessing
+
+    from .audio_cache import AudioCache
 
     put = results.put
     parent = multiprocessing.parent_process()
@@ -247,46 +322,23 @@ def kokoro_worker(jobs, results, gen, voice: str) -> None:
         os.nice(5)  # the reader stays responsive while this works flat out
     except OSError:
         pass
-    try:
-        put(("status", "Loading Kokoro…"))
-        from kokoro import KModel, KPipeline
-
-        config = _fetch("config.json", "Downloading Kokoro…", put)
-        weights = _fetch("kokoro-v1_0.pth", "Downloading Kokoro…", put)
-        model = KModel(repo_id=REPO, config=config, model=weights).eval()
-        pipelines: dict[str, object] = {}
-        packs: dict[str, str] = {}
-
-        def pipeline(lang: str):
-            if lang not in pipelines:
-                pipelines[lang] = KPipeline(lang_code=lang, repo_id=REPO, model=model)
-            return pipelines[lang]
-
-        def pack(v: str) -> str:
-            if v not in packs:
-                packs[v] = _fetch(f"voices/{v}.pt", f"Downloading the {v} voice…", put)
-            return packs[v]
-
-        synthesize(pipeline(voice[0]), "Ready.", pack(voice), 1.0, 0.0)  # the first run is slow
-        put(("status", ""))
-    except Exception as e:  # noqa: BLE001 - any failure means falling back
-        put(("failed", f"Kokoro couldn't start: {e}"))
-        return
+    cache = AudioCache(cache_dir) if cache_dir else None
+    kokoro = _Kokoro(put)
     while (job := jobs.get()) is not None:
-        g, uid, text, voice, speed, pause = job
-        if g != gen.value:
-            continue
-        silence = np.zeros(int(pause * RATE), dtype=np.float32)
         try:
-            new = voice not in packs
-            path = pack(voice)
-            if new:
-                put(("status", ""))
-            samples, words = synthesize(pipeline(voice[0]), text, path, speed, pause) if text.strip() else (silence, [])
-        except Exception as e:  # noqa: BLE001 - skip the sentence, keep reading
-            put(("status", f"Couldn't read a sentence: {e}"))
-            samples, words = silence, []
-        put(("ready", g, uid, samples, words))
+            if job[0] == "cache":
+                cache = AudioCache(job[1]) if job[1] else None
+                continue
+            if job[0] == "warm":
+                kokoro.load(job[1])
+                continue
+            if job[0] != gen.value:
+                continue
+            samples, words = job_audio(job, cache, kokoro)
+        except Exception as e:  # noqa: BLE001 - Kokoro can't load: the app falls back
+            put(("failed", f"Kokoro couldn't start: {e}"))
+            return
+        put(("ready", job[0], job[1], samples, words))
 
 
 class _Bridge(QObject):
@@ -306,6 +358,8 @@ class KokoroEngine(Engine):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.voice, self.speed = "af_heart", 1.0
+        self._cache_dir: str | None = None
+        self.cache = AudioCache(None)
         self._gen = 0
         self._proc = None  # the Kokoro process, with its job and result queues and shared generation
         self._jobs = self._results = self._shared_gen = None
@@ -338,7 +392,7 @@ class KokoroEngine(Engine):
         ctx = multiprocessing.get_context("spawn")  # never fork a process running Qt
         self._jobs, self._results, self._shared_gen = ctx.Queue(), ctx.Queue(), ctx.Value("i", self._gen)
         self._proc = ctx.Process(
-            target=kokoro_worker, args=(self._jobs, self._results, self._shared_gen, self.voice),
+            target=kokoro_worker, args=(self._jobs, self._results, self._shared_gen, self._cache_dir),
             daemon=True, name="kokoro",
         )
         self._proc.start()
@@ -349,7 +403,7 @@ class KokoroEngine(Engine):
         while True:
             try:
                 msg = results.get()
-            except (EOFError, OSError, ValueError):
+            except (EOFError, OSError, ValueError, TypeError):  # the queue closed under it at exit
                 return
             if msg is None:
                 return
@@ -431,6 +485,20 @@ class KokoroEngine(Engine):
     def warm(self) -> None:
         if not self._dead:
             self._start()
+            if not len(self.cache):  # a book read from Colab's audio may never need the model
+                self._jobs.put(("warm", self.voice))
+
+    def has(self, text: str) -> bool:
+        return self.cache.has(self.voice, text)
+
+    def cached(self) -> int:
+        return len(self.cache)
+
+    def set_cache(self, folder) -> None:
+        self._cache_dir = str(folder) if folder else None
+        self.cache = AudioCache(folder)
+        if self._proc is not None:
+            self._jobs.put(("cache", self._cache_dir))
 
     def enqueue(self, uid: int, text: str, pause: float) -> None:
         if self._dead:

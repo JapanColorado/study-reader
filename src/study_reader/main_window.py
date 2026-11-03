@@ -30,6 +30,7 @@ from .nav import PAGES, NavRail
 from .notes import NotesPanel
 from .phone_sync_dialog import PhoneSync, PhoneSyncDialog
 from .read_aloud import ReadAloud
+from .render_dialog import AudioSync, RenderDialog, local_audio
 from .reader_view import ReaderView
 from .review import ReviewPanel, VariantMaker
 from .theme import MODES, icon, theme
@@ -71,6 +72,9 @@ class MainWindow(QMainWindow):
         self.reader = ReaderView()
         self.home = HomeView(self.db)
         self.read_aloud = ReadAloud(self.db, self.reader, self)
+        self.read_aloud.renderRequested.connect(self.render_on_colab)
+        self.audio_sync = AudioSync(self.db, self)  # read-aloud audio rendered on Colab, copied here
+        self.audio_sync.synced.connect(self._on_audio_synced)
         self.book_view = QWidget()  # the reader, with the read-aloud bar under it
         col = QVBoxLayout(self.book_view)
         col.setContentsMargins(0, 0, 0, 0)
@@ -345,6 +349,8 @@ class MainWindow(QMainWindow):
             a.triggered.connect(lambda _=False, n=name: self.read_aloud.set_engine(n))
             group.addAction(a)
             self.engine_actions[name] = a
+        voice_menu.addSeparator()
+        voice_menu.addAction("Render audio on Colab…").triggered.connect(self.render_on_colab)
         menu.addSeparator()
         menu.addAction(icon("import"), "Migrate from Anki…").triggered.connect(self.migrate_from_anki)
         review_menu = menu.addMenu(icon("cards"), "Review settings")
@@ -620,7 +626,8 @@ class MainWindow(QMainWindow):
             self.reader.set_document(doc, book["last_page"], book["zoom"], crop=bool(book["crop_margins"]))
         finally:
             QApplication.restoreOverrideCursor()
-        self.read_aloud.set_document(doc)
+        self.read_aloud.set_document(doc, local_audio(book["hash"]))
+        self.audio_sync.start(book["hash"])  # bring in any audio Colab has finished since
         self._on_page_changed(self.reader.current_page())
         self.chat.set_book(self.book_id)
         self.calc.set_book(self.book_id)
@@ -1000,6 +1007,17 @@ class MainWindow(QMainWindow):
             self.db.update_book(self.book_id, last_page=self.reader.current_page(), zoom=self.reader.saved_zoom())
 
     # -- reading aloud ----------------------------------------------------------------
+    def render_on_colab(self) -> None:
+        if self.book_id is None:
+            QMessageBox.information(self, "Render audio on Colab", "Open a book first.")
+            return
+        voice = self.db.get_setting("tts_voice:kokoro", "af_heart")
+        RenderDialog(self.db, self.db.book(self.book_id), voice, self.read_aloud.speed, self.audio_sync, self).exec()
+
+    def _on_audio_synced(self, file_hash: str, copied: int) -> None:
+        if copied > 0 and self.book_id is not None and self.db.book(self.book_id)["hash"] == file_hash:
+            self.read_aloud.set_audio(local_audio(file_hash))
+
     def _toggle_reading(self, on: bool) -> None:
         if on:
             self.read_aloud.start_from_view()

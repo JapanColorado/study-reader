@@ -24,6 +24,7 @@ UID_SPAN = 1 << 20  # uids of one reading; a new reading starts past them
 
 class ReadAloud(QObject):
     activeChanged = Signal(bool)
+    renderRequested = Signal()  # the bar's "Render on Colab" button
 
     def __init__(self, db: Database, reader, parent=None):
         super().__init__(parent)
@@ -33,6 +34,7 @@ class ReadAloud(QObject):
         self.engine_name = db.get_setting("tts_engine", "kokoro")
         self._fallback = False  # Kokoro failed this session: use speech-dispatcher
         self.speed = _clamp(float(db.get_setting("tts_speed", "1.0") or 1.0))
+        self.audio = None  # folder of the open book's audio rendered on Colab
         self.active = False
         self._items: list[Utterance] = []
         self._source: Iterator[Utterance] | None = None
@@ -61,6 +63,7 @@ class ReadAloud(QObject):
                 self._fallback, name = True, "speechd"
                 self.bar.set_status(f"Kokoro isn't available ({why}); using the system voice.")
             self.engine = tts_engines.make_engine(name, self)
+            self.engine.set_cache(self.audio)
             self.engine.started.connect(self._on_started)
             self.engine.word.connect(self._on_word)
             self.engine.finished.connect(self._on_finished)
@@ -128,17 +131,33 @@ class ReadAloud(QObject):
             self._jump(self._cur)
 
     # -- starting -------------------------------------------------------------------------
-    def set_document(self, doc: Document | None) -> None:
+    def set_document(self, doc: Document | None, audio=None) -> None:
+        """Read ``doc`` (None: nothing), playing sentences rendered on Colab from ``audio``."""
         self.stop()
         self.book = BookText(doc) if doc else None
+        self.audio = audio if doc else None
+        if self.engine is not None:
+            self.engine.set_cache(self.audio)
         if doc and self.current_engine == "kokoro":
             self._engine().warm()  # loading takes a while; do it before F5
+
+    def set_audio(self, audio) -> None:
+        """New or more rendered audio for the open book."""
+        self.audio = audio
+        if self.engine is not None:
+            self.engine.set_cache(audio)
 
     def start_from_view(self) -> None:
         if not self.book:
             return
         page, y = self.reader._position()
-        self._read_book(self.book.utterances(self.book.start_at(page, y)))
+        start = self.book.start_at(page, y)
+        engine = self._engine()
+        if engine.cached() and (u := self.book.utterance_at(*start)) and engine.has(u.text):
+            # Rendered sentences are whole ones: start at the one the page opens in.
+            self._read_book(self._after(u), first=u)
+            return
+        self._read_book(self.book.utterances(start))
 
     def read_selection(self, sel: dict[int, list[Word]], onward: bool) -> None:
         """Read the selected words, or (onward) from them to the end of the book."""
@@ -198,7 +217,7 @@ class ReadAloud(QObject):
     def _jump(self, index: int) -> None:
         engine = self._engine()
         engine.clear()
-        if engine.lookahead_chars and index < len(self._items):
+        if engine.lookahead_chars and index < len(self._items) and not engine.has(self._items[index].text):
             # Starting cold: the first half of a long sentence is ready sooner.
             self._items[index:index + 1] = self._items[index].split()
         self._cur, self._fed, self._heard = index, index - 1, False
@@ -382,6 +401,7 @@ class ReadAloudBar(QFrame):
         self.status.setProperty("role", "muted")
         self.status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         row.addWidget(self.status, 1)
+        button("cloud", "Render this book's audio on Colab, so reading never waits", ctl.renderRequested.emit)
         button("x", "Stop reading aloud (Shift+F5)", ctl.stop)
         self.hide()
 

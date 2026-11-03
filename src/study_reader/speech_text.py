@@ -384,7 +384,9 @@ def math_symbols(text: str) -> str:
 
 _URL = re.compile(r"(?:https?://|www\.)\S+", re.I)
 _WORD_PARTS = re.compile(r"^([(\[\"'“‘«]*)(.*?)([,;:)\]\"'”’»]*)$", re.DOTALL)
-_JUNK = dict.fromkeys(map(ord, "­↩↑⤴︎️"))
+# Soft hyphens, back-reference arrows, variation selectors, and bullets and boxes (read as
+# "black square" otherwise).
+_JUNK = dict.fromkeys(map(ord, "­↩↑⤴︎️■□▪▫●○•◦◆◇▸▹►▶✓✔✗✘❑❒➢➤"))
 
 
 def speak_word(text: str) -> str:

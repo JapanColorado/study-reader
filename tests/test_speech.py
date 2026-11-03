@@ -119,3 +119,9 @@ def test_utterance_word_at_and_covers():
     assert u.covers(3, 5) and u.covers(3, 900) and u.covers(4, 1)
     assert not u.covers(3, 4) and not u.covers(4, 2)
     assert not Utterance("reply", block=0).covers(0, 0)
+
+
+def test_bullets_and_boxes_are_not_read():
+    from study_reader.speech_text import speak_word
+
+    assert speak_word("■A") == "A" and speak_word("■") == "" and speak_word("• item") == "item"

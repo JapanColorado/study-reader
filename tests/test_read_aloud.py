@@ -127,7 +127,18 @@ def fake_engine(monkeypatch):
             self.name = name
             self.queue, self.clears, self.speed, self.voice = [], [], 1.0, ""
             self.paused = False
+            self.rendered = set()  # texts "rendered on Colab"
+            self.cache_dir = None
             made.append(self)
+
+        def has(self, text):
+            return text in self.rendered
+
+        def cached(self):
+            return len(self.rendered)
+
+        def set_cache(self, folder):
+            self.cache_dir = folder
 
         def voices(self):
             return [("v1", "Voice one"), ("v2", "Voice two")] if self.name == "kokoro" else []
@@ -421,6 +432,9 @@ def test_main_window_read_aloud_controls(story_pdf, tmp_path, monkeypatch, fake_
     assert not win.read_action.isEnabled() and not win.play_action.isEnabled()
     win.open_book(story_pdf)
     assert win.read_action.isEnabled() and not win.next_sentence_action.isEnabled()
+    from study_reader.render_dialog import local_audio
+
+    assert win.read_aloud.audio == local_audio(win.db.book(win.book_id)["hash"])  # Colab's audio, if any
     win.read_action.trigger()
     assert win.read_aloud.active and win.read_action.isChecked() and win.next_sentence_action.isEnabled()
     assert not win.read_aloud.bar.isHidden()
@@ -438,3 +452,30 @@ def test_main_window_read_aloud_controls(story_pdf, tmp_path, monkeypatch, fake_
     win.close_book()
     assert not win.read_aloud.active and win.read_aloud.book is None
     win.close()
+
+
+def test_rendered_audio_starts_at_a_whole_sentence_and_isnt_split(reading):
+    from study_reader.speech_text import Utterance
+
+    ctl = reading.ctl
+    ctl.set_document(reading.doc, "/audio/here")
+    (engine,) = reading.engines
+    assert engine.cache_dir == "/audio/here"
+    words = reading.doc.words(0)
+    two = next(i for i, w in enumerate(words) if w.text == "Two")
+    ctl.book.start_at = lambda page, y: (0, two + 1)  # the view opens mid-sentence, on "fish."
+    ctl.start_from_view()
+    assert engine.queue[0][1] == "fish."  # live speech starts right there
+    engine.rendered = {"Two fish."}
+    ctl.start_from_view()
+    assert engine.queue[0][1] == "Two fish."  # rendered audio is of whole sentences
+
+    long = "Once the zorblatt has been rinsed, it should be left to dry in a cool, dark place."
+    engine.lookahead_chars = 600
+    ctl._items, ctl._source = [Utterance(long)], None
+    ctl._jump(0)
+    assert [u.text for u in ctl._items] == ["Once the zorblatt has been rinsed,", long[35:]]  # split to start sooner
+    engine.rendered = {long}
+    ctl._items, ctl._source = [Utterance(long)], None
+    ctl._jump(0)
+    assert [u.text for u in ctl._items] == [long]  # already rendered: played whole

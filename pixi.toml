@@ -25,6 +25,7 @@ tqdm = "*"
 # English model, so misaki never tries to pip-install it at runtime.
 kokoro = ">=0.9.4, <0.10"
 misaki = { version = ">=0.9.4", extras = ["en"] }
+soundfile = ">=0.13"  # reads the Opus audio rendered on Colab
 en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
 
 [activation.env]
