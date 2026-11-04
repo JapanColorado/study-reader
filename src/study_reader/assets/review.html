@@ -179,6 +179,11 @@ function setCalc(on) {
 let LAST = null;  // the overview last shown, to redraw when the picker's tab changes
 let PICK = null;  // the picker's tab on the Review page: "decks" or "books" (null: by what is picked)
 
+// Every card, whatever its deck or book: the first row of both the Decks and the Books tab.
+const allRow = o => `<div class="deck all${o.deck === null && o.book === null ? " sel" : ""}" data-act="deck" data-deck="0"`
+  + ` title="Every card, in every deck and book"><span class="tw"></span><span class="name">All</span>`
+  + `${num(o.all_due, "due")}${num(o.all_new, "new")}</div>`;
+
 // Every deck, with its own and its subdecks' counts; clicking one picks what to review.
 function decksHtml(o) {
   const byParent = {};
@@ -192,9 +197,7 @@ function decksHtml(o) {
     return html;
   };
   return `<div class="decks"><div class="deck-head"><span class="tw"></span><span class="name">Deck</span><span class="n">Due</span><span class="n">New</span></div>`
-    + `<div class="deck all${o.deck === null && o.book === null ? " sel" : ""}" data-act="deck" data-deck="0"><span class="tw"></span><span class="name">All decks</span>`
-    + `${num(o.all_due, "due")}${num(o.all_new, "new")}</div>`
-    + (byParent[0] || []).map(d => row(d, 0)).join("") + `</div>`;
+    + allRow(o) + (byParent[0] || []).map(d => row(d, 0)).join("") + `</div>`;
 }
 
 // A book's sections (srs.sections) as rows under it; clicking one reviews just that section.
@@ -215,7 +218,7 @@ function sectionRows(sections, bookId, selected, depth) {
 // Every book with cards (all_books), each opening onto its sections.
 function booksHtml(o) {
   return `<div class="decks"><div class="deck-head"><span class="tw"></span><span class="name">Book</span><span class="n">Due</span><span class="n">New</span></div>`
-    + o.books.map(b => {
+    + allRow(o) + o.books.map(b => {
       const key = `b${b.id}`;
       let html = `<div class="deck${o.book === b.id && !o.section ? " sel" : ""}" data-act="book" data-book="${b.id}" title="${esc(b.title)}">`
         + `${twist(key, b.sections.length)}<span class="name">${esc(b.title)}</span>${num(b.due, "due")}${num(b.new, "new")}</div>`;
