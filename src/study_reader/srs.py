@@ -501,6 +501,24 @@ def counts(db: Database, book_id: int | None, now: float | None = None, deck: in
     }
 
 
+def left_to_review(db: Database, book_id: int | None, now: float | None = None, deck: int | None = None,
+                   tag: str | None = None, exclude=()) -> int:
+    """How many cards are left to review today (due, and new ones today's allowance allows),
+    leaving out exclude (cards skipped this session)."""
+    now = time.time() if now is None else now
+    due = db.count_cards(book_id, *_not_in(DUE, (next_day(now), now), exclude), deck_id=deck, tag=tag)
+    new = db.count_cards(book_id, *_not_in(NEW, (), exclude), deck_id=deck, tag=tag)
+    return due + min(new, new_left_today(db, now))
+
+
+def _not_in(where: str, args: tuple, exclude) -> tuple[str, tuple]:
+    """where, also leaving out the cards with the ids in exclude."""
+    exclude = tuple(exclude)
+    if not exclude:
+        return where, args
+    return f"({where}) AND id NOT IN ({','.join('?' * len(exclude))})", (*args, *exclude)
+
+
 def deck_counts(db: Database, now: float | None = None) -> dict[int, dict]:
     """For every deck, its cards and those of the decks under it: {deck id: {due, new, total}}
     (new: cards waiting, not capped by today's allowance)."""
@@ -526,10 +544,11 @@ def deck_counts(db: Database, now: float | None = None) -> dict[int, dict]:
 
 
 def next_card(db: Database, book_id: int | None, now: float | None = None, skip=(), deck: int | None = None,
-              tag: str | None = None):
+              tag: str | None = None, exclude=()):
     """The card to review next: due learning and review cards first (most overdue first),
     then new ones while today's allowance lasts, then learning cards due within LEARN_AHEAD.
-    skip: ids of cards not to show again yet (just answered, or skipped), unless nothing else is left."""
+    skip: ids of cards not to show again yet (the one just answered), unless nothing else is left.
+    exclude: ids of cards never to show (skipped this session)."""
     now = time.time() if now is None else now
     tiers = [(DUE, (next_day(now), now), "due, id")]
     if new_left_today(db, now):
@@ -537,6 +556,7 @@ def next_card(db: Database, book_id: int | None, now: float | None = None, skip=
     tiers.append(("suspended=0 AND stage IN (1,3) AND due<=?", (now + LEARN_AHEAD,), "due, id"))
     fallback = None
     for where, args, order in tiers:
+        where, args = _not_in(where, args, exclude)
         for card in db.cards(book_id, where, args, order=order, limit=len(skip) + 1, deck_id=deck, tag=tag):
             if card["id"] not in skip:
                 return card

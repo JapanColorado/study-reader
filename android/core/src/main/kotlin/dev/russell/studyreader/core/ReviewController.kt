@@ -52,7 +52,10 @@ class ReviewController(
     private var question: JsonObject? = null
     private var shownData = ""
     private var answer: JsonObject? = null
-    private var skip = mutableListOf<Long>()
+    /** The card just answered, not to be shown again right away. */
+    private var just = listOf<Long>()
+    /** Cards skipped this session, not to be shown again until the next one. */
+    private val skipped = mutableListOf<Long>()
     private var session: Gamify.Session? = null
     private var summary: JsonObject? = null
     /** A line about syncing for the overview, set by the app. */
@@ -176,7 +179,7 @@ class ReviewController(
     fun start(limit: String) {
         session = Gamify.Session(if (limit == "cards" || limit == "time") limit else "", mono())
         summary = null
-        skip = mutableListOf()
+        just = emptyList(); skipped.clear()
         next()
     }
 
@@ -192,12 +195,14 @@ class ReviewController(
         if (s != null && s.over(mono())) { finish(false); return }
         val t = now()
         srs.unbury(t)
-        val card = srs.nextCard(pickedBook, t, skip, deckId, section)
+        val card = srs.nextCard(pickedBook, t, just, deckId, section, skipped)
         cardId = card?.long("id")
         answer = null
         shownAt = mono()
         shownData = ""
-        if (card == null) finish(true) else showCard()
+        // Only skipped cards left (if any): not caught up while they are still to review.
+        if (card == null) finish(skipped.isEmpty() || srs.nextCard(pickedBook, t, deck = deckId, tag = section) == null)
+        else showCard()
     }
 
     private fun finish(caughtUp: Boolean) {
@@ -223,6 +228,8 @@ class ReviewController(
         val t = now()
         val a = answer
         val c = counts(t)
+        // The session's progress leaves out cards skipped in it, which won't come back in it.
+        val left = if (skipped.isEmpty()) c["due"]!! + c["new"]!! else srs.leftToReview(pickedBook, t, deckId, section, skipped)
         val book = card.longOrNull("book_id")?.let { db.one("SELECT title FROM books WHERE id=?", it) }
         val deck = db.one("SELECT name FROM decks WHERE id=?", card.long("deck_id"))
         val q = question!!
@@ -241,7 +248,7 @@ class ReviewController(
             put("previews", if (a != null) buildJsonObject { srs.previews(card, t).forEach { (k, v) -> put("$k", v) } } else JsonNull)
             put("suggested", a?.let { (it["verdict"] as? JsonPrimitive)?.contentOrNull }?.let { Srs.VERDICT_RATINGS[it] })
             put("remaining", buildJsonObject { put("due", c["due"]); put("new", c["new"]) })
-            put("session", session?.progress(c["due"]!! + c["new"]!!, mono()) ?: JsonNull)
+            put("session", session?.progress(left, mono()) ?: JsonNull)
             put("rewards", gamify.enabled())
             put("actions", buildJsonArray { CARD_ACTIONS.forEach { add(buildJsonArray { it.forEach { s -> add(JsonPrimitive(s)) } }) } })
         })
@@ -288,7 +295,7 @@ class ReviewController(
             s.xp += all.filter { (it["kind"] as JsonPrimitive).content == "xp" }.sumOf { (it["xp"] as JsonPrimitive).content.toInt() }
             all
         }
-        skip = mutableListOf(id)
+        just = listOf(id)
         onChanged()
         next()
         celebrate(events)
@@ -298,7 +305,7 @@ class ReviewController(
         val card = srs.card(id) ?: return
         val t = now()
         when {
-            action == "skip" -> { skip.add(id); next() }
+            action == "skip" -> { skipped.add(id); next() }
             action == "suspend" -> {
                 db.transaction {
                     srs.update(id, mapOf("suspended" to 1L))

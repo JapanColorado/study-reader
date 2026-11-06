@@ -63,6 +63,17 @@ class QueueTest {
             assertEquals(label, long(sc, "next"), first?.long("id"))
             val second = srs.nextCard(book, now, listOfNotNull(first?.long("id")), deck, tag)
             assertEquals(label, long(sc, "next_skipping"), second?.long("id"))
+            // Excluded (skipped this session): never shown, even with nothing else left.
+            val excluding = srs.nextCard(book, now, emptyList(), deck, tag, listOfNotNull(first?.long("id")))
+            val wantExcluding = if (first == null || long(sc, "next_skipping") == first.long("id")) null else long(sc, "next_skipping")
+            assertEquals(label, wantExcluding, excluding?.long("id"))
+            assertEquals(label, int(want, "due") + int(want, "new"), srs.leftToReview(book, now, deck, tag))
+            if (first != null) {
+                val was = if (first.long("stage") == 0L) "new" else "due"
+                val capped = was == "new" && int(want, "new") < int(want, "new_total")
+                assertEquals(label, int(want, "due") + int(want, "new") - (if (capped) 0 else 1),
+                    srs.leftToReview(book, now, deck, tag, listOf(first.long("id"))))
+            }
             assertEquals(label, (sc["next_due"] as? JsonPrimitive)?.doubleOrNull, srs.nextDue(book, now, deck, tag))
         }
     }

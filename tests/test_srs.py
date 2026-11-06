@@ -333,6 +333,42 @@ def test_reviewing_cards(chat_panel):
     assert shown[-1][0] == "showOverview" and shown[-1][1][0]["reviewed"] == 2
 
 
+def test_skipped_cards_stay_skipped_for_the_session(chat_panel):
+    from study_reader.review import ReviewPanel
+
+    panel, worker, db, book_id = chat_panel
+    panel.start_quiz("Quiz me.", "Quiz", 0)
+    worker.done.emit(panel.chat_id, "s1", QUIZ, "u1")
+    review = ReviewPanel(db)
+    review.set_book(book_id)
+    shown = []
+    review._js = lambda fn, *args: shown.append((fn, args))
+
+    review.start()
+    skipped = review.card_id
+    assert shown[-1][1][0]["session"]["total"] == 4
+    review.act(skipped, "skip")
+    # The skipped card is still counted as due/new, but not in the session's progress.
+    assert shown[-1][1][0]["remaining"]["new"] == 4 and shown[-1][1][0]["session"]["total"] == 3
+    seen = []
+    while review.card_id is not None:  # rating the rest never brings the skipped card back
+        assert review.card_id != skipped
+        seen.append(review.card_id)
+        review.rate(review.card_id, 4)
+    assert skipped not in seen and len(set(seen)) == 3
+    # Over, but not caught up: the skipped card is still to review.
+    overview = [args[0] for fn, args in shown if fn == "showOverview"][-1]
+    assert overview["summary"]["caught_up"] is False
+    assert {"kind": "done", "caught_up": False, "quick": False} in [e for fn, args in shown if fn == "celebrate" for e in args[0]]
+    review.start()  # a new session shows it again
+    assert review.card_id == skipped
+
+    # Skipping everything ends the session.
+    for _ in range(4):
+        review.act(review.card_id, "skip")
+    assert review.card_id is None and shown[-1][0] == "showOverview"
+
+
 def test_reviewing_one_book_or_section(chat_panel):
     from study_reader.review import ReviewPanel
 

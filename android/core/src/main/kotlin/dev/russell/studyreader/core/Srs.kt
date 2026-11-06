@@ -158,6 +158,21 @@ class Srs(val db: Sql, val zone: ZoneId = ZoneId.systemDefault(), val fuzz: Bool
         )
     }
 
+    /** How many cards are left to review today (due, and new ones today's allowance allows),
+     *  leaving out exclude (cards skipped this session). */
+    fun leftToReview(bookId: Long?, now: Double, deck: Long? = null, tag: String? = null,
+                     exclude: List<Long> = emptyList()): Int {
+        val (dueWhere, dueArgs) = notIn(DUE, listOf(nextDay(now), now), exclude)
+        val (newWhere, newArgs) = notIn(NEW, emptyList(), exclude)
+        return countCards(bookId, dueWhere, dueArgs, deck, tag) +
+            min(countCards(bookId, newWhere, newArgs, deck, tag), newLeftToday(now))
+    }
+
+    /** where, also leaving out the cards with the ids in exclude. */
+    private fun notIn(where: String, args: List<Any?>, exclude: List<Long>): Pair<String, List<Any?>> =
+        if (exclude.isEmpty()) where to args
+        else "($where) AND id NOT IN (${exclude.joinToString(",") { "?" }})" to args + exclude
+
     fun decks(): List<Row> = db.query("SELECT * FROM decks ORDER BY name COLLATE NOCASE")
 
     /** For every deck, its cards and those of the decks under it: {due, new (uncapped), total}. */
@@ -234,12 +249,16 @@ class Srs(val db: Sql, val zone: ZoneId = ZoneId.systemDefault(), val fuzz: Bool
     }
 
     // -- the queue --------------------------------------------------------------------------
-    fun nextCard(bookId: Long?, now: Double, skip: List<Long> = emptyList(), deck: Long? = null, tag: String? = null): Row? {
+    /** skip: cards not to show again yet (the one just answered), unless nothing else is left;
+     *  exclude: cards never to show (skipped this session). */
+    fun nextCard(bookId: Long?, now: Double, skip: List<Long> = emptyList(), deck: Long? = null, tag: String? = null,
+                 exclude: List<Long> = emptyList()): Row? {
         val tiers = mutableListOf(Triple(DUE, listOf<Any?>(nextDay(now), now), "due, id"))
         if (newLeftToday(now) > 0) tiers += Triple(NEW, emptyList(), "created_at, id")
         tiers += Triple("suspended=0 AND stage IN (1,3) AND due<=?", listOf(now + LEARN_AHEAD), "due, id")
         var fallback: Row? = null
-        for ((where, args, order) in tiers) {
+        for ((tierWhere, tierArgs, order) in tiers) {
+            val (where, args) = notIn(tierWhere, tierArgs, exclude)
             for (card in cards(bookId, where, args, order, skip.size + 1, deck, tag)) {
                 if (card.long("id") !in skip) return card
                 if (fallback == null) fallback = card

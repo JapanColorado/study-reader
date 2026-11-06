@@ -161,7 +161,8 @@ class ReviewPanel(QWidget):
         self._question: dict | None = None
         self._shown_data = ""
         self._answer: dict | None = None  # its answer so far: {response, status, verdict, feedback}
-        self._skip: list[int] = []  # cards just answered or skipped, not to be shown again right away
+        self._just: list[int] = []  # the card just answered, not to be shown again right away
+        self._skipped: list[int] = []  # cards skipped this session, not to be shown again until the next one
         self._session: gamify.Session | None = None  # the session under way
         self._summary: dict | None = None  # how the last session went, for the overview
         # Whether the calculator beside the panel is open; None draws no Calculator button (set_calculator).
@@ -350,7 +351,7 @@ class ReviewPanel(QWidget):
         """Start a session: until nothing is left, or (limit "cards" or "time") a quick one."""
         self._session = gamify.Session(limit if limit in ("cards", "time") else "")
         self._summary = None
-        self._skip = []
+        self._just, self._skipped = [], []
         self._next()
 
     def stop(self) -> None:
@@ -364,13 +365,16 @@ class ReviewPanel(QWidget):
         if self._session is not None and self._session.over():
             self._finish(caught_up=False)
             return
-        card = srs.next_card(self.db, self.scope, skip=self._skip, deck=self.deck, tag=self.section)
+        card = srs.next_card(self.db, self.scope, skip=self._just, deck=self.deck, tag=self.section,
+                             exclude=self._skipped)
         self.card_id = card["id"] if card else None
         self._answer = None
         self._shown_at = time.monotonic()
         self._shown_data = ""
         if card is None:
-            self._finish(caught_up=True)
+            # Only skipped cards left (if any): not caught up while they are still to review.
+            left = self._skipped and srs.next_card(self.db, self.scope, deck=self.deck, tag=self.section)
+            self._finish(caught_up=not left)
         else:
             self._show_card()
 
@@ -397,6 +401,9 @@ class ReviewPanel(QWidget):
         now = time.time()
         a = self._answer
         c = srs.counts(self.db, self.scope, now, deck=self.deck, tag=self.section)
+        # The session's progress leaves out cards skipped in it, which won't come back in it.
+        left = (srs.left_to_review(self.db, self.scope, now, deck=self.deck, tag=self.section, exclude=self._skipped)
+                if self._skipped else c["due"] + c["new"])
         book = self.db.book(card["book_id"]) if card["book_id"] is not None else None
         deck = self.db.deck(card["deck_id"])
         self.cardShown.emit(card["book_id"])
@@ -414,7 +421,7 @@ class ReviewPanel(QWidget):
             "previews": srs.previews(card, now, self.db) if a else None,
             "suggested": srs.suggested_rating(a["verdict"]) if a else None,
             "remaining": {"due": c["due"], "new": c["new"]},
-            "session": self._session.progress(c["due"] + c["new"]) if self._session else None,
+            "session": self._session.progress(left) if self._session else None,
             "rewards": gamify.enabled(self.db),
             "calc": self.calculator,
         })
@@ -451,7 +458,7 @@ class ReviewPanel(QWidget):
         events = gamify.reviewed(self.db, srs.is_new(before), session.multiplier, combo=session.best,
                                  session=session.reviewed) + events
         session.xp += sum(e["xp"] for e in events if e["kind"] == "xp")
-        self._skip = [card_id]  # skipped cards may come back now
+        self._just = [card_id]
         self.countsChanged.emit()
         self._next()
         self._celebrate(events)
@@ -469,7 +476,7 @@ class ReviewPanel(QWidget):
         elif action == "edit":
             self.editRequested.emit(card_id)
         elif action == "skip":
-            self._skip.append(card_id)
+            self._skipped.append(card_id)
             self._next()
         elif action == "suspend":
             self.db.update_card(card_id, suspended=1)

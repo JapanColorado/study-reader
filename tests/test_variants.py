@@ -91,7 +91,6 @@ def test_reviewed_numeric_cards_come_back_with_new_numbers(chat_panel):
     assert srs.question(card)["answer"] == "41"  # the card's own question is unchanged
 
     db.update_card(numeric, due=0)
-    review._skip = []
     while review.card_id != numeric:
         review.act(review.card_id, "skip")
     payload = shown[-1][1][0]
