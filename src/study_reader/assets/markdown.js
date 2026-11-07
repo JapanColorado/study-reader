@@ -8,7 +8,7 @@ const mdRich = markdownit({ html: true, linkify: true, breaks: true });
 // Where card images live: a file:// URL ending in "/", set by the page's app side (setMedia).
 let MEDIA_URL = "";
 
-const MATH = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|(?<!\\)\$(?!\s)([^$\n]+?)(?<![\s\\])\$(?!\d)/g;
+const MATH = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|(?<!\\)\$(?!\s)((?:\\.|[^$\\\n])+?)(?<![\s\\])\$(?!\d)/g;
 const CODE = /(```[\s\S]*?(?:```|$)|`[^`\n]*`)/;
 // Cloze deletions inside math are marked with \htmlClass{cloze}{...}; nothing else is trusted.
 const KATEX_RICH = { throwOnError: false, strict: false, trust: ctx => ctx.command === "\\htmlClass" };

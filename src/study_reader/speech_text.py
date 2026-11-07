@@ -354,6 +354,7 @@ class _Tex:
 
 def tex_to_speech(tex: str) -> str:
     """TeX math said in words ("\\frac{a}{b}" -> "a over b"). Never raises."""
+    tex = re.sub(r"\\\$\s*(\d[\d,]*(?:\.\d+)?)", r"\1\\$", tex)  # \$50 -> "50 dollars"
     try:
         return _tidy(_Tex(_TOKEN.findall(tex)).read())
     except Exception:
@@ -446,7 +447,7 @@ def sentence_ends(words: list[str]) -> list[int]:
     return ends
 
 
-_TEX_MATH = re.compile(r"\$\$(.+?)\$\$|\\\[(.+?)\\\]|\\\((.+?)\\\)|(?<![\\$])\$(?=[^\s$])([^$]+?)(?<=\S)\$(?!\d)",
+_TEX_MATH = re.compile(r"\$\$(.+?)\$\$|\\\[(.+?)\\\]|\\\((.+?)\\\)|(?<![\\$])\$(?=[^\s$])((?:\\.|[^$\\])+?)(?<=\S)\$(?!\d)",
                        re.DOTALL)
 
 

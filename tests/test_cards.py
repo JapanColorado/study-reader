@@ -36,6 +36,11 @@ def test_cloze_math_holding_closing_braces():
     assert cardmodel.cloze_side(text, 2, False).endswith(r'\(\frac{1}{\sqrt{LC}}\), called <span class="cloze">[what]</span>')
 
 
+def test_math_spans_hold_escaped_dollars():
+    text = r"Pizza ($q_1$) at $p_1 = \$1$, income $Y = \$50$; it costs \$5 or $5 and $6."
+    assert [text[a:b] for a, b in cardmodel.math_spans(text)] == ["$q_1$", r"$p_1 = \$1$", r"$Y = \$50$"]
+
+
 def test_reverse_occlusion_and_tags():
     assert cardmodel.card_ords("reverse", {"front": "a", "back": "b"}) == [0, 1]
     back = cardmodel.card_data("reverse", {"front": "a", "back": "b"}, 1)

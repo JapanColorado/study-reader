@@ -38,8 +38,8 @@ SELF_RATED = ("flashcard", "cloze", "occlusion")
 # inside math the answer holds ({{c1::\(\sqrt{LC}}\)}}).
 CLOZE = re.compile(r"\{\{c(\d+)::((?:\\\(.*?\\\)|\\\[.*?\\\]|\$\$.*?\$\$|.)*?)(?:::((?:(?!\}\}).)*?))?\}\}",
                    re.DOTALL)
-# Math as markdown.js finds it: $$..$$, \[..\], \(..\), $..$ (not \$).
-MATH = re.compile(r"\$\$(.+?)\$\$|\\\[(.+?)\\\]|\\\((.+?)\\\)|(?<!\\)\$(?!\s)([^$\n]+?)(?<![\s\\])\$(?!\d)", re.DOTALL)
+# Math as markdown.js finds it: $$..$$, \[..\], \(..\), $..$ (not \$, which may sit inside: $p = \$1$).
+MATH = re.compile(r"\$\$(.+?)\$\$|\\\[(.+?)\\\]|\\\((.+?)\\\)|(?<!\\)\$(?!\s)((?:\\.|[^$\\\n])+?)(?<![\s\\])\$(?!\d)", re.DOTALL)
 TAG = re.compile(r"<[^>]*>")
 
 

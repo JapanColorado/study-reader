@@ -93,6 +93,9 @@ def test_sentence_ends_caps_long_sentences():
 def test_speak_text():
     assert speak_text(r"So $x^2$ and $$\frac{a}{b}$$, or \(y\).") == "So x squared and a over b, or y."
     assert speak_text("It costs $5 and $10 (e.g. lunch).") == "It costs $5 and $10 (for example lunch)."
+    # Escaped dollar signs inside math are currency, not the end of the math.
+    assert speak_text(r"Pizza at $p_1 = \$1$ and income $Y = \$50$.") == \
+        "Pizza at p 1 equals 1 dollars and income Y equals 50 dollars."
 
 
 def test_reply_utterances():
