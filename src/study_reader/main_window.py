@@ -280,8 +280,8 @@ class MainWindow(QMainWindow):
         labelled(self.region_action)
         self.quiz_action = action("Quiz me", "Ctrl+Shift+Q", self.quiz, "quiz")
         self.quiz_action.setToolTip(
-            "Quiz me on the selection, or else the section being read (Ctrl+Shift+Q); "
-            "the arrow picks how much to cover"
+            "Quiz me on the selection, or else the section being read (Ctrl+Shift+Q): drafts the "
+            "request in a new chat, for you to add instructions and send; the arrow picks how much to cover"
         )
         bar.addAction(self.quiz_action)
         labelled(self.quiz_action)

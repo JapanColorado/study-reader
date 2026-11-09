@@ -201,26 +201,38 @@ def request(first: int, last: int, title: str | None, whole: bool = False) -> tu
     """(question asking for a quiz on pages first..last, chat title). whole: they are the whole document."""
     pages = pages_label(first, last)
     if whole:
-        return f"Quiz me on the whole document ({pages}).", "Quiz: whole document"
+        return f"Quiz me on the whole document ({pages})", "Quiz: whole document"
     if title:
-        return f"Quiz me on the section “{title}” ({pages}).", f"Quiz: {title}"
-    return f"Quiz me on {pages}.", f"Quiz: {pages}"
+        return f"Quiz me on the section “{title}” ({pages})", f"Quiz: {title}"
+    return f"Quiz me on {pages}", f"Quiz: {pages}"
 
 
 def snippet_request(snippet: dict) -> tuple[str, str]:
     """(question, chat title) for a quiz on a selected passage or screenshot."""
     if snippet["kind"] == "image":
-        return "Quiz me on this.", f"Quiz: screenshot, p. {snippet['page'] + 1}"
-    return "Quiz me on this passage.", "Quiz: " + " ".join(snippet["text"].split())
+        return "Quiz me on this screenshot", f"Quiz: screenshot, p. {snippet['page'] + 1}"
+    return "Quiz me on this passage", "Quiz: " + " ".join(snippet["text"].split())
 
 
 def reply_request(reply_text: str, last: bool) -> str:
     """The question asking for a quiz on one of Claude's replies in the chat."""
     if last:
-        return "Quiz me on your last reply."
+        return "Quiz me on your last reply"
     start = " ".join(split(reply_text)[0].split())
     start = start if len(start) <= 80 else start[:80].rsplit(" ", 1)[0] + "…"
-    return f"Quiz me on your earlier reply that begins “{start}”."
+    return f"Quiz me on your earlier reply that begins “{start}”"
+
+
+def drafted_request(request: str, typed: str) -> str:
+    """The question a Quiz me request drafted in the composer sends: what the user left there
+    if it still holds the request (perhaps with their own instructions added), else the request
+    followed by whatever they wrote instead of it."""
+    typed = typed.strip()
+    if not typed:
+        return request
+    if " ".join(request.split()) in " ".join(typed.split()):
+        return typed
+    return f"{request}\n\n{typed}"
 
 
 def _text(value) -> str:

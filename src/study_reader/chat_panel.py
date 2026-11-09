@@ -67,7 +67,9 @@ class ChatPanel(QWidget):
         self._naming: dict[int, str] = {}
         self._status = ""
         self._editing: int | None = None  # id of the message being rewritten in the composer
-        self._draft: tuple[str, list[dict]] | None = None  # composer contents set aside while editing
+        self._draft: tuple[str, list[dict]] | None = None  # composer contents set aside while editing or quizzing
+        # A Quiz me request drafted in the composer, sent (with whatever the user adds) by the next send.
+        self._quiz: dict | None = None
         self._draft_model = self.default_model()  # for the chat the next send creates
         self._grading: dict[int, int] = {}  # quiz answer id -> its message id, while Claude grades it
 
@@ -127,7 +129,7 @@ class ChatPanel(QWidget):
         self.input = _Composer(objectName="composerInput")
         self.input.setPlaceholderText("Ask about the book…")
         self.input.submitted.connect(self.send)
-        self.input.cancelled.connect(self.cancel_edit)
+        self.input.cancelled.connect(lambda: (self.cancel_edit(), self.cancel_quiz()))
         self.input.document().documentLayout().documentSizeChanged.connect(self._fit_input)
         self.input.installEventFilter(self)
         self.send_btn = QToolButton(objectName="send")
@@ -258,6 +260,7 @@ class ChatPanel(QWidget):
     # -- book / chat selection ---------------------------------------------------
     def set_book(self, book_id: int | None) -> None:
         self.cancel_edit()
+        self.cancel_quiz()
         self.book_id = book_id
         self.chat_id = None
         self._draft_model = self.default_model()
@@ -273,6 +276,7 @@ class ChatPanel(QWidget):
 
     def new_chat(self) -> None:
         self.cancel_edit()
+        self.cancel_quiz()
         self.chat_id = None
         self.chat_list.blockSignals(True)
         self.chat_list.setCurrentItem(None)
@@ -285,6 +289,7 @@ class ChatPanel(QWidget):
     def open_chat(self, chat_id: int) -> None:
         if chat_id != self.chat_id:
             self.cancel_edit()
+            self.cancel_quiz()
         self.chat_id = chat_id
         self._refresh_list()
         self._sync_model()
@@ -304,23 +309,28 @@ class ChatPanel(QWidget):
 
     def start_quiz(self, request: str, title: str, page: int, snippet: dict | None = None,
                    last: int | None = None) -> None:
-        """Open a new chat asking Claude for a quiz; the composer's draft is left as it was.
-        snippet: a passage to quiz on, as the reader emits it; else the quiz covers pages page…last."""
+        """Draft a quiz request in a new chat's composer, for the user to add to and send; the
+        chat (named `title`) is made only when they do. snippet: a passage to quiz on, as the
+        reader emits it; else the quiz covers pages page…last."""
         if self.book_id is None:
             return
         self.new_chat()
         snippets = [_stored(snippet)] if snippet else []
-        self.chat_id = self.db.create_chat(self.book_id, " ".join(title.split())[:70], self._draft_model)
-        pages = None if snippets else (page, page if last is None else last)
-        self.db.add_message(self.chat_id, "user", request, snippets, pages=pages)
-        self._ask(request, snippets, [], branch=False, page=page)
-        self._refresh_list()
-        self._refresh_transcript()
-        if snippets:
-            self.highlightsChanged.emit()
+        last = page if last is None else last
+        if snippet:
+            what = " ".join(snippet["text"].split()) if snippet["kind"] == "text" else "Screenshot"
+            label = f"p. {page + 1} · {what}"
+        else:
+            name, pages = title.removeprefix("Quiz: "), quiz.pages_label(page, last)
+            label = pages if name == pages else f"{name} · {pages}"
+            label = label[:1].upper() + label[1:]
+        self._draft_quiz(dict(
+            request=request, title=" ".join(title.split())[:70], chat_id=None, page=page,
+            pages=None if snippets else (page, last), snippets=snippets, label=label,
+        ))
 
     def quiz_on_reply(self, message_id: int) -> None:
-        """Ask, in the same chat, for a quiz on one of its replies."""
+        """Draft, in the same chat, a request for a quiz on one of its replies."""
         if self.chat_id is None or self.chat_id in self._streams or self._editing is not None:
             return
         messages = self.db.messages(self.chat_id)
@@ -328,11 +338,51 @@ class ChatPanel(QWidget):
         if reply is None:
             return
         last = reply is next(m for m in reversed(messages) if m["role"] == "assistant")
-        question = quiz.reply_request(reply["text"], last)
-        self.db.add_message(self.chat_id, "user", question)
-        self._ask(question, [], messages, branch=False)
+        self.cancel_quiz()
+        self._draft_quiz(dict(
+            request=quiz.reply_request(reply["text"], last), title=None, chat_id=self.chat_id, page=None,
+            pages=None, snippets=[], label="Claude's last reply" if last else "Claude's earlier reply",
+        ))
+
+    def _draft_quiz(self, pending: dict) -> None:
+        """Set the composer's contents aside and put a quiz request there instead."""
+        self._draft = (self.input.toPlainText(), self._pending)
+        self._pending = []
+        self._quiz = pending
+        self.input.setPlainText(pending["request"])
+        self.input.moveCursor(QTextCursor.MoveOperation.End)
+        self._refresh_chips()
+        self.input.setFocus()
+        if pending["snippets"]:
+            self.highlightsChanged.emit()
+
+    def cancel_quiz(self) -> None:
+        """Drop a drafted quiz request, giving the composer back what it held before."""
+        if self._quiz is None:
+            return
+        had_snippet = bool(self._quiz["snippets"])
+        self._quiz = None
+        self._restore_draft()
+        if had_snippet:
+            self.highlightsChanged.emit()
+
+    def _send_quiz(self) -> None:
+        q = self._quiz
+        question = quiz.drafted_request(q["request"], self.input.toPlainText())
+        snippets = q["snippets"] + self._pending
+        if q["chat_id"] is None:
+            self.chat_id = self.db.create_chat(self.book_id, q["title"], self._draft_model)
+            prior = []
+        else:
+            prior = self.db.messages(self.chat_id)
+        self.db.add_message(self.chat_id, "user", question, snippets, pages=q["pages"])
+        self._ask(question, snippets, prior, branch=False, page=q["page"])
+        self._quiz = None
+        self._restore_draft()
         self._refresh_list()
         self._refresh_transcript()
+        if snippets:
+            self.highlightsChanged.emit()
 
     def revise_quiz(self, message_id: int, index: int, change: str | None = None) -> None:
         """Ask, in the same chat, for a revision of one of its quizzes (asking what to change
@@ -361,11 +411,13 @@ class ChatPanel(QWidget):
 
     def pending_snippets(self) -> list[dict]:
         """Snippets waiting in the composer, not yet saved with a message."""
-        return [s for s in self._pending if "id" not in s]  # an edited message's are saved already
+        quizzed = self._quiz["snippets"] if self._quiz else []
+        return [s for s in self._pending + quizzed if "id" not in s]  # an edited message's are saved already
 
     def _on_chat_selected(self, item: QListWidgetItem | None, _prev=None) -> None:
         if item is not None:
             self.cancel_edit()
+            self.cancel_quiz()
             self.chat_id = item.data(Qt.ItemDataRole.UserRole)
             self._sync_model()
             self._refresh_transcript()
@@ -385,6 +437,7 @@ class ChatPanel(QWidget):
             chat_id = item.data(Qt.ItemDataRole.UserRole)
             if chat_id == self.chat_id:
                 self.cancel_edit()
+                self.cancel_quiz()
             self.db.delete_chat(chat_id)
             if chat_id == self.chat_id:
                 self.chat_id = None
@@ -412,6 +465,9 @@ class ChatPanel(QWidget):
     # -- sending -----------------------------------------------------------------
     def send(self) -> None:
         if self.book_id is None or self.chat_id in self._streams:
+            return
+        if self._quiz is not None:
+            self._send_quiz()
             return
         question = self.input.toPlainText().strip()
         snippets = list(self._pending)
@@ -656,6 +712,7 @@ class ChatPanel(QWidget):
         message = next((m for m in self.db.messages(self.chat_id) if m["id"] == message_id), None)
         if message is None or message["role"] != "user":
             return
+        self.cancel_quiz()
         if self._editing is None:
             self._draft = (self.input.toPlainText(), self._pending)
         self._editing = message_id
@@ -676,12 +733,17 @@ class ChatPanel(QWidget):
 
     def _end_edit(self) -> None:
         """Leave editing, giving the composer back what it held before."""
+        self._editing = None
+        self.edit_bar.hide()
+        self._restore_draft()
+
+    def _restore_draft(self) -> None:
+        """Give the composer back what it held before editing or a drafted quiz set it aside."""
         text, pending = self._draft or ("", [])
-        self._editing, self._draft = None, None
+        self._draft = None
         self._pending = pending
         self.input.setPlainText(text)
         self.input.moveCursor(QTextCursor.MoveOperation.End)
-        self.edit_bar.hide()
         self._refresh_chips()
 
     # -- worker events -------------------------------------------------------------
@@ -794,30 +856,44 @@ class ChatPanel(QWidget):
             old = self.chips.takeAt(0).widget()
             old.hide()
             old.deleteLater()
+        if self._quiz is not None:
+            self.chips.addWidget(self._chip(
+                "quiz", "Quiz", self._quiz["label"], self.cancel_quiz, "Don't ask for a quiz (Esc)",
+                "Sends a quiz request, with anything you add here as instructions",
+            ))
         for snippet in self._pending:
             is_text = snippet["kind"] == "text"
-            kind = QLabel()
-            kind.setPixmap(icon("text" if is_text else "image", "accent").pixmap(QSize(14, 14), self.devicePixelRatioF()))
-            page = QLabel(f"p. {snippet['page'] + 1}")
-            page.setProperty("role", "page")
-            text = QLabel(" ".join(snippet["text"].split())[:80] if is_text else "Screenshot")
-            text.setProperty("role", "muted")
-            text.setMinimumWidth(1)
-            remove = QToolButton()
-            remove.setIcon(icon("x", "muted"))
-            remove.setIconSize(QSize(12, 12))
-            remove.setFixedSize(20, 20)
-            remove.setToolTip("Remove")
-            remove.clicked.connect(lambda _=False, s=snippet: self._remove_pending(s))
-            chip = QFrame(objectName="chip")
-            row = QHBoxLayout(chip)
-            row.setContentsMargins(8, 2, 2, 2)
-            row.setSpacing(6)
-            row.addWidget(kind)
-            row.addWidget(page)
-            row.addWidget(text, 1)
-            row.addWidget(remove)
-            self.chips.addWidget(chip)
+            self.chips.addWidget(self._chip(
+                "text" if is_text else "image", f"p. {snippet['page'] + 1}",
+                " ".join(snippet["text"].split())[:80] if is_text else "Screenshot",
+                lambda s=snippet: self._remove_pending(s), "Remove",
+            ))
+
+    def _chip(self, icon_name: str, tag: str, text: str, remove, remove_tip: str, tip: str = "") -> QFrame:
+        """A composer attachment: icon, tag, text and a remove button."""
+        kind = QLabel()
+        kind.setPixmap(icon(icon_name, "accent").pixmap(QSize(14, 14), self.devicePixelRatioF()))
+        page = QLabel(tag)
+        page.setProperty("role", "page")
+        label = QLabel(text[:80])
+        label.setProperty("role", "muted")
+        label.setMinimumWidth(1)
+        button = QToolButton()
+        button.setIcon(icon("x", "muted"))
+        button.setIconSize(QSize(12, 12))
+        button.setFixedSize(20, 20)
+        button.setToolTip(remove_tip)
+        button.clicked.connect(lambda _=False: remove())
+        chip = QFrame(objectName="chip")
+        chip.setToolTip(tip)
+        row = QHBoxLayout(chip)
+        row.setContentsMargins(8, 2, 2, 2)
+        row.setSpacing(6)
+        row.addWidget(kind)
+        row.addWidget(page)
+        row.addWidget(label, 1)
+        row.addWidget(button)
+        return chip
 
     def _remove_pending(self, snippet: dict) -> None:
         self._pending = [s for s in self._pending if s is not snippet]

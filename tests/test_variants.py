@@ -59,6 +59,7 @@ def _review(chat_panel):
     maker = VariantMaker(db, worker)
     panel.variants = maker
     panel.start_quiz("Quiz me.", "Quiz", 0)
+    panel.send()
     worker.done.emit(panel.chat_id, "s1", QUIZ, "u1")
     reply = db.messages(panel.chat_id)[1]["id"]
     review = ReviewPanel(db, variants=maker)

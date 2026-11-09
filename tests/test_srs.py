@@ -251,6 +251,7 @@ def test_chat_quizzes_feed_the_deck(chat_panel):
     changes = []
     panel.cardsChanged.connect(lambda: changes.append(1))
     panel.start_quiz("Make flashcards on this passage.", "Cards: x", 0)
+    panel.send()
     chat = panel.chat_id
     worker.done.emit(chat, "s1", QUIZ + "\n\n" + CARDS, "u1")
     reply = db.messages(chat)[1]["id"]
@@ -277,10 +278,12 @@ def test_chat_quizzes_feed_the_deck(chat_panel):
     # A quiz on a reply is asked for in the same chat.
     worker.done.emit(chat, "s1", QUIZ, "u1")
     panel.quiz_on_reply(reply)
+    panel.send()
     assert worker.jobs[-1].question.startswith("Quiz me on your earlier reply that begins “Here's a quiz.")
     worker.done.emit(chat, "s2", "Ok", "u2")
     panel.quiz_on_reply(db.messages(chat)[-1]["id"])
-    assert worker.jobs[-1].question == "Quiz me on your last reply."
+    panel.send()
+    assert worker.jobs[-1].question == "Quiz me on your last reply"
 
 
 # -- the Review page -----------------------------------------------------------------------
@@ -289,6 +292,7 @@ def test_reviewing_cards(chat_panel):
 
     panel, worker, db, book_id = chat_panel
     panel.start_quiz("Quiz me.", "Quiz", 0)
+    panel.send()
     worker.done.emit(panel.chat_id, "s1", QUIZ, "u1")
     reply = db.messages(panel.chat_id)[1]["id"]
     review = ReviewPanel(db)
@@ -338,6 +342,7 @@ def test_skipped_cards_stay_skipped_for_the_session(chat_panel):
 
     panel, worker, db, book_id = chat_panel
     panel.start_quiz("Quiz me.", "Quiz", 0)
+    panel.send()
     worker.done.emit(panel.chat_id, "s1", QUIZ, "u1")
     review = ReviewPanel(db)
     review.choose_book(book_id)
@@ -375,6 +380,7 @@ def test_reviewing_one_book_or_section(chat_panel):
     panel, worker, db, book_id = chat_panel
     srs.learn_toc(db, book_id, TOC)
     panel.start_quiz("Quiz me on pages 1-4.", "Quiz", 0, last=3)  # spans chapters 1 and 2
+    panel.send()
     worker.done.emit(panel.chat_id, "s1", QUIZ, "u1")
     reply = db.messages(panel.chat_id)[1]["id"]
     # A question with no page of its own goes into the section holding all the quizzed pages.
@@ -620,6 +626,7 @@ def test_a_revised_quiz_takes_over_the_cards_it_keeps(tmp_path):
 def test_chat_panel_revises_quizzes_and_shares_tags(chat_panel):
     panel, worker, db, book_id = chat_panel
     panel.start_quiz("Quiz me.", "Quiz", 0)
+    panel.send()
     worker.done.emit(panel.chat_id, "s1", TAGGED, "u1")
     reply = db.messages(panel.chat_id)[1]["id"]
     first = db.quiz_cards(reply, 0)[0]["id"]

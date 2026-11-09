@@ -86,13 +86,13 @@ def test_section_around():
     assert quiz.section_around(toc, 2, 20, level=quiz.PAGE_LEVEL) == (2, 2, None)
     assert quiz.section_around(toc, 2, 20, level=quiz.DOCUMENT_LEVEL) == (0, 19, None)
     assert quiz.section_around(toc, 2, 200, level=quiz.DOCUMENT_LEVEL) == (0, 9, "One")  # too long
-    assert quiz.request(0, 19, None, whole=True) == ("Quiz me on the whole document (pages 1–20).", "Quiz: whole document")
+    assert quiz.request(0, 19, None, whole=True) == ("Quiz me on the whole document (pages 1–20)", "Quiz: whole document")
     assert quiz.section_around(toc, 9, 20) == (8, 9, "1.3")
     assert quiz.section_around(toc, 15, 20) == (10, 19, "Two")  # no level 2 here: the nearest above
     assert quiz.section_around([], 0, 20) == (0, 2, None)
     assert quiz.section_around([], 19, 20) == (17, 19, None)
-    assert quiz.request(0, 3, "1.1") == ("Quiz me on the section “1.1” (pages 1–4).", "Quiz: 1.1")
-    assert quiz.request(4, 4, None) == ("Quiz me on page 5.", "Quiz: page 5")
+    assert quiz.request(0, 3, "1.1") == ("Quiz me on the section “1.1” (pages 1–4)", "Quiz: 1.1")
+    assert quiz.request(4, 4, None) == ("Quiz me on page 5", "Quiz: page 5")
 
 
 def test_answers_context_describes_answers():
@@ -154,6 +154,7 @@ def test_grading_forks_from_the_quiz_reply(monkeypatch, tmp_path, pdf_path):
 def test_answering_a_quiz_in_the_chat_panel(chat_panel):
     panel, worker, db, book_id = chat_panel
     panel.start_quiz("Quiz me on page 2.", "Quiz: page 2", 1)
+    panel.send()
     chat = panel.chat_id
     (job,) = worker.jobs
     assert job.question == "Quiz me on page 2." and job.page == 1 and job.context == ""
@@ -200,7 +201,112 @@ def test_quiz_on_a_selected_passage(chat_panel):
     snippet = {"kind": "text", "page": 2, "text": "Never store a zorblatt\nnear a window.", "rects": [], "png": None}
     question, title = quiz.snippet_request(snippet)
     panel.start_quiz(question, title, snippet["page"], snippet)
+    panel.send()
     (job,) = worker.jobs
-    assert job.question == "Quiz me on this passage." and [s.text for s in job.snippets] == [snippet["text"]]
+    assert job.question == "Quiz me on this passage" and [s.text for s in job.snippets] == [snippet["text"]]
     assert db.chat(panel.chat_id)["title"] == "Quiz: Never store a zorblatt near a window."
     assert db.messages(panel.chat_id)[0]["snippets"][0]["page"] == 2
+
+
+def test_drafted_request_keeps_the_scope():
+    req = "Quiz me on page 5"
+    assert quiz.drafted_request(req, "  ") == req
+    assert quiz.drafted_request(req, "Quiz me on page 5, harder") == "Quiz me on page 5, harder"
+    assert quiz.drafted_request(req, "Quiz me on  page\n5 harder") == "Quiz me on  page\n5 harder"
+    assert quiz.drafted_request(req, "only derivations") == "Quiz me on page 5\n\nonly derivations"
+
+
+def test_quiz_me_drafts_in_the_composer_until_sent(chat_panel):
+    from PySide6.QtGui import QTextCursor
+
+    panel, worker, db, book_id = chat_panel
+    panel.input.setPlainText("half a question")
+    panel.start_quiz("Quiz me on the section “6.4 Energy” (pages 12–15)", "Quiz: 6.4 Energy", 11, last=14)
+    # Nothing is sent or saved yet: the request waits in the composer, with a chip, cursor at its end.
+    assert worker.jobs == [] and db.chats(book_id) == [] and panel.chat_id is None
+    assert panel.input.toPlainText() == "Quiz me on the section “6.4 Energy” (pages 12–15)"
+    assert panel.input.textCursor().atEnd() and panel.chips.count() == 1
+    assert panel._quiz["label"] == "6.4 Energy · pages 12–15"
+
+    panel.input.moveCursor(QTextCursor.MoveOperation.End)
+    panel.input.insertPlainText(", only derivations")
+    panel.send()
+    (job,) = worker.jobs
+    assert job.question == "Quiz me on the section “6.4 Energy” (pages 12–15), only derivations" and job.page == 11
+    chat = db.chat(panel.chat_id)
+    assert chat["title"] == "Quiz: 6.4 Energy" and panel.chat_id not in panel._untitled
+    (m,) = db.messages(panel.chat_id)
+    assert (m["page_from"], m["page_to"]) == (11, 14)
+    # The composer gets back what it held, and the next send is an ordinary question.
+    assert panel._quiz is None and panel.input.toPlainText() == "half a question" and panel.chips.count() == 0
+
+
+def test_quiz_me_with_the_request_deleted_or_empty(chat_panel):
+    panel, worker, db, book_id = chat_panel
+    panel.start_quiz("Quiz me on page 2", "Quiz: page 2", 1)
+    panel.input.setPlainText("harder please")
+    panel.send()
+    assert worker.jobs[-1].question == "Quiz me on page 2\n\nharder please"
+    panel.start_quiz("Quiz me on page 3", "Quiz: page 3", 2)
+    panel.input.clear()
+    panel.send()
+    assert worker.jobs[-1].question == "Quiz me on page 3" and db.chat(panel.chat_id)["title"] == "Quiz: page 3"
+
+
+def test_removing_the_quiz_chip_cancels_it(chat_panel):
+    from PySide6.QtWidgets import QToolButton
+
+    panel, worker, db, book_id = chat_panel
+    snippet = {"kind": "text", "page": 2, "text": "Never store a zorblatt.", "rects": [], "png": None}
+    marks = []
+    panel.highlightsChanged.connect(lambda: marks.append(len(panel.pending_snippets())))
+    panel.start_quiz(*quiz.snippet_request(snippet)[:2], snippet["page"], snippet)
+    assert marks == [1] and panel._quiz["label"] == "p. 3 · Never store a zorblatt."
+    chip = panel.chips.itemAt(0).widget()
+    chip.findChildren(QToolButton)[0].click()
+    assert panel._quiz is None and marks == [1, 0] and panel.input.toPlainText() == "" and panel.chips.count() == 0
+    panel.input.setPlainText("What is a zorblatt?")
+    panel.send()
+    assert worker.jobs[-1].question == "What is a zorblatt?" and worker.jobs[-1].snippets == []
+    assert db.chat(panel.chat_id)["title"] == "What is a zorblatt?"  # an ordinary chat, named later
+
+    # Leaving for another chat (or a new one) cancels a drafted quiz too, leaving no empty chat.
+    chats = len(db.chats(book_id))
+    panel.start_quiz("Quiz me on page 1", "Quiz: page 1", 0)
+    panel.new_chat()
+    assert panel._quiz is None and panel.input.toPlainText() == "" and len(db.chats(book_id)) == chats
+
+
+def test_quiz_me_on_a_reply_drafts_in_the_same_chat(chat_panel):
+    panel, worker, db, book_id = chat_panel
+    panel.input.setPlainText("Explain friction.")
+    panel.send()
+    chat = panel.chat_id
+    worker.done.emit(chat, "s1", "Friction resists sliding.", "u1")
+    reply = db.messages(chat)[1]["id"]
+    panel.quiz_on_reply(reply)
+    assert panel.chat_id == chat and len(worker.jobs) == 1 and len(db.messages(chat)) == 2
+    assert panel.input.toPlainText() == "Quiz me on your last reply" and panel._quiz["label"] == "Claude's last reply"
+    panel.input.insertPlainText(" with three questions")
+    panel.send()
+    job = worker.jobs[-1]
+    assert job.chat_id == chat and job.question == "Quiz me on your last reply with three questions"
+    assert [m["role"] for m in db.messages(chat)] == ["user", "assistant", "user"]
+    assert db.chat(chat)["title"] == "Explain friction."
+
+
+def test_quiz_me_in_the_window_only_drafts(pdf_path, tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    from PySide6.QtWidgets import QApplication
+    from study_reader.main_window import MainWindow
+
+    QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "t.db")
+    win = MainWindow(db)
+    win.show()
+    win.open_book(pdf_path)
+    win.quiz_action.trigger()
+    assert win.chat.isVisible() and win.chat._quiz is not None and db.chats(win.book_id) == []
+    assert win.chat.input.toPlainText().startswith("Quiz me on ") and win.focusWidget() is win.chat.input
+    win.close()

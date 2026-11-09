@@ -340,7 +340,7 @@ function actionsHtml(m, isLast, idle) {
     return `<div class="actions user"><a href="edit://message/${m.id}" title="Edit this message and ask again">${EDIT_ICON}Edit</a></div>`;
   // A quiz on a reply that isn't itself a quiz.
   let quiz = m.role === "assistant" && !(m.quizzes || []).length
-    ? `<a href="quiz://message/${m.id}" title="Quiz me on this reply; the questions join your review deck">${QUIZ_ICON}Quiz me</a>` : "";
+    ? `<a href="quiz://message/${m.id}" title="Draft a quiz request on this reply, to add instructions and send; the questions join your review deck">${QUIZ_ICON}Quiz me</a>` : "";
   if (m.role === "assistant")
     quiz += `<a href="speak://message/${m.id}" title="Read this reply aloud">${SPEAK_ICON}Listen</a>`;
   if (isLast) {
