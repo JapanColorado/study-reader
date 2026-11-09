@@ -34,6 +34,7 @@ class ReadAloud(QObject):
         self.engine_name = db.get_setting("tts_engine", "kokoro")
         self._fallback = False  # Kokoro failed this session: use speech-dispatcher
         self.speed = _clamp(float(db.get_setting("tts_speed", "1.0") or 1.0))
+        self.skip_silence = db.get_setting("tts_skip_silence", "0") == "1"
         self.audio = None  # folder of the open book's audio rendered on Colab
         self.active = False
         self._items: list[Utterance] = []
@@ -76,7 +77,9 @@ class ReadAloud(QObject):
             if voice:
                 self.engine.set_voice(voice)
             self.engine.set_speed(self.speed)
+            self.engine.set_skip_silence(self.skip_silence)
             self.bar.set_voices(voices, voice)
+            self.bar.skip.setVisible(self.engine.skips_silence)
         return self.engine
 
     def _drop_engine(self) -> None:
@@ -126,6 +129,19 @@ class ReadAloud(QObject):
         if self.engine is None:
             return
         self.engine.set_speed(self.speed)
+        self._requeue()
+
+    def set_skip_silence(self, on: bool) -> None:
+        """Shorten the silences in Kokoro's audio (rendered or made now), from the next sentence."""
+        self.skip_silence = on
+        self.db.set_setting("tts_skip_silence", "1" if on else "0")
+        self.bar.skip.setChecked(on)
+        if self.engine is not None:
+            self.engine.set_skip_silence(on)
+            self._requeue()
+
+    def _requeue(self) -> None:
+        """Remake what is queued after a change to how it sounds."""
         if not self.active:
             return
         if self._heard:  # let the sentence being read finish; redo the ones queued after it
@@ -397,6 +413,13 @@ class ReadAloudBar(QFrame):
         self.speed_label.setMinimumWidth(34)
         row.addWidget(self.speed_label)
         self.show_speed(ctl.speed)
+        self.skip = QToolButton(self, autoRaise=True, checkable=True, text="Skip silence")
+        self.skip.setToolTip("Skip silence: shorten the pauses before, inside and after each sentence")
+        self.skip.setIcon(icon("audio-lines"))
+        self.skip.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.skip.setChecked(ctl.skip_silence)
+        self.skip.toggled.connect(lambda on: on != ctl.skip_silence and ctl.set_skip_silence(on))
+        row.addWidget(self.skip)
         row.addSpacing(10)
         self.voice = QComboBox(self, toolTip="Voice")
         self.voice.setMinimumContentsLength(12)

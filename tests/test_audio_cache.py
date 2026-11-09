@@ -7,7 +7,7 @@ import pymupdf
 import pytest
 import soundfile as sf
 
-from study_reader.audio_cache import RATE, AudioCache, render_speed, sentence_key, stretch, sync
+from study_reader.audio_cache import RATE, AudioCache, render_speed, sentence_key, skip_silence, stretch, sync
 from study_reader.db import Database
 
 ASSETS = Path(__file__).parent.parent / "src" / "study_reader" / "assets"
@@ -95,11 +95,11 @@ def test_job_audio_uses_the_cache_before_kokoro(tmp_path):
         def pack(self, voice):
             return voice
 
-    audio, words = job_audio((0, 1, "It wobbles.", "af_heart", 1.0, 0.5), cache, Kokoro())
+    audio, words = job_audio((0, 1, "It wobbles.", "af_heart", 1.0, 0.5, False), cache, Kokoro())
     assert len(audio) == RATE + RATE // 2 and loads == []
-    audio, words = job_audio((0, 2, "Hums.", "af_heart", 1.0, 0.0), cache, Kokoro())
+    audio, words = job_audio((0, 2, "Hums.", "af_heart", 1.0, 0.0, False), cache, Kokoro())
     assert len(audio) == 2400 and words == [(0.0, 0.2, 0, 4)] and loads == ["af_heart"]
-    audio, _ = job_audio((0, 3, "  ", "af_heart", 1.0, 0.1), None, Kokoro())
+    audio, _ = job_audio((0, 3, "  ", "af_heart", 1.0, 0.1, False), None, Kokoro())
     assert len(audio) == RATE // 10
 
 
@@ -140,3 +140,47 @@ def test_audio_made_too_fast_is_used_only_without_better(tmp_path):
     _part(tmp_path, "part-0001", {"It wobbles.": 1.0}, speed=1.3)
     samples, _ = AudioCache(tmp_path).get("af_heart", "It wobbles.", 2.0)
     assert len(samples) == round(RATE * 1.3 / 2.0)  # the 1.3× render, sped up
+
+
+def _quiet(seconds):
+    return np.zeros(int(seconds * RATE), np.float32)
+
+
+def test_skip_silence_trims_the_edges_and_caps_pauses_inside():
+    x = np.concatenate([_quiet(0.3), _tone(0.5), _quiet(0.6), _tone(0.4), _quiet(0.1), _tone(0.2), _quiet(0.4)])
+    tokens = [("One", 0.3, 0.8), ("two", 1.4, 1.8), ("three", 1.9, 2.1), (".", None, None)]
+    y, moved = skip_silence(x, tokens)
+    # 0.02 s before, 0.15 s for the long pause, the short one kept whole, 0.05 s after
+    assert len(y) / RATE == pytest.approx(0.02 + 0.5 + 0.15 + 0.4 + 0.1 + 0.2 + 0.05, abs=0.011)
+    assert moved[0][1] == pytest.approx(0.02, abs=0.011) and moved[3] == (".", None, None)
+    assert moved[1][1] == pytest.approx(0.02 + 0.5 + 0.15, abs=0.011)
+    assert moved[2][1] - moved[1][2] == pytest.approx(0.1, abs=0.011)
+    start = int(round(moved[1][1] * RATE))
+    assert np.corrcoef(y[start + 100: start + 1100], _tone(0.4)[100:1100])[0, 1] > 0.99  # cut in the quiet
+    tight = np.concatenate([_tone(0.5), _quiet(0.1), _tone(0.5)])
+    assert len(skip_silence(tight, [])[0]) == len(tight)  # pauses this short stay
+    assert len(skip_silence(_quiet(1.0), [])[0]) == RATE  # nothing to hear: left alone
+
+
+def test_cached_and_live_audio_skip_silence_when_asked(tmp_path):
+    from study_reader.tts_engines import job_audio, synthesize
+
+    _part(tmp_path, "part-0000", {"It wobbles.": 1.0})
+    cache = AudioCache(tmp_path)
+    key = sentence_key("af_heart", "It wobbles.")
+    speed, audio, start, n, tokens = cache.index[key][0]
+    clip = np.concatenate([_quiet(0.4), _tone(1.0)])  # rendered with silence before it
+    cache._read = lambda *a: clip
+    cache.index[key][0] = (speed, audio, start, len(clip), [["It", 0.4, 0.9], ["wobbles", 0.9, 1.4]])
+    assert len(cache.get("af_heart", "It wobbles.", 1.0)[0]) == len(clip)
+    samples, words = cache.get("af_heart", "It wobbles.", 2.0, skip=True)
+    assert len(samples) == pytest.approx((0.02 + 1.0) * RATE / 2, abs=RATE * 0.01)
+    assert words[0][0] == pytest.approx(0.01, abs=0.01)
+    audio, _ = job_audio((0, 1, "It wobbles.", "af_heart", 1.0, 0.5, True), cache, None)
+    assert len(audio) == pytest.approx((0.02 + 1.0 + 0.5) * RATE, abs=RATE * 0.011)
+
+    tok = SimpleNamespace(text="One", start_ts=0.5, end_ts=1.0)
+    pipeline = lambda text, **kw: iter([SimpleNamespace(audio=clip[:int(1.2 * RATE)], tokens=[tok])])  # noqa: E731
+    audio, words = synthesize(pipeline, "One.", "af_heart", 1.0, 0.0, skip=True)
+    assert len(audio) == pytest.approx(0.82 * RATE, abs=RATE * 0.011)
+    assert words[0][0] == pytest.approx(0.12, abs=0.011)

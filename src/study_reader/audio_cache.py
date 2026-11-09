@@ -4,7 +4,8 @@ colab_render.py has a Colab GPU render a book's sentences with Kokoro (assets/ko
 into ``audio/part-*.opus`` (Ogg Opus) plus ``part-*.json``, which maps each sentence's key to
 ``[speed, start sample, samples, tokens]``, and downloads the parts into the book's folder in
 the app's data folder, where ``AudioCache`` plays them, stretching the audio when the reading
-speed differs from the one it was rendered at. Parts the old Drive notebook made
+speed differs from the one it was rendered at (and, with skip silence on, shortening its
+silences: ``skip_silence``). Parts the old Drive notebook made
 (``part-NNNN``) are still copied from the shared Drive folder (``sync``)."""
 
 from __future__ import annotations
@@ -25,6 +26,13 @@ RATE = 24000
 # at this speed and then sped up (stretch), which keeps every word.
 NATIVE_SPEED = 1.3
 OPEN_PARTS = 4  # decoders kept open
+# Skip silence: a sentence's audio keeps this much of the quiet before its first sound and
+# after its last (the reader's own pause between sentences follows), and a pause inside it
+# is cut down to GAP_KEEP. Kokoro's quiet is near-digital silence (about -110 dB), so a frame
+# is quiet below SILENCE_DB, or 40 dB under the sentence's loudest frame if that is lower.
+SILENCE_FRAME = 0.01
+SILENCE_DB = -50.0
+HEAD_KEEP, TAIL_KEEP, GAP_KEEP = 0.02, 0.05, 0.15
 
 
 def book_key(file_hash: str) -> str:
@@ -101,9 +109,9 @@ class AudioCache:
     def count(self, keys) -> int:
         return sum(k in self.index for k in keys)
 
-    def get(self, voice: str, text: str, speed: float) -> tuple[np.ndarray, list] | None:
-        """The sentence's samples at ``speed`` and its word timings (as tts_engines makes
-        them), or None if it wasn't rendered."""
+    def get(self, voice: str, text: str, speed: float, skip: bool = False) -> tuple[np.ndarray, list] | None:
+        """The sentence's samples at ``speed`` (``skip``: with its silences shortened) and its
+        word timings (as tts_engines makes them), or None if it wasn't rendered."""
         from .speech_text import align_tokens
 
         entries = self.index.get(sentence_key(voice, text))
@@ -115,6 +123,8 @@ class AudioCache:
         samples = self._read(audio, start, n)
         if samples is None:
             return None
+        if skip:
+            samples, tokens = skip_silence(samples, tokens)
         factor = speed / rendered
         if abs(factor - 1) > 0.02:
             samples = stretch(samples, factor)
@@ -137,6 +147,46 @@ class AudioCache:
             return f.read(n, dtype="float32")
         except (OSError, RuntimeError, ValueError):
             return None
+
+
+def skip_silence(x: np.ndarray, tokens: list, rate: int = RATE) -> tuple[np.ndarray, list]:
+    """Speech with its silences shortened (see HEAD_KEEP) and its tokens ``(text, start s,
+    end s)`` (times may be None) moved to match. Cuts fall on quiet frames, so they don't click."""
+    x = np.asarray(x, dtype=np.float32)
+    frame = int(rate * SILENCE_FRAME)
+    m = -(-len(x) // frame)
+    if m < 2:
+        return x, tokens
+    padded = np.concatenate([x, np.zeros(m * frame - len(x), np.float32)])
+    rms = np.sqrt(np.mean(padded.reshape(m, frame) ** 2, axis=1))
+    floor = min(10 ** (SILENCE_DB / 20), rms.max() * 0.01)
+    loud = np.flatnonzero(rms >= floor)
+    if not len(loud):
+        return x, tokens
+    keep = []  # (start, end) sample ranges kept, in order
+    first, last = loud[0] * frame, min((loud[-1] + 1) * frame, len(x))
+    pos = max(first - int(HEAD_KEEP * rate), 0)
+    gap = int(GAP_KEEP * rate)
+    # Quiet runs between sounds longer than GAP_KEEP: keep half of it at each end.
+    breaks = np.flatnonzero(np.diff(loud) * frame > gap + frame)
+    for i in breaks:
+        a, b = (loud[i] + 1) * frame, loud[i + 1] * frame
+        keep.append((pos, a + gap // 2))
+        pos = b - (gap - gap // 2)
+    keep.append((pos, min(last + int(TAIL_KEEP * rate), len(x))))
+    if keep == [(0, len(x))]:
+        return x, tokens
+    out = np.concatenate([x[a:b] for a, b in keep])
+    src, dst, at = [], [], 0
+    for a, b in keep:
+        src += [a / rate, b / rate]
+        dst += [at / rate, (at + b - a) / rate]
+        at += b - a
+
+    def move(t):
+        return None if t is None else float(np.interp(t, src, dst))
+
+    return out, [(text, move(t0), move(t1)) for text, t0, t1 in tokens]
 
 
 def stretch(x: np.ndarray, rate: float, frame: int = 960, tol: int = 240) -> np.ndarray:

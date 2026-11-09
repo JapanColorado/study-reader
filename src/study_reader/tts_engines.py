@@ -43,6 +43,7 @@ class Engine(QObject):
     lookahead = 0  # utterances to queue beyond the one playing
     lookahead_chars = 0  # ...or more, until this much text is queued
     word_timing = False
+    skips_silence = False  # set_skip_silence does something
     name = ""
 
     def voices(self) -> list[tuple[str, str]]:
@@ -69,6 +70,7 @@ class Engine(QObject):
     def is_paused(self) -> bool:
         return False
     def set_speed(self, speed: float) -> None: ...
+    def set_skip_silence(self, on: bool) -> None: ...
     def set_voice(self, voice: str) -> None: ...
     def shutdown(self) -> None: ...
 
@@ -196,11 +198,13 @@ def to_format(samples: np.ndarray, rate: int, channels: int, kind: str) -> bytes
     return (samples * 32767).astype("<i2").tobytes()
 
 
-def synthesize(pipeline, text: str, voice: str, speed: float, pause: float) -> tuple[np.ndarray, list]:
+def synthesize(pipeline, text: str, voice: str, speed: float, pause: float,
+               skip: bool = False) -> tuple[np.ndarray, list]:
     """Kokoro's audio for one utterance (float samples at RATE, with ``pause`` s of
-    silence after) and its word timings against ``text``. Above NATIVE_SPEED it is made at
-    that speed and sped up, as Kokoro's own speed setting drops words when pushed."""
-    from .audio_cache import render_speed, stretch
+    silence after; ``skip``: its own silences shortened) and its word timings against
+    ``text``. Above NATIVE_SPEED it is made at that speed and sped up, as Kokoro's own speed
+    setting drops words when pushed."""
+    from .audio_cache import render_speed, skip_silence, stretch
     from .speech_text import align_tokens
 
     made = render_speed(speed)
@@ -216,6 +220,8 @@ def synthesize(pipeline, text: str, voice: str, speed: float, pause: float) -> t
         chunks.append(audio)
         t0 += len(audio) / RATE
     audio = np.concatenate(chunks) if chunks else np.zeros(0, np.float32)
+    if skip:
+        audio, toks = skip_silence(audio, toks)
     if speed > made + 1e-3:
         audio = stretch(audio, speed / made)
         k = made / speed
@@ -293,15 +299,15 @@ class _Kokoro:
 def job_audio(job, cache, kokoro) -> tuple[np.ndarray, list]:
     """A sentence's samples (with its pause after) and word timings: rendered on Colab
     if the cache has it, else made by Kokoro now (whose loading errors propagate)."""
-    _, _, text, voice, speed, pause = job
+    _, _, text, voice, speed, pause, skip = job
     silence = np.zeros(int(pause * RATE), dtype=np.float32)
     if not text.strip():
         return silence, []
-    if cache is not None and (hit := cache.get(voice, text, speed)) is not None:
+    if cache is not None and (hit := cache.get(voice, text, speed, skip)) is not None:
         return np.concatenate([hit[0], silence]), hit[1]
     kokoro.load(voice)
     try:
-        return synthesize(kokoro.pipeline(voice[0]), text, kokoro.pack(voice), speed, pause)
+        return synthesize(kokoro.pipeline(voice[0]), text, kokoro.pack(voice), speed, pause, skip)
     except Exception as e:  # noqa: BLE001 - skip the sentence, keep reading
         kokoro.put(("status", f"Couldn't read a sentence: {e}"))
         return silence, []
@@ -354,11 +360,12 @@ class KokoroEngine(Engine):
     lookahead = 1
     lookahead_chars = 600  # about 40 s of speech
     word_timing = True
+    skips_silence = True
     name = "kokoro"
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.voice, self.speed = "af_heart", 1.0
+        self.voice, self.speed, self.skip = "af_heart", 1.0, False
         self._cache_dir: str | None = None
         self.cache = AudioCache(None)
         self._gen = 0
@@ -538,7 +545,7 @@ class KokoroEngine(Engine):
             return
         self._start()
         self._waiting += 1
-        self._jobs.put((self._gen, uid, text, self.voice, self.speed, pause))
+        self._jobs.put((self._gen, uid, text, self.voice, self.speed, pause, self.skip))
 
     def _on_ready(self, gen: int, uid: int, samples, words) -> None:
         if gen != self._gen or not self._ensure_sink():
@@ -573,6 +580,9 @@ class KokoroEngine(Engine):
 
     def set_speed(self, speed: float) -> None:
         self.speed = speed
+
+    def set_skip_silence(self, on: bool) -> None:
+        self.skip = on
 
     def set_voice(self, voice: str) -> None:
         self.voice = voice

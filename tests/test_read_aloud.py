@@ -126,6 +126,8 @@ def fake_engine(monkeypatch):
             super().__init__(parent)
             self.name = name
             self.queue, self.clears, self.speed, self.voice = [], [], 1.0, ""
+            self.skip = False
+            self.skips_silence = name == "kokoro"
             self.paused = False
             self.rendered = set()  # texts "rendered on Colab"
             self.cache_dir = None
@@ -164,6 +166,9 @@ def fake_engine(monkeypatch):
 
         def set_voice(self, voice):
             self.voice = voice
+
+        def set_skip_silence(self, on):
+            self.skip = on
 
         # Play the first queued utterance to the end.
         def play_one(self):
@@ -305,6 +310,25 @@ def test_speed_changes_requeue_what_hasnt_played_and_persist(reading):
     assert reading.db.get_setting("tts_speed") == "1.6"
     ctl.set_speed(9)
     assert ctl.speed == tts_engines.MAX_SPEED
+
+
+def test_skip_silence_requeues_what_hasnt_played_and_persists(reading):
+    ctl = reading.ctl
+    ctl.start_from_view()
+    (engine,) = reading.engines
+    assert not engine.skip and ctl.bar.skip.isVisibleTo(ctl.bar) and not ctl.bar.skip.isChecked()
+    engine.started.emit(engine.queue[0][0])
+    ctl.bar.skip.click()
+    assert engine.skip and ctl.skip_silence and engine.clears[-1] is True  # the current sentence finishes
+    assert [t for _, t in engine.queue] == ["Two fish."]
+    assert reading.db.get_setting("tts_skip_silence") == "1"
+    ctl.set_engine("speechd")
+    ctl.start_from_view()
+    assert not ctl.bar.skip.isVisibleTo(ctl.bar)  # the system voice can't
+    from study_reader.read_aloud import ReadAloud
+
+    again = ReadAloud(reading.db, reading.view)
+    assert again.skip_silence and again.bar.skip.isChecked()
 
 
 def test_voice_and_engine_choices_are_remembered(reading):
