@@ -262,7 +262,7 @@ def test_chat_quizzes_feed_the_deck(chat_panel):
     assert card["reps"] == 1 and db.reviews(card["id"])[0]["rating"] == 4
     assert db.quiz_answers(chat)[reply][0]["verdict"] == "correct"
 
-    # A free response counts once Claude has graded it.
+    # A written answer counts once Claude has graded it.
     panel._on_quiz_answer(reply, 0, 3, json.dumps({"text": "Because tea."}))
     _, answer_id = worker.gradings[-1]
     assert db.card_for(reply, 0, 3)["reps"] == 0
@@ -319,17 +319,17 @@ def test_reviewing_cards(chat_panel):
     review.check(review.card_id, {"latex": r"\frac{1}{"})
     assert shown[-1][0] == "inputError" and review._answer is None
 
-    # Free responses are rated by the reviewer: showing the answer keeps what was typed, ungraded.
-    while srs.question(db.card(review.card_id))["type"] != "free":
+    # Written answers are rated by the reviewer: showing the answer keeps what was typed, ungraded.
+    while srs.question(db.card(review.card_id))["type"] != "written":
         review.act(review.card_id, "skip")
-    free = review.card_id
+    written = review.card_id
     gradings = len(worker.gradings)
-    review.check(free, {"text": "Because tea."})
+    review.check(written, {"text": "Because tea."})
     payload = shown[-1][1][0]
     assert payload["answer"]["verdict"] is None and payload["suggested"] is None and payload["previews"]
     assert len(worker.gradings) == gradings
-    review.rate(free, 1)
-    assert db.reviews(free)[0]["verdict"] is None and json.loads(db.reviews(free)[0]["response"]) == {"text": "Because tea."}
+    review.rate(written, 1)
+    assert db.reviews(written)[0]["verdict"] is None and json.loads(db.reviews(written)[0]["response"]) == {"text": "Because tea."}
 
     review.act(review.card_id, "suspend")
     assert db.count_cards(book_id, "suspended=1") == 1
@@ -388,7 +388,7 @@ def test_reviewing_one_book_or_section(chat_panel):
     assert tags[0] == " A::Part_I::Chapter_1:_Rinsing_mostly " and set(tags[1:]) == {" A::Part_I "}
     assert db.quiz_cards(reply, 0)[1]["page"] == 0
     other = db.upsert_book("h2", "/b.pdf", "B", 3)["id"]
-    db.add_card_note("basic", {"front": "q", "back": "a"}, db.book_deck(other), book_id=other)
+    db.add_card_note("flashcard", {"front": "q", "back": "a"}, db.book_deck(other), book_id=other)
 
     review = ReviewPanel(db)
     shown = []
@@ -436,7 +436,7 @@ def test_main_window_review_of_the_open_book(pdf_path, tmp_path, monkeypatch):
 
     assert win.review_action.text() == "Review · 2" and win.nav.buttons["review"].badge == "2"
     other = db.upsert_book("h2", "/b.pdf", "B", 3)["id"]
-    db.add_card_note("basic", {"front": "q", "back": "a"}, db.book_deck(other), book_id=other)
+    db.add_card_note("flashcard", {"front": "q", "back": "a"}, db.book_deck(other), book_id=other)
     book_id = win.book_id
 
     # F8 (the toolbar's Review): the Review page narrowed to the open book, which stays open behind it.
@@ -517,7 +517,7 @@ def test_calculator_beside_review(pdf_path, tmp_path, monkeypatch):
     chat = db.create_chat(book_id, "Quiz")
     reply = db.add_message(chat, "assistant", CARDS)
     srs.add_quiz_cards(db, book_id, reply, CARDS)
-    db.add_card_note("basic", {"front": "Loose", "back": "card"}, db.ensure_deck("Loose"))
+    db.add_card_note("flashcard", {"front": "Loose", "back": "card"}, db.ensure_deck("Loose"))
 
     win.calc_action.trigger()  # replaces the chats
     assert win.calc.isVisible() and not win.chat.isVisible() and db.book(book_id)["right_panel"] == "calc"
@@ -575,14 +575,14 @@ def test_calculator_beside_review(pdf_path, tmp_path, monkeypatch):
 TAGGED = r'''```quiz Zorblatts
 {"questions": [
   {"type": "truefalse", "question": "Store it near a window?", "answer": false, "page": 1, "tags": ["Storage Rules", "care::light"]},
-  {"type": "free", "question": "Why rinse?", "answer": "To calibrate.", "tags": "rinsing"}
+  {"type": "written", "question": "Why rinse?", "answer": "To calibrate.", "tags": "rinsing"}
 ]}
 ```'''
 
 REVISED = r'''Here it is, harder.
 ```quiz Zorblatts, harder
 {"revises": "Zorblatts", "questions": [
-  {"type": "free", "question": "Why rinse, and why in tea?", "answer": "To calibrate; tea is neutral.", "revises": 4},
+  {"type": "written", "question": "Why rinse, and why in tea?", "answer": "To calibrate; tea is neutral.", "revises": 4},
   {"type": "flashcard", "question": "Rinse time?", "answer": "41 s", "revises": 1},
   {"type": "truefalse", "question": "Zorblatts have seven legs.", "answer": true}
 ]}
@@ -613,10 +613,10 @@ def test_a_revised_quiz_takes_over_the_cards_it_keeps(tmp_path):
     revision = db.add_message(chat, "assistant", REVISED)
     srs.add_quiz_cards(db, book_id, revision, REVISED, now=NOW + 60)
 
-    free, card, new = db.quiz_cards(revision, 0)
-    assert free["id"] == old[3]["id"] and json.loads(free["data"])["question"] == "Why rinse, and why in tea?"
+    written, card, new = db.quiz_cards(revision, 0)
+    assert written["id"] == old[3]["id"] and json.loads(written["data"])["question"] == "Why rinse, and why in tea?"
     assert card["id"] == old[0]["id"] and card["reps"] == 1 and len(db.reviews(card["id"])) == 1
-    assert db.card_note(card["note_id"])["kind"] == "basic" and card["title"] == "Zorblatts, harder"
+    assert db.card_note(card["note_id"])["kind"] == "flashcard" and card["title"] == "Zorblatts, harder"
     assert new["reps"] == 0 and new["id"] not in [c["id"] for c in old]
     # The old quiz keeps only its reviewed card that wasn't carried over.
     assert [c["id"] for c in db.quiz_cards(reply, 0)] == [old[1]["id"]] and db.card(old[2]["id"]) is None
@@ -645,7 +645,7 @@ def test_browser_sidebar_orders_and_filters_tags(chat_panel):
     _, _, db, book_id = chat_panel
     deck = db.book_deck(book_id)
     for tag, page in (("A::Ch_10::Late_part", 5), ("A::Ch_2", 1), ("zebra", None), ("apple", None)):
-        db.add_card_note("basic", {"front": tag, "back": "x"}, deck, tags=[tag], book_id=book_id, page=page)
+        db.add_card_note("flashcard", {"front": tag, "back": "x"}, deck, tags=[tag], book_id=book_id, page=page)
     bar = Sidebar(db)
     bar.refresh()
     tags = next(bar.topLevelItem(i) for i in range(bar.topLevelItemCount()) if bar.topLevelItem(i).text(0) == "Tags")

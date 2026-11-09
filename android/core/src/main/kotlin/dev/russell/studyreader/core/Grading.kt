@@ -29,7 +29,7 @@ object Grading {
      * {"choice": i} | {"value": bool} | {"latex": s} | {"rating": n}.
      *
      * Throws [AnswerError] for input that can't be graded as entered, and IllegalArgumentException where the
-     * desktop raises ValueError (free responses, which Claude grades; unreadable expected answers), KeyError
+     * desktop raises ValueError (written answers, which Claude grades; unreadable expected answers), KeyError
      * or TypeError (malformed questions). An expected answer beyond the double range throws
      * ArithmeticException (the desktop's uncaught OverflowError); a typed answer beyond it is an AnswerError.
      */
@@ -83,7 +83,7 @@ object Grading {
                 return if (isClose(given, expected, tol + 1e-12)) "correct" else "incorrect"
             }
         }
-        throw IllegalArgumentException("free responses are graded by Claude")
+        throw IllegalArgumentException("written answers are graded by Claude")
     }
 
     /**

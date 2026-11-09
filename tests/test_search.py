@@ -21,14 +21,14 @@ def deck(tmp_path):
         for c in db.note_cards(note):
             cards[f"{name}{c['ord'] or ''}"] = c["id"]
 
-    add("coulomb", "basic", {"front": "Coulomb's law", "back": "F = kq1q2/r^2"}, physics,
+    add("coulomb", "flashcard", {"front": "Coulomb's law", "back": "F = kq1q2/r^2"}, physics,
         tags=["physics::em", "exam"])
     add("gauss", "cloze", {"text": "Gauss: flux = {{c1::Q/eps0}} and {{c2::closed surface}}"}, physics,
         tags=["physics"])
-    add("curl", "reverse", {"front": "curl of a gradient", "back": "zero"}, math, tags=["Calc_3"], created=NOW)
-    add("zorb", "quiz", {"type": "choice", "question": "How many legs has a zorblatt?", "choices": ["5", "7"],
+    add("curl", "reversed", {"front": "curl of a gradient", "back": "zero"}, math, tags=["Calc_3"], created=NOW)
+    add("zorb", "choice", {"type": "choice", "question": "How many legs has a zorblatt?", "choices": ["5", "7"],
                          "answer": 1}, math, book=book_id)
-    add("star", "basic", {"front": "What is 5*3 in 100% terms?", "back": "15"}, math)
+    add("star", "flashcard", {"front": "What is 5*3 in 100% terms?", "back": "15"}, math)
     return db, cards, book_id
 
 
@@ -83,9 +83,15 @@ def test_deck_and_tag(deck):
 
 def test_kinds_types_books_flags(deck):
     db, cards, book_id = deck
-    assert find(db, "note:cloze") == ids(cards, "gauss", "gauss1")
-    assert find(db, "type:flashcard") == ids(cards, "coulomb", "curl", "curl1", "star")
-    assert find(db, "type:choice") == ids(cards, "zorb")
+    assert find(db, "type:cloze") == ids(cards, "gauss", "gauss1")
+    assert find(db, "type:flashcard") == ids(cards, "coulomb", "star")  # one-sided only
+    assert find(db, "type:reversed") == ids(cards, "curl", "curl1")
+    assert find(db, "type:choice") == ids(cards, "zorb") and find(db, "type:written") == set()
+    # Older names still work: note: for type:, the kinds basic, reverse and quiz, and free.
+    assert find(db, "note:cloze") == find(db, "type:cloze")
+    assert find(db, "note:basic") == find(db, "type:flashcard") and find(db, "note:reverse") == find(db, "type:reversed")
+    assert find(db, "note:quiz") == ids(cards, "zorb") and find(db, "type:free") == set()
+    assert find(db, "type:flashcard or type:reversed") == ids(cards, "coulomb", "star", "curl", "curl1")
     assert find(db, "book:zorblatt") == ids(cards, "zorb") and find(db, "book:any") == ids(cards, "zorb")
     assert find(db, "book:none") == set(cards.values()) - ids(cards, "zorb")
     assert find(db, "-book:zorblatt") == set(cards.values()) - ids(cards, "zorb")

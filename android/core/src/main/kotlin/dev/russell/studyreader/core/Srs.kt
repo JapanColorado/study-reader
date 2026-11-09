@@ -3,6 +3,7 @@ package dev.russell.studyreader.core
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import java.time.Instant
 import java.time.LocalDate
@@ -278,12 +279,16 @@ class Srs(val db: Sql, val zone: ZoneId = ZoneId.systemDefault(), val fuzz: Bool
         val variant = card.str("variant")
         if (variant.isNotBlank()) {
             val v = Json.parseToJsonElement(variant).jsonObject
-            if (v["skip"]?.toString() != "true") return v
+            if (v["skip"]?.toString() != "true") return current(v)
         }
-        return Json.parseToJsonElement(card.str("data")).jsonObject
+        return ownQuestion(card)
     }
 
-    fun ownQuestion(card: Row): JsonObject = Json.parseToJsonElement(card.str("data")).jsonObject
+    fun ownQuestion(card: Row): JsonObject = current(Json.parseToJsonElement(card.str("data")).jsonObject)
+
+    /** A question in today's terms: a snapshot from an older desktop still calls written answers "free". */
+    private fun current(q: JsonObject): JsonObject =
+        if ((q["type"] as? JsonPrimitive)?.content == "free") JsonObject(q + ("type" to JsonPrimitive("written"))) else q
 
     private fun fsrsCard(card: Row, now: Double): FsrsCard {
         val raw = card.str("fsrs")

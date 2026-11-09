@@ -6,7 +6,7 @@ TODAY = srs.day_start(NOW) + 3600  # an hour into today's review day, before NOW
 
 
 def card(db, deck, front="Q", book_id=None, **schedule):
-    note = db.add_card_note("basic", {"front": front, "back": "A"}, db.ensure_deck(deck), book_id=book_id, now=NOW - 40 * DAY)
+    note = db.add_card_note("flashcard", {"front": front, "back": "A"}, db.ensure_deck(deck), book_id=book_id, now=NOW - 40 * DAY)
     (c,) = db.note_cards(note)
     if schedule:
         db.update_card(c["id"], **schedule)

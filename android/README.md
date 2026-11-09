@@ -1,10 +1,10 @@
 # Study Review (Android)
 
 A phone companion to Study Reader for reviewing your cards anywhere. It shows the same review
-screen as the desktop's Review panel: decks, books and their sections with due and new counts,
-then one card at a time. Every question type works: multiple choice, true/false, numeric (with
-MathLive's math keyboard, graded like the desktop), flashcards, cloze, image occlusion and free
-responses (self-rated). Cards are scheduled with FSRS using your parameters, desired retention
+screen as the desktop's Review page: decks, books and their sections with due and new counts,
+then one card at a time. Every card type works: flashcards (one-way or both ways), cloze, image
+occlusion, multiple choice, true/false, numeric (with MathLive's math keyboard, graded like the
+desktop) and written answers (self-rated). Cards are scheduled with FSRS using your parameters, desired retention
 and new-cards-a-day limit. XP, combos, the daily goal, streaks, streak freezes and achievements
 work as on the desktop and add up with it. During review you can skip, **Flag** (Anki's seven
 colors), **Bury** (until tomorrow) or **Suspend** a card. A daily reminder (Settings) notifies you

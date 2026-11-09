@@ -41,7 +41,7 @@ QUESTIONS = [
     {"type": "choice", "question": "How many legs?", "choices": ["Six", "Seven"], "answer": 1},
     {"type": "truefalse", "question": "Near a window?", "answer": False},
     {"type": "numeric", "question": "Rinse time?", "answer": "41", "unit": "s"},
-    {"type": "free", "question": "Why rinse?", "answer": "To calibrate.", "rubric": "tea"},
+    {"type": "written", "question": "Why rinse?", "answer": "To calibrate.", "rubric": "tea"},
     {"type": "flashcard", "question": "Front", "answer": "Back"},
 ]
 
@@ -63,11 +63,11 @@ for b, title in enumerate(["The Zorblatt Manual", "Marmalade: A History"]):
     srs.learn_toc(db, book_id, toc)
     books.append(book_id)
 
-# A user deck tree with basic notes, outside the books.
+# A user deck tree of flashcards, outside the books.
 for name in ("Languages::Japanese::Kanji", "Languages::Japanese::Vocab", "Languages::Spanish", "Misc"):
     deck = db.ensure_deck(name)
     for i in range(5):
-        db.add_card_note("basic", {"front": f"{name} {i}", "back": "x"}, deck, tags=["vocab"] if "Vocab" in name else [],
+        db.add_card_note("flashcard", {"front": f"{name} {i}", "back": "x"}, deck, tags=["vocab"] if "Vocab" in name else [],
                          now=NOW - (30 - i) * DAY)
 
 # A review history: some cards reviewed over the last weeks, a few suspended, one flagged.

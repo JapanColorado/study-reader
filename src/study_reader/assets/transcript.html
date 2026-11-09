@@ -294,7 +294,7 @@ document.addEventListener("click", ev => {
 document.addEventListener("keydown", ev => {
   if (ev.target.matches && ev.target.matches(".quiz textarea") && ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) {
     ev.preventDefault();
-    submitQuiz(ev.target.closest(".q"), "free");
+    submitQuiz(ev.target.closest(".q"), "written");
   }
 });
 document.addEventListener("input", ev => {

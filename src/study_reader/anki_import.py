@@ -2,9 +2,9 @@
 brings its notes, cards, schedules, review history, media and FSRS parameters into the app's
 decks. Anki itself is never written to. Qt-free.
 
-Note types map onto cardmodel's kinds by their fields: cloze types (and Cloze Overlapping) to
-cloze notes, image occlusion to occlusion notes, Front/Back types to basic (or reverse, with two
-templates), anything else to a basic note made from its fields. Field HTML becomes Markdown
+Anki's note types map onto card types (cardmodel.TYPES) by their fields: cloze types (and Cloze
+Overlapping) to cloze, image occlusion to occlusion, Front/Back types to flashcard (or reversed,
+with two templates), anything else to a flashcard made from its fields. Field HTML becomes Markdown
 with inline HTML (to_markdown)."""
 
 from __future__ import annotations
@@ -242,13 +242,13 @@ class NoteType:
             return "cloze"
         if ("front" in names and "back" in names and len(self.qfmts) == 2
                 and "{{front}}" in self.qfmts[0].lower() and "{{back}}" in self.qfmts[1].lower()):
-            return "reverse"
-        return "basic"
+            return "reversed"
+        return "flashcard"
 
     @property
     def generic(self) -> bool:
         """Mapped by the fallback (first field front, the rest back)."""
-        return self.kind == "basic" and "front" not in self.lower
+        return self.kind == "flashcard" and "front" not in self.lower
 
 
 def _join(*parts: str) -> str:
@@ -285,7 +285,7 @@ def note_fields(nt: NoteType, values: list[str]) -> tuple[str, dict]:
                       "extra": _join(md("back extra"), md("extra"), md("comments"), source)}
     texts = [to_markdown(v) for v in values]
     filled = [t for t in texts if t]
-    return "basic", {"front": filled[0] if filled else "", "back": _join(*filled[1:]), "extra": ""}
+    return "flashcard", {"front": filled[0] if filled else "", "back": _join(*filled[1:]), "extra": ""}
 
 
 # -- HTML to Markdown ----------------------------------------------------------------------

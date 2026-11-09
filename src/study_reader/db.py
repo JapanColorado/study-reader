@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS quiz_answers (
     response TEXT NOT NULL,         -- JSON: {"choice": i} | {"value": bool} | {"latex": s} | {"text": s}
     status TEXT NOT NULL,           -- 'pending' (Claude is grading) | 'done' | 'error'
     verdict TEXT,                   -- 'correct' | 'partial' | 'incorrect' (NULL if ungraded)
-    feedback TEXT NOT NULL DEFAULT '', -- Claude's, for free responses; the error for 'error'
+    feedback TEXT NOT NULL DEFAULT '', -- Claude's, for written answers; the error for 'error'
     created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS notes (
@@ -94,10 +94,12 @@ CREATE TABLE IF NOT EXISTS decks (
     name TEXT UNIQUE NOT NULL,      -- full path, levels joined by '::' (as in Anki); parents have rows too
     created_at REAL NOT NULL
 );
+-- The fields and tags of one or more cards (a cloze's deletions, a reversed flashcard's sides):
+-- never shown as such, a card's type is its row's kind.
 CREATE TABLE IF NOT EXISTS card_notes (
     id INTEGER PRIMARY KEY,
-    kind TEXT NOT NULL,             -- 'quiz' | 'basic' | 'reverse' | 'cloze' | 'occlusion' (cardmodel.py)
-    fields TEXT NOT NULL,           -- JSON object; for 'quiz' the question as quiz.py parses it (never a flashcard)
+    kind TEXT NOT NULL,             -- the card type, cardmodel.TYPES
+    fields TEXT NOT NULL,           -- JSON object (cardmodel.py); for question types the question as quiz.py parses it
     tags TEXT NOT NULL DEFAULT '',  -- ' tag1 tag2 ' (cardmodel.join_tags)
     sort_text TEXT NOT NULL DEFAULT '',   -- plain text of the first field: the browser's Question column
     search_text TEXT NOT NULL DEFAULT '', -- plain text of every field, for search
@@ -305,14 +307,7 @@ class Database:
         self.conn.execute("DROP TABLE IF EXISTS card_passages")
         self.conn.execute("DROP TABLE IF EXISTS conversions")
         self.conn.execute("DELETE FROM settings WHERE key='convert_instructions'")
-        # Flashcards were once quiz notes too; they are Basic notes now.
-        for r in self.conn.execute("SELECT id, fields FROM card_notes "
-                                   "WHERE kind='quiz' AND json_extract(fields, '$.type')='flashcard'").fetchall():
-            kind, fields = cardmodel.note_for_question(json.loads(r["fields"]))
-            try:
-                self.update_card_note(r["id"], fields, kind=kind)
-            except cardmodel.NoteError:
-                pass
+        self._migrate_card_types()
         # Section tags were once made from contents titles padded with NULs, which the review
         # panel's section list couldn't hand back intact.
         padded = [r["id"] for r in self.conn.execute(
@@ -330,8 +325,44 @@ class Database:
             if data != r["data"]:
                 self.conn.execute("UPDATE cards SET data=? WHERE id=?", (data, r["id"]))
 
+    def _migrate_card_types(self) -> None:
+        """Card types were once kinds of notes: basic, reverse and quiz (every answered question,
+        whatever its type; before that flashcards too), and written answers were "free"
+        responses. Rows and cards keep their ids, schedules and times."""
+        self.conn.execute("UPDATE card_notes SET kind='flashcard' WHERE kind='basic'")
+        self.conn.execute("UPDATE card_notes SET kind='reversed' WHERE kind='reverse'")
+        for r in self.conn.execute("SELECT id, fields FROM card_notes WHERE kind='quiz'").fetchall():
+            q = json.loads(r["fields"])
+            if q.get("type") == "free":
+                q["type"] = "written"
+            if q.get("type") not in (*cardmodel.QUESTION_TYPES, "flashcard"):
+                q["type"] = "written"
+            kind, fields = cardmodel.card_fields(q)
+            self.conn.execute(
+                "UPDATE card_notes SET kind=?, fields=?, sort_text=?, search_text=? WHERE id=?",
+                (kind, cardmodel.dumps(fields), cardmodel.sort_text(kind, fields), cardmodel.search_text(kind, fields),
+                 r["id"]),
+            )
+            for c in self.conn.execute("SELECT id, ord, data FROM cards WHERE note_id=?", (r["id"],)).fetchall():
+                data = cardmodel.dumps(cardmodel.card_data(kind, fields, c["ord"]))
+                if data != c["data"]:
+                    self.conn.execute("UPDATE cards SET data=? WHERE id=?", (data, c["id"]))
+        for r in self.conn.execute("SELECT id, data, variant FROM cards WHERE variant LIKE '%\"free\"%' "
+                                   "OR data LIKE '%\"free\"%'").fetchall():
+            change = {}
+            for col in ("data", "variant"):
+                try:
+                    q = json.loads(r[col]) if r[col] else None
+                except ValueError:
+                    continue
+                if isinstance(q, dict) and q.get("type") == "free":
+                    change[col] = cardmodel.dumps({**q, "type": "written"})
+            if change:
+                self.conn.execute(f"UPDATE cards SET {', '.join(f'{k}=?' for k in change)} WHERE id=?",
+                                  (*change.values(), r["id"]))
+
     def _migrate_cards_to_notes(self) -> None:
-        """Cards from before decks and notes: each becomes a quiz note in its book's deck. The
+        """Cards from before decks and notes: each becomes a 'quiz' note in its book's deck. The
         table is rebuilt (book_id and the quiz position become optional), so foreign keys are
         off meanwhile, or dropping the old table would take the review log with it."""
         self.conn.commit()
@@ -346,7 +377,7 @@ class Database:
                 for c in self.conn.execute("SELECT * FROM cards ORDER BY id").fetchall():
                     data = json.loads(c["data"])
                     deck_id = self.book_deck(c["book_id"])
-                    note_id = self._insert_note("quiz", data, "", c["created_at"])
+                    note_id = self._insert_note("quiz", data, "", c["created_at"])  # _migrate_card_types sorts it
                     stability, difficulty, last_review = _fsrs_columns(c["fsrs"])
                     self.conn.execute(
                         "INSERT INTO cards_new (id, note_id, ord, deck_id, book_id, message_id, quiz, question, title, "
@@ -827,7 +858,7 @@ class Database:
         """A new card for a quiz question, in the book's deck; None if the question has one already."""
         if message_id is not None and self.card_for(message_id, quiz, question) is not None:
             return None
-        kind, fields = cardmodel.note_for_question(json.loads(data))
+        kind, fields = cardmodel.card_fields(json.loads(data))
         with self.conn:
             deck_id = self.book_deck(book_id)
             note_id = self._insert_note(kind, fields, cardmodel.join_tags(tags), now)
@@ -958,7 +989,7 @@ class Database:
         ).fetchone() for chunk in _chunks(list(note_ids)))
 
     def note_ids(self, card_ids) -> list[int]:
-        """The notes of these cards."""
+        """The card_notes ids of these cards."""
         out: list[int] = []
         for chunk in _chunks(list(card_ids)):
             out += [r[0] for r in self.conn.execute(

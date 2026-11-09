@@ -9,7 +9,7 @@ NOW = datetime(2026, 11, 2, 15, 0).timestamp()  # a Monday afternoon
 
 def _card(db, deck, book_id=None, due=None):
     """A basic note's card; with `due`, a review card falling due then."""
-    note = db.add_card_note("basic", {"front": "q", "back": "a"}, deck, book_id=book_id, now=NOW - 86400 * 30)
+    note = db.add_card_note("flashcard", {"front": "q", "back": "a"}, deck, book_id=book_id, now=NOW - 86400 * 30)
     card_id = db.note_cards(note)[0]["id"]
     if due is not None:
         db.update_card(card_id, stage=2, due=due, last_review=NOW - 86400)

@@ -136,7 +136,7 @@ def add_quiz_cards(db: Database, book_id: int, message_id: int, text: str, now: 
             card = db.card_for(old[0], old[1], n - 1) if old and n else None
             if card is not None and db.card_for(message_id, qi, i) is None:
                 db.relink_card(card["id"], message_id, qi, i, q["title"], p, now)
-                kind, fields = cardmodel.note_for_question(question)
+                kind, fields = cardmodel.card_fields(question)
                 note = db.card_note(card["note_id"])
                 db.update_card_note(card["note_id"], fields, [*note["tags"].split(), *tags], kind, now)
                 added.append(card["id"])

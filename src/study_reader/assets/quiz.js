@@ -4,7 +4,7 @@ const LETTERS = "ABCDEFGHIJ";
 const VERDICT_LABELS = { correct: "✓ Correct", partial: "◐ Partly right", incorrect: "✗ Not quite" };
 const RATING_LABELS = { 1: "Again", 2: "Hard", 3: "Good", 4: "Easy" };
 
-// Types the reviewer rates on their own once the answer is showing.
+// Types the reviewer rates on their own once the answer is showing (cardmodel.SELF_RATED).
 const SELF_RATED = ["flashcard", "cloze", "occlusion"];
 
 // A question's Markdown; cards from the browser or Anki (q.html) may hold HTML.
@@ -17,8 +17,8 @@ function tex(latex) {
 // One question; a is its answer ({response, status, verdict, feedback}) once it has one.
 // opts: index (data-q), meta (HTML for the line above it), draft (typed but not submitted),
 // revealed (a flashcard's back is showing; with rate, the rating buttons under it),
-// freeActions (HTML for the row under a free-response box), openAnswer (show a free
-// response's model answer and rubric outright, for rating it yourself, rather than folded away).
+// writtenActions (HTML for the row under a written answer's box), openAnswer (show a written
+// answer's model answer and rubric outright, for rating it yourself, rather than folded away).
 function questionHtml(q, a, opts = {}) {
   const draft = opts.draft || "";
   const showing = !!(a || opts.revealed);  // the answer side of a self-rated card
@@ -59,9 +59,9 @@ function questionHtml(q, a, opts = {}) {
   } else if (a) {
     if (r.text) html += `<div class="given">${esc(r.text)}</div>`;
   } else {
-    html += `<textarea class="free" rows="3" placeholder="Your answer…">${esc(draft)}</textarea>`
-      + (opts.freeActions ?? `<div class="submit-row"><span class="grow">Ctrl+Enter to submit · Claude grades it</span>`
-        + `<button class="qbtn" data-act="free">Submit</button></div>`);
+    html += `<textarea class="written" rows="3" placeholder="Your answer…">${esc(draft)}</textarea>`
+      + (opts.writtenActions ?? `<div class="submit-row"><span class="grow">Ctrl+Enter to submit · Claude grades it</span>`
+        + `<button class="qbtn" data-act="written">Submit</button></div>`);
   }
   if (a) html += resultHtml(q, a, opts);
   return `<div class="q${a ? " answered" : ""}" data-q="${opts.index ?? 0}">${html}</div>`;
@@ -81,12 +81,12 @@ function resultHtml(q, a, opts = {}) {
     html += `<div class="verdict ${a.verdict || "none"}">${VERDICT_LABELS[a.verdict] || "Feedback"}</div>`;
   }
   if (a.feedback) html += `<div class="feedback">${renderMarkdown(a.feedback)}</div>`;
-  if (q.type === "free" && opts.openAnswer) {
+  if (q.type === "written" && opts.openAnswer) {
     if (q.answer) html += `<div class="model-answer"><span class="label">Model answer</span><div>${mdq(q, q.answer)}</div></div>`;
     if (q.rubric) html += `<div class="model-answer"><span class="label">A full answer covers</span><div>${mdq(q, q.rubric)}</div></div>`;
   }
   if (q.explanation) html += `<div class="explain">${mdq(q, q.explanation)}</div>`;
-  if (q.type === "free" && q.answer && !opts.openAnswer) html += `<details><summary>Model answer</summary>${mdq(q, q.answer)}</details>`;
+  if (q.type === "written" && q.answer && !opts.openAnswer) html += `<details><summary>Model answer</summary>${mdq(q, q.answer)}</details>`;
   return html;
 }
 

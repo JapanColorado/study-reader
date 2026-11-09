@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import cardmodel, quiz, search, srs
-from .card_editor import AddDialog, DeckBox, NoteEditor
+from .card_editor import AddDialog, CardEditor, DeckBox
 from .db import Database, media_url
 from .notes import LocalPage
 from .theme import icon, theme
@@ -32,7 +32,7 @@ ASSETS = Path(__file__).parent / "assets"
 COLUMNS = {
     "question": "Question", "answer": "Answer", "deck": "Deck", "due": "Due", "interval": "Interval",
     "stability": "Stability", "difficulty": "Difficulty", "retrievability": "Retrievability", "reps": "Reviews",
-    "lapses": "Lapses", "type": "Type", "note": "Note", "tags": "Tags", "book": "Book", "added": "Created",
+    "lapses": "Lapses", "type": "Type", "tags": "Tags", "book": "Book", "added": "Created",
     "modified": "Modified", "reviewed": "Last review",
 }
 DEFAULT_COLUMNS = ["question", "answer", "deck", "due", "interval", "retrievability", "added"]
@@ -44,8 +44,8 @@ FLEX_COLUMNS = {"question": (3, 140, None), "answer": (2, 100, None), "deck": (1
 MIN_SECTION = 40
 SAMPLES = {
     "due": ["(2026-12-31)"], "interval": ["11mo", "10.5y"], "stability": ["11mo", "10.5y"], "difficulty": ["100%"],
-    "retrievability": ["100%"], "reps": ["9999"], "lapses": ["999"], "type": list(search.TYPE_LABELS.values()),
-    "note": list(cardmodel.KIND_LABELS.values()), "added": ["2026-12-31"], "modified": ["2026-12-31"],
+    "retrievability": ["100%"], "reps": ["9999"], "lapses": ["999"], "type": list(cardmodel.TYPE_LABELS.values()),
+    "added": ["2026-12-31"], "modified": ["2026-12-31"],
     "reviewed": ["2026-12-31"],
 }
 # Anki's flag colors.
@@ -78,7 +78,7 @@ def _derived(r: dict) -> dict:
     except ValueError:
         data = {}
     r["answer"] = cardmodel.answer_text(data)[:200] if data else ""
-    r["type"] = search.TYPE_LABELS.get(data.get("type"), "")
+    r["type"] = cardmodel.TYPE_LABELS.get(r["kind"], r["kind"])
     return r
 
 
@@ -196,8 +196,6 @@ class CardTableModel(QAbstractTableModel):
             return f"{recall * 100:.0f}%" if recall is not None else ""
         if key in ("reps", "lapses"):
             return str(r[key])
-        if key == "note":
-            return cardmodel.KIND_LABELS.get(r["kind"], r["kind"])
         if key == "tags":
             return r["tags"].strip()
         if key == "book":
@@ -305,12 +303,9 @@ class Sidebar(QTreeWidget):
                 for k in kids:
                     order(k)
             order(sec)
-        types = section("Card types")
-        for kind in cardmodel.KINDS:
-            add(types, cardmodel.KIND_LABELS[kind], f"note:{kind}", f"Types/note/{kind}")
-        for t, label in search.TYPE_LABELS.items():
-            if t not in cardmodel.KINDS:  # cloze and occlusion are listed as note types
-                add(types, f"Question: {label}", f"type:{t}", f"Types/type/{t}")
+        types = section("Types")
+        for t in cardmodel.TYPES:
+            add(types, cardmodel.TYPE_LABELS[t], f"type:{t}", f"Types/{t}")
         self._restore_expanded()
         self.filter_tags(self._tag_filter)
 
@@ -489,15 +484,15 @@ class CardBrowser(QMainWindow):
         self.table.selectionModel().currentRowChanged.connect(self._current_changed)
         self.table.doubleClicked.connect(lambda _: self.editor_focus())
 
-        self.editor = NoteEditor(db)
+        self.editor = CardEditor(db)
         self.editor.edited.connect(lambda: self._save_timer.start())
         self.editor_status = QLabel()
         self.editor_status.setWordWrap(True)
         self.editor_status.setProperty("role", "muted")
         self._save_timer = QTimer(self, singleShot=True, interval=700)
-        # Edits that couldn't be saved yet (a question switched to a type whose answer isn't
-        # filled in yet), by note id: (the note's updated_at then, editor draft, why not), shown
-        # again when the note is, rather than the stored version.
+        # Edits that couldn't be saved yet (a card switched to a type whose answer isn't filled
+        # in yet), by note id: (its updated_at then, editor draft, why not), shown again when
+        # the card (or a sibling) is, rather than the stored version.
         self._drafts: dict[int, tuple[float, dict, str]] = {}
         self._save_timer.timeout.connect(self.save_note)
         self.card_line = QLabel()
@@ -720,11 +715,11 @@ class CardBrowser(QMainWindow):
             act(cards, "Open in book", self.open_in_book, "Ctrl+Shift+O"),
             act(cards, "Delete…", self.delete, "Ctrl+Delete"),
         ]
-        notes = bar.addMenu("&Notes")
+        cards.addSeparator()
         self.selection_actions += [
-            act(notes, "Add tags…", self.add_tags, "Ctrl+Shift+A"),
-            act(notes, "Remove tags…", self.remove_tags, "Ctrl+Alt+Shift+A"),
-            act(notes, "Toggle mark", self.toggle_mark, "Ctrl+K"),
+            act(cards, "Add tags…", self.add_tags, "Ctrl+Shift+A"),
+            act(cards, "Remove tags…", self.remove_tags, "Ctrl+Alt+Shift+A"),
+            act(cards, "Toggle mark", self.toggle_mark, "Ctrl+K"),
         ]
         go = bar.addMenu("&Go")
         act(go, "Previous card", lambda: self._step(-1), "Ctrl+P")
@@ -896,10 +891,10 @@ class CardBrowser(QMainWindow):
             self.card_line.setText("")
             return
         deck = self.db.deck(card["deck_id"])
-        note_cards = len(self.db.note_cards(card["note_id"]))
+        note = self.db.card_note(card["note_id"])
         parts = [deck["name"] if deck else ""]
-        if note_cards > 1:
-            parts.append(f"card {card['ord'] + 1} of {note_cards} from this note")
+        if note is not None:
+            parts.append(sibling_text(note["kind"], card["ord"], [c["ord"] for c in self.db.note_cards(note["id"])]))
         if card["book_id"]:
             book = self.db.book(card["book_id"])
             if book:
@@ -919,7 +914,7 @@ class CardBrowser(QMainWindow):
 
     # -- editing -------------------------------------------------------------------------
     def save_note(self) -> None:
-        """Store pending edits to the note in the editor."""
+        """Store pending edits to the card in the editor (and its siblings)."""
         if not self._save_timer.isActive() or self.editor.note_id is None:
             self._save_timer.stop()
             return
@@ -934,8 +929,8 @@ class CardBrowser(QMainWindow):
             self._show_not_saved(str(e))
             return
         self._drafts.pop(self.editor.note_id, None)
-        self.editor_status.setText("Saved.")
         cards = self.db.note_cards(self.editor.note_id)
+        self.editor_status.setText(f"Saved{sibling_edit_text(self.editor.kind, len(cards))}.")
         self.model.invalidate([c["id"] for c in cards])
         card = self.db.card(self._card_id) if self._card_id is not None else None
         if card is not None:
@@ -1013,19 +1008,29 @@ class CardBrowser(QMainWindow):
         dialog.setMinimumWidth(380)
         return cardmodel.split_tags(edit.text()) if dialog.exec() else []
 
+    def _cards_text(self, ids: list[int]) -> str:
+        """'3 cards', plus the cards that share their text (and so their tags) when there are any."""
+        notes = self.db.note_ids(ids)
+        siblings = self.db.conn.execute(
+            f"SELECT COUNT(*) FROM cards WHERE note_id IN ({','.join('?' * len(notes))})", notes).fetchone()[0] - len(ids)
+        text = f"{len(ids)} card{'s' * (len(ids) != 1)}"
+        return text + (f" (and {siblings} more made from the same text)" if siblings > 0 else "")
+
     def add_tags(self) -> None:
         ids = self.selected_ids()
-        tags = self._ask_tags("Add tags", f"Tags to add to the notes of {len(ids)} card(s):") if ids else []
+        tags = self._ask_tags("Add tags", f"Tags to add to {self._cards_text(ids)}:") if ids else []
         if tags:
             self.db.add_tags(self.db.note_ids(ids), tags)
             self._changed(refresh_sidebar=True)
+            self.status.setText(f"Added tags to {self._cards_text(ids)}.")
 
     def remove_tags(self) -> None:
         ids = self.selected_ids()
-        tags = self._ask_tags("Remove tags", f"Tags to remove from the notes of {len(ids)} card(s):") if ids else []
+        tags = self._ask_tags("Remove tags", f"Tags to remove from {self._cards_text(ids)}:") if ids else []
         if tags:
             self.db.remove_tags(self.db.note_ids(ids), tags)
             self._changed(refresh_sidebar=True)
+            self.status.setText(f"Removed tags from {self._cards_text(ids)}.")
 
     def toggle_mark(self) -> None:
         ids = self.selected_ids()
@@ -1110,7 +1115,7 @@ class CardBrowser(QMainWindow):
             [r[0] for r in self.db.conn.execute("SELECT id FROM card_notes")]
         changed, failed = find_replace(self.db, notes, dialog.find.text(), dialog.replace.text(),
                                        dialog.field.currentData(), dialog.regex.isChecked(), dialog.case.isChecked())
-        msg = f"Changed {changed} note{'s' * (changed != 1)}."
+        msg = f"Changed {changed} card{'s' * (changed != 1)}."
         if failed:
             msg += f" {failed} couldn't be changed (the result wasn't a valid card)."
         self.status.setText(msg)
@@ -1156,7 +1161,7 @@ class CardBrowser(QMainWindow):
     def _tag_menu(self, tag: str, pos) -> None:
         menu = QMenu(self)
         menu.addAction("Rename…").triggered.connect(lambda: self.rename_tag(tag))
-        menu.addAction(icon("trash", "muted"), "Remove from all notes…").triggered.connect(lambda: self.delete_tag(tag))
+        menu.addAction(icon("trash", "muted"), "Remove from all cards…").triggered.connect(lambda: self.delete_tag(tag))
         menu.exec(pos)
 
     def rename_tag(self, tag: str) -> None:
@@ -1167,7 +1172,7 @@ class CardBrowser(QMainWindow):
             self._changed(refresh_sidebar=True)
 
     def delete_tag(self, tag: str) -> None:
-        if QMessageBox.question(self, "Remove tag", f"Remove the tag “{tag}” (and tags under it) from every note?") \
+        if QMessageBox.question(self, "Remove tag", f"Remove the tag “{tag}” (and tags under it) from every card?") \
                 == QMessageBox.StandardButton.Yes:
             self.db.rename_tag(tag, "")
             self._changed(refresh_sidebar=True)
@@ -1175,6 +1180,29 @@ class CardBrowser(QMainWindow):
     def closeEvent(self, event) -> None:
         self.save_note()
         super().closeEvent(event)
+
+
+def sibling_text(kind: str, ord: int, ords: list[int]) -> str:
+    """Which of the cards made from the same text a card is ("Reverse side", "Cloze 2 of 3"),
+    or '' for a card on its own."""
+    if len(ords) < 2:
+        return ""
+    if kind == "reversed":
+        return "Reverse side" if ord == 1 else "Forward side"
+    what = {"cloze": "Cloze", "occlusion": "Shape"}.get(kind, "Card")
+    if sorted(ords) == list(range(len(ords))):
+        return f"{what} {ord + 1} of {len(ords)}"
+    return f"{what} {ord + 1} (one of {len(ords)})"
+
+
+def sibling_edit_text(kind: str, count: int) -> str:
+    """What else an edit to one of `count` cards made from the same text changes, or ''."""
+    if count < 2:
+        return ""
+    if kind == "reversed":
+        return " (both sides)"
+    what = {"cloze": "cloze", "occlusion": "image occlusion"}.get(kind, "")
+    return f" (this changes its other {what + ' ' if what else ''}card{'s' * (count > 2)} too)"
 
 
 # -- find and replace ----------------------------------------------------------------------
@@ -1185,8 +1213,9 @@ FIND_FIELDS = [("", "All fields"), ("front", "Front"), ("back", "Back"), ("text"
 
 def find_replace(db: Database, note_ids, find: str, replace: str, field: str = "", regex: bool = False,
                  case: bool = False) -> tuple[int, int]:
-    """Replace text in the notes' fields (one field, or all text fields). Returns (notes
-    changed, notes that would no longer make a valid card and were left alone)."""
+    """Replace text in the fields of these card_notes rows (one field, or all text fields).
+    Returns (cards changed, cards that would no longer be valid and were left alone), counting
+    every card that shares the text."""
     if not find:
         return 0, 0
     pattern = re.compile(find if regex else re.escape(find), 0 if case else re.IGNORECASE)
@@ -1210,12 +1239,12 @@ def find_replace(db: Database, note_ids, find: str, replace: str, field: str = "
         if new == fields:
             continue
         try:
-            if note["kind"] == "quiz":
+            if note["kind"] in cardmodel.QUESTION_TYPES:
                 new = quiz.validate_question(new)
             db.update_card_note(note_id, new)
-            changed += 1
+            changed += len(db.note_cards(note_id))
         except (cardmodel.NoteError, ValueError, TypeError, KeyError):
-            failed += 1
+            failed += len(db.note_cards(note_id))
     return changed, failed
 
 
@@ -1229,7 +1258,7 @@ class FindReplaceDialog(QDialog):
         self.field = QComboBox()
         for key, label in FIND_FIELDS:
             self.field.addItem(label, key)
-        self.selected_only = QCheckBox("Selected cards' notes only")
+        self.selected_only = QCheckBox("Selected cards only (and those sharing their text)")
         self.selected_only.setChecked(has_selection)
         self.selected_only.setEnabled(has_selection)
         self.regex = QCheckBox("Regular expression")
@@ -1267,8 +1296,9 @@ class CardInfoDialog(QDialog):
         rows = [
             ("Question", note["sort_text"][:160] if note else ""),
             ("Deck", deck["name"] if deck else ""),
-            ("Note type", cardmodel.KIND_LABELS.get(note["kind"], "") if note else ""),
-            ("Question type", search.TYPE_LABELS.get(json.loads(card["data"]).get("type"), "")),
+            ("Type", cardmodel.TYPE_LABELS.get(note["kind"], "") if note else ""),
+            ("Card", sibling_text(note["kind"], card["ord"], [c["ord"] for c in db.note_cards(note["id"])])
+             if note else ""),
             ("Created", _date(card["created_at"])),
             ("First review", _date(reviews[0]["reviewed_at"]) if reviews else ""),
             ("Latest review", _date(reviews[-1]["reviewed_at"]) if reviews else ""),
@@ -1282,7 +1312,6 @@ class CardInfoDialog(QDialog):
             ("Average time", f"{sum(timed) / len(timed) / 1000:.1f} s" if timed else ""),
             ("Total time", f"{total_ms / 60000:.1f} min" if total_ms else ""),
             ("Card ID", str(card["id"]) + (f" (Anki {card['anki_id']})" if card["anki_id"] else "")),
-            ("Note ID", str(card["note_id"])),
         ]
         form = QFormLayout()
         for label, value in rows:

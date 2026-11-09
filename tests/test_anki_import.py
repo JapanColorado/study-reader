@@ -164,8 +164,8 @@ def test_reading_a_collection_copy(anki, tmp_path, monkeypatch):
         assert presets[1]["parameters"] == pytest.approx(W6, abs=1e-4) and presets[1]["desired_retention"] == 0.85
         assert len(presets[2]["parameters"]) == 19
         kinds = {nt.name: nt.kind for nt in col.note_types().values()}
-        assert kinds == {"Basic": "basic", "Reversible": "reverse", "Cloze": "cloze", "Image Occlusion": "occlusion",
-                         "Japanese sentences": "basic", "BasicSource": "basic"}
+        assert kinds == {"Basic": "flashcard", "Reversible": "reversed", "Cloze": "cloze", "Image Occlusion": "occlusion",
+                         "Japanese sentences": "flashcard", "BasicSource": "flashcard"}
         tmp = col._tmp
     assert not tmp.exists()
 
@@ -182,7 +182,7 @@ def test_migrating_notes_cards_and_schedules(anki, db, tmp_path):
 
     basic = db.card_by_anki_id(1_700_000_000_101)
     note = db.card_note(basic["note_id"])
-    assert note["kind"] == "basic" and note["tags"] == " math::arith marked "
+    assert note["kind"] == "flashcard" and note["tags"] == " math::arith marked "
     assert json.loads(note["fields"])["front"] == "What is **2+2**?"
     assert db.deck(basic["deck_id"])["name"] == "Physics::Lesson 1"
     assert basic["stage"] == 2 and basic["stability"] == 12.5 and basic["difficulty"] == 4.2

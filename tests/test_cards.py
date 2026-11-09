@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from study_reader import cardmodel, srs
+from study_reader import cardmodel, search, srs, variants
 from study_reader.db import Database
 
 from test_srs import NOW, setup
@@ -42,8 +42,8 @@ def test_math_spans_hold_escaped_dollars():
 
 
 def test_reverse_occlusion_and_tags():
-    assert cardmodel.card_ords("reverse", {"front": "a", "back": "b"}) == [0, 1]
-    back = cardmodel.card_data("reverse", {"front": "a", "back": "b"}, 1)
+    assert cardmodel.card_ords("reversed", {"front": "a", "back": "b"}) == [0, 1]
+    back = cardmodel.card_data("reversed", {"front": "a", "back": "b"}, 1)
     assert (back["question"], back["answer"]) == ("b", "a")
     shapes = cardmodel.parse_occlusion(
         "{{c1::image-occlusion:rect:left=.1:top=.2:width=.3:height=.1:oi=1}}<br>"
@@ -52,7 +52,7 @@ def test_reverse_occlusion_and_tags():
     assert shapes[1]["points"] == [[0.1, 0.2], [0.3, 0.4], [0.5, 0.1]]
     assert cardmodel.card_ords("occlusion", {"image": "a.png", "shapes": shapes}) == [0, 1]
     assert cardmodel.split_tags("a, b  a  c::d") == ["a", "b", "c::d"] and cardmodel.join_tags(["a", "b"]) == " a b "
-    assert cardmodel.media_files("basic", {"front": '<img src="x.png"> ![](y.jpg)', "back": "![](http://e/z.png)"}) \
+    assert cardmodel.media_files("flashcard", {"front": '<img src="x.png"> ![](y.jpg)', "back": "![](http://e/z.png)"}) \
         == ["x.png", "y.jpg"]
 
 
@@ -93,7 +93,7 @@ def test_quiz_cards_go_into_their_books_deck(tmp_path):
     deck = db.book(book_id)["deck_id"]
     assert db.deck(deck)["name"] == "A" and {db.card(i)["deck_id"] for i in ids} == {deck}
     note = db.card_note(db.card(ids[0])["note_id"])
-    assert note["kind"] == "quiz" and json.loads(note["fields"]) == json.loads(db.card(ids[0])["data"])
+    assert note["kind"] == json.loads(note["fields"])["type"] and json.loads(note["fields"]) == json.loads(db.card(ids[0])["data"])
     # A second book with the same title gets its own deck.
     other = db.upsert_book("h2", "/b.pdf", "A", 3)["id"]
     with db.conn:
@@ -102,7 +102,7 @@ def test_quiz_cards_go_into_their_books_deck(tmp_path):
 
 def test_old_cards_become_notes_in_book_decks(tmp_path):
     """A database from before decks: its cards table is rebuilt; reviews survive; a flashcard
-    becomes a Basic note."""
+    becomes a flashcard."""
     path = tmp_path / "old.db"
     db = Database(path)
     book = db.upsert_book("h", "/a.pdf", "Old book", 3)["id"]
@@ -129,7 +129,7 @@ def test_old_cards_become_notes_in_book_decks(tmp_path):
     card = db.card(7)
     assert card["note_id"] and db.deck(card["deck_id"])["name"] == "Old book" and card["reps"] == 3
     assert (card["stability"], card["difficulty"]) == (9.5, 3.0) and card["last_review"] > 1.7e9
-    assert len(db.reviews(7)) == 1 and db.card_note(card["note_id"])["kind"] == "basic"
+    assert len(db.reviews(7)) == 1 and db.card_note(card["note_id"])["kind"] == "flashcard"
     assert json.loads(card["data"])["type"] == "flashcard" and json.loads(card["data"])["question"] == "F"
     assert db.conn.execute("PRAGMA foreign_key_check").fetchall() == []
     db.delete_card(7)  # the review log follows its card again
@@ -142,7 +142,7 @@ def test_migration_drops_card_passages_and_conversions(tmp_path):
     path = tmp_path / "t.db"
     db = Database(path)
     book = db.upsert_book("h", "/a.pdf", "A", 3)["id"]
-    note = db.add_card_note("basic", {"front": "F", "back": "B"}, db.book_deck(book), book_id=book)
+    note = db.add_card_note("flashcard", {"front": "F", "back": "B"}, db.book_deck(book), book_id=book)
     (card,) = db.note_cards(note)
     srs.review(db, card["id"], 3, now=NOW)
     db.conn.executescript("""
@@ -175,10 +175,78 @@ def test_migration_drops_card_passages_and_conversions(tmp_path):
     Database(path).conn.close()  # opening it again is a no-op
 
 
+def test_old_card_kinds_become_types(tmp_path):
+    """Notes were once basic, reverse and quiz (any answered question; flashcards too, before
+    that), and written answers "free": each becomes its card type, keeping ids, schedules,
+    reviews, times, variants and the cards it had (a reverse side deleted before isn't made)."""
+    path = tmp_path / "t.db"
+    db = Database(path)
+    deck = db.ensure_deck("D")
+
+    def old(kind, fields, ords=(0,), variant=""):
+        """A note and its cards as they were stored: data from the fields as card_data made it then."""
+        note = db.conn.execute("INSERT INTO card_notes (kind, fields, tags, sort_text, search_text, created_at, "
+                               "updated_at) VALUES (?,?,' t ','old','old',1,2)", (kind, json.dumps(fields))).lastrowid
+        for ord in ords:
+            if kind == "quiz":
+                data = dict(fields)
+            else:
+                front, back = (fields["front"], fields["back"]) if ord == 0 else (fields["back"], fields["front"])
+                data = {"type": "flashcard", "question": front, "answer": back, "explanation": "", "html": True}
+            db.conn.execute("INSERT INTO cards (note_id, ord, deck_id, data, variant, due, reps, created_at, updated_at) "
+                            "VALUES (?,?,?,?,?,5,2,1,3)", (note, ord, deck, json.dumps(data), variant))
+        return note
+
+    with db.conn:
+        basic = old("basic", {"front": "F", "back": "B", "extra": ""})
+        reverse = old("reverse", {"front": "Fr", "back": "Bk", "extra": ""}, ords=(0, 1))
+        one_side = old("reverse", {"front": "Lone", "back": "side", "extra": ""})  # its reverse card was deleted
+        choice = old("quiz", {"type": "choice", "question": "Pick", "choices": ["a", "b"], "answer": 1, "explanation": ""})
+        tf = old("quiz", {"type": "truefalse", "question": "True?", "answer": True, "explanation": ""})
+        numeric = old("quiz", {"type": "numeric", "question": "How many?", "answer": 3, "unit": "", "answer_latex": "3",
+                               "explanation": ""}, variant=json.dumps({"type": "numeric", "question": "How many now?",
+                                                                       "answer": 4, "answer_latex": "4"}))
+        free = old("quiz", {"type": "free", "question": "Why tea?", "answer": "Calm.", "rubric": "calm",
+                            "explanation": "", "varies": True},
+                   variant=json.dumps({"type": "free", "question": "Why milk?", "answer": "Fat.", "rubric": ""}))
+        flash = old("quiz", {"type": "flashcard", "question": "Q", "answer": "A", "explanation": "E"})
+        skipped = old("quiz", {"type": "free", "question": "Concept?", "answer": "Idea.", "rubric": "", "explanation": ""},
+                      variant=json.dumps({"skip": True}))
+    reviewed = db.note_cards(free)[0]["id"]
+    with db.conn:
+        db.conn.execute("INSERT INTO reviews (card_id, rating, source, reviewed_at) VALUES (?, 3, 'review', 4)", (reviewed,))
+    db.conn.close()
+
+    for _ in range(2):  # and opening it again changes nothing
+        db = Database(path)
+        kind = lambda n: db.card_note(n)["kind"]
+        fields = lambda n: json.loads(db.card_note(n)["fields"])
+        data = lambda n, i=0: json.loads(db.note_cards(n)[i]["data"])
+        assert [kind(n) for n in (basic, reverse, one_side, choice, tf, numeric, free, flash, skipped)] == [
+            "flashcard", "reversed", "reversed", "choice", "truefalse", "numeric", "written", "flashcard", "written"]
+        assert not db.conn.execute("SELECT 1 FROM card_notes WHERE kind NOT IN (%s)"
+                                   % ",".join("?" * len(cardmodel.TYPES)), cardmodel.TYPES).fetchall()
+        assert [c["ord"] for c in db.note_cards(reverse)] == [0, 1] and [c["ord"] for c in db.note_cards(one_side)] == [0]
+        assert data(reverse, 1)["question"] == "Bk" and data(reverse, 1)["type"] == "flashcard"
+        assert fields(free)["type"] == data(free)["type"] == "written" and fields(free)["varies"] is True
+        assert json.loads(db.note_cards(free)[0]["variant"])["type"] == "written"
+        assert json.loads(db.note_cards(numeric)[0]["variant"])["question"] == "How many now?"
+        assert json.loads(db.note_cards(skipped)[0]["variant"]) == {"skip": True}
+        assert data(numeric) == {**fields(numeric), "type": "numeric"}
+        assert fields(flash) == {"front": "Q", "back": "A", "extra": "E"} and data(flash)["type"] == "flashcard"
+        assert db.card_note(free)["sort_text"] == "Why tea?" and "Calm." in db.card_note(free)["search_text"]
+        card = db.card(reviewed)
+        assert (card["reps"], card["due"], card["updated_at"]) == (2, 5, 3) and len(db.reviews(reviewed)) == 1
+        assert db.card_note(free)["updated_at"] == 2 and db.card_note(free)["tags"] == " t "
+        assert search.card_ids(db, "type:written") == [c["id"] for n in (free, skipped) for c in db.note_cards(n)]
+        assert variants.wants_variant(db.card(reviewed)) and not variants.wants_variant(db.note_cards(skipped)[0])
+        db.conn.close()
+
+
 # -- scheduling ----------------------------------------------------------------------------
 def test_parameters_retention_forget_and_due_dates(db):
     deck = db.ensure_deck("D")
-    note = db.add_card_note("basic", {"front": "f", "back": "b"}, deck, now=NOW)
+    note = db.add_card_note("flashcard", {"front": "f", "back": "b"}, deck, now=NOW)
     (card,) = db.note_cards(note)
     assert srs.desired_retention(db) == 0.9 and len(srs.parameters(db)) == 21
     db.set_setting(srs.RETENTION_SETTING, "0.8")
@@ -203,7 +271,7 @@ def test_parameters_retention_forget_and_due_dates(db):
 
 def test_deck_counts_and_deck_scoped_queue(db):
     a, b = db.ensure_deck("Top::A"), db.ensure_deck("Top::B")
-    db.add_card_note("basic", {"front": "1", "back": "x"}, a, now=NOW)
+    db.add_card_note("flashcard", {"front": "1", "back": "x"}, a, now=NOW)
     db.add_card_note("cloze", {"text": "{{c1::x}} {{c2::y}}"}, b, now=NOW)
     counts = srs.deck_counts(db, NOW)
     top = db.deck_by_name("Top")["id"]
@@ -213,7 +281,7 @@ def test_deck_counts_and_deck_scoped_queue(db):
     assert card["deck_id"] == a
 
 
-def test_flashcards_in_quizzes_are_basic_notes(tmp_path):
+def test_flashcards_in_quizzes_are_flashcards(tmp_path):
     db = Database(tmp_path / "t.db")
     book = db.upsert_book("h", "/a.pdf", "A", 3)["id"]
     chat = db.create_chat(book, "Cards")
@@ -221,20 +289,20 @@ def test_flashcards_in_quizzes_are_basic_notes(tmp_path):
                            '"answer": "B", "explanation": "E"}]\n```')
     (card_id,) = srs.add_quiz_cards(db, book, reply, db.message(reply)["text"], now=NOW)
     note = db.card_note(db.card(card_id)["note_id"])
-    assert note["kind"] == "basic" and json.loads(note["fields"]) == {"front": "F", "back": "B", "extra": "E"}
+    assert note["kind"] == "flashcard" and json.loads(note["fields"]) == {"front": "F", "back": "B", "extra": "E"}
     assert srs.question(db.card(card_id))["type"] == "flashcard" and db.card_for(reply, 0, 0)["id"] == card_id
     with pytest.raises(cardmodel.NoteError):
-        db.add_card_note("quiz", {"type": "flashcard", "question": "F", "answer": "B"}, db.ensure_deck("D"))
+        db.add_card_note("written", {"type": "flashcard", "question": "F", "answer": "B"}, db.ensure_deck("D"))
 
 
 # -- review of cards from no book ----------------------------------------------------------
-def test_reviewing_cloze_and_bookless_free_cards(db, chat_panel):
+def test_reviewing_cloze_and_bookless_written_cards(db, chat_panel):
     from study_reader.review import ReviewPanel
 
     _, worker, _, _ = chat_panel
     deck = db.ensure_deck("Anki::Physics")
     db.add_card_note("cloze", {"text": "{{c1::Gauss}}'s law"}, deck, now=NOW - 10)
-    db.add_card_note("quiz", {"type": "free", "question": "Why?", "answer": "Because.", "explanation": ""}, deck, now=NOW)
+    db.add_card_note("written", {"type": "written", "question": "Why?", "answer": "Because.", "explanation": ""}, deck, now=NOW)
     db.ensure_deck("Elsewhere")
     review = ReviewPanel(db)
     shown = []
@@ -250,21 +318,22 @@ def test_reviewing_cloze_and_bookless_free_cards(db, chat_panel):
     assert shown[-1][1][0]["previews"] and shown[-1][1][0]["answer"]["verdict"] is None
     review.rate(review.card_id, 3)
 
-    free = review.card_id
-    review.check(free, {"text": ""})  # shown without writing an answer
+    written = review.card_id
+    review.check(written, {"text": ""})  # shown without writing an answer
     assert shown[-1][1][0]["previews"] and shown[-1][1][0]["answer"]["verdict"] is None
-    review.rate(free, 3)
-    assert db.reviews(free)[0]["verdict"] is None and not worker.jobs
+    review.rate(written, 3)
+    assert db.reviews(written)[0]["verdict"] is None and not worker.jobs
 
 
 # -- the browser ---------------------------------------------------------------------------
 def test_browser_search_edit_and_bulk_actions(db, chat_panel, monkeypatch):
+    from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QInputDialog, QMessageBox
     from study_reader.browser import CardBrowser, CardInfoDialog, find_replace
 
     _, worker, _, _ = chat_panel
     physics, maths = db.ensure_deck("Physics"), db.ensure_deck("Maths")
-    gauss = db.add_card_note("basic", {"front": "Gauss's law relates?", "back": "flux and charge"}, physics, tags=["em"])
+    gauss = db.add_card_note("flashcard", {"front": "Gauss's law relates?", "back": "flux and charge"}, physics, tags=["em"])
     db.add_card_note("cloze", {"text": "{{c1::Stokes}} and {{c2::Green}}"}, maths)
     browser = CardBrowser(db)
     changes = []
@@ -307,11 +376,32 @@ def test_browser_search_edit_and_bulk_actions(db, chat_panel, monkeypatch):
 
     assert find_replace(db, [gauss], "FLUX", "field") == (1, 0)
     assert json.loads(db.card_note(gauss)["fields"])["back"] == "electric field and enclosed charge"
+
+    # Cards made from the same text: named by their place, and an edit or tags reach them all.
     browser.set_search("Stokes")
+    browser.table.selectRow(1)
+    ord = db.card(browser.model.ids[1])["ord"]
+    assert browser.card_line.text() == f"Maths · Cloze {ord + 1} of 2"
+    browser.editor.fields["text"].setPlainText("{{c1::Stokes}} and {{c2::Green}}'s theorems")
+    browser.save_note()
+    assert "its other cloze card too" in browser.editor_status.text()
+    asked = []
+    monkeypatch.setattr(browser, "_ask_tags", lambda title, label: asked.append(label) or ["vector"])
+    browser.add_tags()
+    assert asked == ["Tags to add to 1 card (and 1 more made from the same text):"]
+    assert browser.status.text() == "Added tags to 1 card (and 1 more made from the same text)."
     browser.table.selectAll()
     browser.delete()
     assert db.count_cards(deck_id=maths) == 0
     browser.sidebar.refresh()
+    sections = {browser.sidebar.topLevelItem(i).text(0): browser.sidebar.topLevelItem(i)
+                for i in range(browser.sidebar.topLevelItemCount())}
+    types = sections["Types"]
+    assert [types.child(i).text(0) for i in range(types.childCount())] == [
+        cardmodel.TYPE_LABELS[t] for t in cardmodel.TYPES]
+    assert types.child(0).data(0, Qt.ItemDataRole.UserRole) == "type:flashcard"
+    menus = [a.text() for a in browser.menuBar().actions()]
+    assert "&Notes" not in menus and "&Cards" in menus
     browser.close()
 
 
@@ -322,21 +412,23 @@ def test_add_dialog_makes_cards(db, chat_panel):
     added = []
     dialog.added.connect(added.append)
     dialog.deck.setCurrentText("New::Deck")
-    dialog.kind.setCurrentIndex(dialog.kind.findData("cloze"))
+    assert [dialog.type.itemData(i) for i in range(dialog.type.count())] == [
+        "flashcard", "reversed", "cloze", "choice", "truefalse", "numeric", "written"]
+    dialog.type.setCurrentIndex(dialog.type.findData("cloze"))
     dialog.editor.fields["text"].setPlainText("The {{c1::mitochondria}} is the {{c2::powerhouse}}")
     dialog.editor.tags.setText("bio")
     dialog.add()
     assert len(db.note_cards(added[0])) == 2 and db.deck_by_name("New::Deck")
     assert dialog.editor.fields["text"].toPlainText() == "" and dialog.editor.tags.text() == "bio"
 
-    dialog.kind.setCurrentIndex(dialog.kind.findData("quiz"))
-    dialog.editor.q_type.setCurrentIndex(dialog.editor.q_type.findData("choice"))
+    dialog.type.setCurrentIndex(dialog.type.findData("choice"))
     dialog.editor.q_question.setPlainText("Pick B")
     dialog.editor.q_choices.setPlainText("A\nB\nC")
     dialog.editor.q_correct.setValue(2)
     dialog.add()
     q = json.loads(db.card_note(added[1])["fields"])
     assert q["type"] == "choice" and q["answer"] == 1 and q["choices"] == ["A", "B", "C"]
+    assert db.card_note(added[1])["kind"] == "choice" and db.get_setting("add_type") == "choice"
 
     dialog.add()
     assert dialog.status.text() == "A question has no text."
@@ -375,7 +467,7 @@ def test_main_window_cards_menu(pdf_path, tmp_path, monkeypatch):
     QApplication.instance() or QApplication([])
     db = Database(tmp_path / "t.db")
     deck = db.ensure_deck("Physics::Optics")
-    db.add_card_note("basic", {"front": "f", "back": "b"}, deck)
+    db.add_card_note("flashcard", {"front": "f", "back": "b"}, deck)
     win = MainWindow(db)
     win.show()
     assert win.nav.buttons["review"].badge == "1"
@@ -428,7 +520,7 @@ def test_forgotten_cards_count_as_new_and_outlive_their_chat(tmp_path):
 
 
 def test_removing_a_tag_removes_its_children(db):
-    note = db.add_card_note("basic", {"front": "f"}, db.ensure_deck("D"), tags=["A", "A::B", "C"])
+    note = db.add_card_note("flashcard", {"front": "f"}, db.ensure_deck("D"), tags=["A", "A::B", "C"])
     db.rename_tag("A", "")
     assert db.card_note(note)["tags"] == " C "
 
@@ -436,7 +528,7 @@ def test_removing_a_tag_removes_its_children(db):
 def test_browser_columns_fit_the_table(db, chat_panel):
     from study_reader.browser import COLUMNS_SETTING, DEFAULT_COLUMNS, WIDTHS_SETTING, CardBrowser
 
-    db.add_card_note("basic", {"front": "Gauss's law relates?", "back": "flux and charge"}, db.ensure_deck("Physics"))
+    db.add_card_note("flashcard", {"front": "Gauss's law relates?", "back": "flux and charge"}, db.ensure_deck("Physics"))
     browser = CardBrowser(db)
     browser.resize(1600, 800)
     browser.show()
@@ -478,7 +570,7 @@ def test_clicking_a_row_shows_that_card(db, chat_panel):
 
     deck = db.ensure_deck("D")
     for i in range(4):
-        db.add_card_note("basic", {"front": f"front {i}", "back": "b"}, deck)
+        db.add_card_note("flashcard", {"front": f"front {i}", "back": "b"}, deck)
     browser = CardBrowser(db)
     browser.show()
     browser.set_search("")
@@ -497,8 +589,8 @@ def test_switching_a_questions_type_in_the_browser(db, chat_panel):
     from study_reader.browser import CardBrowser
 
     deck = db.ensure_deck("D")
-    free = db.add_card_note("quiz", {"type": "free", "question": "Rinse time in seconds?", "answer": "41"}, deck)
-    choice = db.add_card_note("quiz", {"type": "choice", "question": "Pick", "choices": ["tea", "milk"], "answer": 1}, deck)
+    written = db.add_card_note("written", {"type": "written", "question": "Rinse time in seconds?", "answer": "41"}, deck)
+    choice = db.add_card_note("choice", {"type": "choice", "question": "Pick", "choices": ["tea", "milk"], "answer": 1}, deck)
     browser = CardBrowser(db)
     browser.show()
     browser.set_search("")
@@ -510,35 +602,45 @@ def test_switching_a_questions_type_in_the_browser(db, chat_panel):
         assert e.note_id == note
 
     def switch(t):
-        e.q_type.setCurrentIndex(e.q_type.findData(t))
+        e.switch_type(t)
         browser.save_note()
+        assert e.type_box.currentData() == t
 
+    kind = lambda note: db.card_note(note)["kind"]
     # The answer comes along, so the new type saves at once.
-    show(free)
+    show(written)
     switch("numeric")
-    assert fields(free)["type"] == "numeric" and fields(free)["answer"] == 41
-    switch("free")
-    assert fields(free)["type"] == "free" and fields(free)["answer"] == "41"
+    assert kind(written) == fields(written)["type"] == "numeric" and fields(written)["answer"] == 41
+    switch("written")
+    assert kind(written) == fields(written)["type"] == "written" and fields(written)["answer"] == "41"
+    switch("flashcard")  # the question and answer are its front and back
+    assert kind(written) == "flashcard" and fields(written) == {"front": "Rinse time in seconds?", "back": "41", "extra": ""}
+    assert json.loads(db.note_cards(written)[0]["data"])["type"] == "flashcard"
+    switch("reversed")
+    assert len(db.note_cards(written)) == 2 and "both sides" in browser.editor_status.text()
+    switch("written")
+    assert kind(written) == "written" and fields(written)["question"] == "Rinse time in seconds?"
+    assert len(db.note_cards(written)) == 1  # the reverse side, never reviewed, goes
     show(choice)
-    switch("free")
+    switch("written")
     assert fields(choice)["answer"] == "milk"
     switch("truefalse")
     switch("choice")
     assert fields(choice)["choices"] == ["tea", "milk"]  # what was entered is still there
 
     # A type whose answer is missing isn't saved yet, but the switch isn't lost on leaving the card.
-    show(free)
+    show(written)
     e.q_answer.setPlainText("Because tea.")
     switch("choice")
-    assert "Not saved" in browser.editor_status.text() and fields(free)["type"] == "free"
+    assert "Not saved" in browser.editor_status.text() and fields(written)["type"] == "written"
     show(choice)
-    show(free)
-    assert e.q_type.currentData() == "choice" and "Not saved" in browser.editor_status.text()
+    show(written)
+    assert e.type_box.currentData() == "choice" and "Not saved" in browser.editor_status.text()
     assert e.q_choices.toPlainText().strip() == "Because tea."
     e.q_choices.setPlainText("Because tea.\nBecause milk.")
     browser.save_note()
-    assert fields(free)["type"] == "choice" and fields(free)["choices"] == ["Because tea.", "Because milk."]
+    assert fields(written)["type"] == "choice" and fields(written)["choices"] == ["Because tea.", "Because milk."]
     show(choice)
-    show(free)
-    assert browser.editor_status.text() == "" and e.q_type.currentData() == "choice"
+    show(written)
+    assert browser.editor_status.text() == "" and e.type_box.currentData() == "choice"
     browser.close()

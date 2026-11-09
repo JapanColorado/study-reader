@@ -202,7 +202,7 @@ class GradingTest {
         assertEquals("Fill in the empty box first", assertThrows(AnswerError::class.java) {
             Grading.grade(numeric, json("""{"latex": "\\frac{1}{\\placeholder{}}"}"""))
         }.message)
-        assertThrows(IllegalArgumentException::class.java) { Grading.grade(json("""{"type": "free"}"""), json("""{"text": "x"}""")) }
+        assertThrows(IllegalArgumentException::class.java) { Grading.grade(json("""{"type": "written"}"""), json("""{"text": "x"}""")) }
     }
 
     @Test

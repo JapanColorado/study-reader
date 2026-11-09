@@ -34,7 +34,8 @@ Every push to `main` that passes `../.github/workflows/android.yml` (the same ch
     `FsrsTest` replays py's random draws to check the fuzzing too.
   - `Grading.kt` (and the calculator/LaTeX ports beside it) ports `quiz.grade` (`GradingTest`).
   - `Srs.kt` and `Gamify.kt` port `srs.py`'s queue, counts, sections and previews, and `gamify.py`
-    (`QueueTest`, over `queue_snapshot.db`, a real export).
+    (`QueueTest`, over `queue_snapshot.db`, a real export). `Srs.question` reads a question typed
+    `"free"` (a snapshot from a desktop before written answers were renamed) as `"written"`.
   - `ReviewController.kt` ports `review.ReviewPanel`. It drives the desktop's own `review.html`
     through `js` callbacks (`showOverview`, `showCard`, `celebrate`, `inputError`).
   - `SyncStore.kt` is the phone's half of the sync format: the `pending` event queue, batches,

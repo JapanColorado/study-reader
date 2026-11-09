@@ -1,4 +1,4 @@
-"""Fresh versions of calculation problems for review: after a numeric or free-response quiz card
+"""Fresh versions of calculation problems for review: after a numeric or written-answer card
 is reviewed (or first answered in its chat), Claude writes the same problem with new numbers,
 which review shows the next time the card comes up (cards.variant), so a remembered answer
 doesn't stand in for doing the problem. It is asked in a fresh session without the book (the
@@ -15,7 +15,7 @@ import re
 
 from . import quiz
 
-TYPES = ("numeric", "free")
+TYPES = ("numeric", "written")
 ENABLED_SETTING = "variants"  # "0": no new versions, and review shows the cards' own questions
 SKIP = {"skip": True}
 # Fields of a question that aren't part of the problem itself.
@@ -31,7 +31,7 @@ def enabled(db) -> bool:
 
 
 def wants_variant(card) -> bool:
-    """A card whose next version is worth asking for: a numeric or free-response question not
+    """A card whose next version is worth asking for: a numeric or written-answer question not
     known to have nothing to vary."""
     q = json.loads(card["data"])
     return q.get("type") in TYPES and q.get("varies") is not False and _load(card) != SKIP
@@ -74,7 +74,7 @@ def request(original: dict, last: dict | None = None, book: str = "", title: str
         + (" and the last version's" if last else "") + ". Work the solution out step by step and check "
         "it before writing the question. For \"numeric\", \"answer\" is the exact value as a number or a "
         "short expression like \"3/8\" or \"sqrt(2)/2\", with \"unit\" and \"tolerance\" if the original "
-        "has them (rescaled to the new answer); for \"free\", \"answer\" is a model answer and \"rubric\" "
+        "has them (rescaled to the new answer); for \"written\", \"answer\" is a model answer and \"rubric\" "
         "what a full-credit answer must contain. \"explanation\" briefly shows the worked solution.\n\n"
         + ("If the question has no givens that could change, ask about the same idea in other words or "
            "from another angle instead.\n\n" if original.get("varies") is True else

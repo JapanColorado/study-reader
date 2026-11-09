@@ -46,7 +46,7 @@ quiz = {"questions": [
     {"type": "truefalse", "question": "A zorblatt may be stored near a window.", "answer": False, "page": 3},
     {"type": "numeric", "question": "A rinse takes $41$ s per leg. How long for all seven legs, in minutes?",
      "answer": "287/60", "unit": "min", "page": 2},
-    {"type": "free", "question": "Why is a zorblatt rinsed in cold tea?", "answer": "To calibrate it.",
+    {"type": "written", "question": "Why is a zorblatt rinsed in cold tea?", "answer": "To calibrate it.",
      "rubric": "mentions calibration", "page": 2},
     {"type": "flashcard", "question": "What is $\\int_0^1 x^2\\,dx$?", "answer": "$\\tfrac13$", "page": 30},
 ]}
@@ -55,7 +55,7 @@ reply = db.add_message(chat, "assistant", text)
 srs.add_quiz_cards(db, book, reply, text, now=now - 3600)
 srs.learn_toc(db, book, [[1, "Chapter 1 Basics", 0], [2, "1.1 Legs", 1], [1, "Chapter 2 Storage", 20]])
 deck = db.ensure_deck("Languages::Japanese")
-db.add_card_note("basic", {"front": "猫", "back": "cat (ねこ)"}, deck, now=now - 7200)
+db.add_card_note("flashcard", {"front": "猫", "back": "cat (ねこ)"}, deck, now=now - 7200)
 db.add_card_note("cloze", {"text": "The capital of Japan is {{c1::Tokyo}}."}, deck, now=now - 7100)
 # An image, to check media.
 png = bytes.fromhex(
@@ -63,7 +63,7 @@ png = bytes.fromhex(
     "1ff3ff610000001f49444154789c63f8cfc0f09f8114c0c4c080034818"
     "0d1a3468d0a0e18a0100f29f1ff16fd1ab9b0000000049454e44ae426082")
 (media_dir() / "dot.png").write_bytes(png)
-db.add_card_note("basic", {"front": "What color is this?<br><img src=\"dot.png\" width=\"64\">", "back": "Orange"},
+db.add_card_note("flashcard", {"front": "What color is this?<br><img src=\"dot.png\" width=\"64\">", "back": "Orange"},
                  deck, now=now - 7000)
 # One card already learned and due now.
 first = db.conn.execute("SELECT id FROM cards ORDER BY id LIMIT 1").fetchone()[0]

@@ -1,4 +1,4 @@
-"""Editing review cards: the note editor (fields by kind, tags) the card browser shows under its
+"""Editing review cards: the card editor (fields by type, tags) the card browser shows under its
 table, and the Add dialog for making new cards."""
 
 from __future__ import annotations
@@ -18,9 +18,11 @@ from PySide6.QtWidgets import (
 from . import cardmodel, quiz, variants
 from .db import Database, media_dir
 
-QUIZ_TYPES = [("choice", "Multiple choice"), ("truefalse", "True or false"), ("numeric", "Numeric"),
-              ("free", "Free response (rated yourself)")]
-ADD_KINDS = [(k, cardmodel.KIND_LABELS[k]) for k in ("basic", "reverse", "cloze", "quiz")]
+# Types a card can be switched between in the editor (their text carries over); a cloze or an
+# image occlusion stays what it is.
+SWITCHABLE = ("flashcard", "reversed", *cardmodel.QUESTION_TYPES)
+# Types the Add dialog makes (an image occlusion comes only from Anki).
+ADD_TYPES = tuple(t for t in cardmodel.TYPES if t != "occlusion")
 
 
 class FieldEdit(QPlainTextEdit):
@@ -84,10 +86,11 @@ def save_media_image(image) -> str:
     return name
 
 
-class NoteEditor(QWidget):
-    """The fields of one note, by its kind, plus its tags. edited: the user changed something
-    (the browser saves after a pause). In the browser it edits an existing note; the Add dialog
-    uses it for a new one (set_kind, then values())."""
+class CardEditor(QWidget):
+    """A card's fields, by its type, plus its tags (what it shares with its sibling cards, see
+    cardmodel). edited: the user changed something (the browser saves after a pause). In the
+    browser it edits an existing card's fields (note_id); the Add dialog uses it for new ones
+    (switch_type, then values())."""
 
     edited = Signal()
 
@@ -95,23 +98,24 @@ class NoteEditor(QWidget):
         super().__init__(parent)
         self.db = db
         self.note_id: int | None = None
-        self.kind = "basic"
+        self.kind = "flashcard"  # the card type shown
         self._extra: dict = {}  # fields the editor doesn't show (an occlusion's image and shapes)
-        self._varies: bool | None = None  # a quiz question's "varies" (variants.py); None: not marked
+        self._varies: bool | None = None  # a question's "varies" (variants.py); None: not marked
         self._skipped = False  # Claude found nothing to vary in the loaded question (variants.SKIP)
-        self._q_type: str | None = None  # the question type shown, to carry its answer over to a new one
         self._loading = False
         self._known_tags: list[str] | None = None  # for completion, read when first needed after a load
 
-        self.kind_label = QLabel()
-        self.kind_label.setProperty("role", "muted")
-        self.kind_box = QComboBox()  # basic <-> reverse can be switched
-        self.kind_box.addItems(["Basic", "Basic and reversed"])
-        self.kind_box.activated.connect(self._switch_reverse)
+        self.type_label = QLabel()  # a type that can't be switched (cloze, image occlusion)
+        self.type_label.setProperty("role", "muted")
+        self.type_box = QComboBox()
+        for t in SWITCHABLE:
+            self.type_box.addItem(cardmodel.TYPE_LABELS[t], t)
+        self.type_box.setToolTip("The card's type: what is typed so far carries over")
+        self.type_box.activated.connect(lambda: self.switch_type(self.type_box.currentData()))
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(0, 0, 0, 0)
-        toolbar.addWidget(self.kind_label)
-        toolbar.addWidget(self.kind_box)
+        toolbar.addWidget(self.type_label)
+        toolbar.addWidget(self.type_box)
         toolbar.addStretch()
         self.tools = []
         def shortcut(key: str, slot) -> None:
@@ -134,7 +138,7 @@ class NoteEditor(QWidget):
         self.cloze_button = self.tools[3]
         shortcut("Ctrl+Alt+Shift+C", lambda: self.cloze(True))
 
-        # Text kinds: one box per field.
+        # Flashcards, cloze and image occlusion: one box per field.
         self.text_page = QWidget()
         self.text_form = QFormLayout(self.text_page)
         self.text_form.setContentsMargins(0, 0, 0, 0)
@@ -151,14 +155,10 @@ class NoteEditor(QWidget):
         self.occlusion_info.setWordWrap(True)
         self.text_form.addRow(self.occlusion_info)
 
-        # Quiz questions.
+        # Questions that are answered (choice, true/false, numeric, written).
         self.quiz_page = QWidget()
         form = QFormLayout(self.quiz_page)
         form.setContentsMargins(0, 0, 0, 0)
-        self.q_type = QComboBox()
-        for value, label in QUIZ_TYPES:
-            self.q_type.addItem(label, value)
-        self.q_type.currentIndexChanged.connect(self._quiz_type_changed)
         self.q_question = FieldEdit("The question (Markdown, $math$)")
         self.q_choices = FieldEdit("One choice per line")
         self.q_correct = QSpinBox(minimum=1, maximum=10)
@@ -175,7 +175,7 @@ class NoteEditor(QWidget):
             "setting) for the next time it comes up. Settings → Review settings turns this off for every card."))
         self.q_varies.clicked.connect(self._varies_clicked)
         self.q_rows: dict[str, tuple] = {}
-        for key, label, w in (("type", "Type", self.q_type), ("question", "Question", self.q_question),
+        for key, label, w in (("question", "Question", self.q_question),
                               ("choices", "Choices", self.q_choices), ("correct", "Correct choice", self.q_correct),
                               ("tf", "Answer", self.q_tf), ("answer", "Answer", self.q_answer),
                               ("number", "Answer", self.q_number), ("unit", "Unit", self.q_unit),
@@ -213,12 +213,11 @@ class NoteEditor(QWidget):
         layout.addLayout(toolbar)
         layout.addWidget(self.pages, 1)
         layout.addLayout(tags_row)
-        self.set_kind("basic")
-        self._q_type = self.q_type.currentData()
+        self.set_kind("flashcard")
 
     # -- loading -------------------------------------------------------------------------
     def load(self, note_id: int | None) -> None:
-        """Show a note (None: nothing)."""
+        """Show a card's fields, by their card_notes id (None: nothing)."""
         note = self.db.card_note(note_id) if note_id is not None else None
         self.note_id = note["id"] if note else None
         self._known_tags = None
@@ -227,7 +226,7 @@ class NoteEditor(QWidget):
         self.setEnabled(note is not None)
         if note is None:
             self._loading = True
-            self.set_kind("basic")
+            self.set_kind("flashcard")
             self.clear()
             self._loading = False
             return
@@ -237,8 +236,9 @@ class NoteEditor(QWidget):
         self._loading = True
         try:
             self.set_kind(kind)
+            self.clear()  # the other types' boxes too, which switch_type fills from
             self._extra = {k: v for k, v in fields.items() if k in ("image", "shapes")}
-            if kind == "quiz":
+            if kind in cardmodel.QUESTION_TYPES:
                 self._load_quiz(fields)
             else:
                 for key, edit in self.fields.items():
@@ -253,21 +253,35 @@ class NoteEditor(QWidget):
             self._loading = False
 
     def set_kind(self, kind: str) -> None:
+        """Show the fields of a card type (as they are: switch_type carries text over)."""
         self.kind = kind
-        is_quiz = kind == "quiz"
-        self.pages.setCurrentWidget(self.quiz_page if is_quiz else self.text_page)
+        is_question = kind in cardmodel.QUESTION_TYPES
+        self.pages.setCurrentWidget(self.quiz_page if is_question else self.text_page)
         shown = cardmodel.TEXT_FIELDS.get(kind, ())
         for key in self.fields:
             self.fields[key].setVisible(key in shown)
             self.field_labels[key].setVisible(key in shown)
         self.occlusion_info.setVisible(kind == "occlusion")
-        self.kind_label.setText(cardmodel.KIND_LABELS.get(kind, kind))
-        self.kind_label.setVisible(kind not in ("basic", "reverse"))
-        self.kind_box.setVisible(kind in ("basic", "reverse"))
-        self.kind_box.setCurrentIndex(1 if kind == "reverse" else 0)
+        self.type_label.setText(cardmodel.TYPE_LABELS.get(kind, kind))
+        self.type_label.setVisible(kind not in SWITCHABLE)
+        self.type_box.setVisible(kind in SWITCHABLE)
+        self.type_box.setCurrentIndex(max(self.type_box.findData(kind), 0))
         self.cloze_button.setVisible(kind == "cloze")
-        if is_quiz:
-            self._quiz_type_changed()
+        if is_question:
+            self._question_rows()
+
+    def switch_type(self, kind: str) -> None:
+        """Make the card another type, carrying over what is typed: a flashcard's front, back and
+        extra are a question's question, answer and explanation, and the answer goes from one
+        question type to another as far as it can (so the card can be saved as it is; it can't
+        when the new answer is missing, and the browser would show the old type again)."""
+        old = self.kind
+        if kind == old:
+            return
+        if not self._loading:
+            self._carry(old, kind)
+        self.set_kind(kind)
+        self._changed()
 
     def clear(self) -> None:
         self._known_tags = None
@@ -284,42 +298,54 @@ class NoteEditor(QWidget):
 
     def _load_quiz(self, q: dict) -> None:
         self._varies = q.get("varies")
-        i = self.q_type.findData(q.get("type", "free"))
-        self.q_type.setCurrentIndex(max(i, 0))
         self.q_question.setPlainText(str(q.get("question", "")))
         self.q_explanation.setPlainText(str(q.get("explanation", "")))
         self.q_choices.setPlainText("\n".join(str(c) for c in q.get("choices", [])))
         answer = q.get("answer")
         self.q_correct.setValue(answer + 1 if q.get("type") == "choice" and isinstance(answer, int) else 1)
         self.q_tf.setCurrentIndex(0 if answer is True or q.get("type") != "truefalse" else 1)
-        self.q_answer.setPlainText(str(answer) if q.get("type") == "free" and answer is not None else "")
+        self.q_answer.setPlainText(str(answer) if q.get("type") == "written" and answer is not None else "")
         self.q_number.setText(str(answer) if q.get("type") == "numeric" else "")
         self.q_unit.setText(str(q.get("unit", "")))
         self.q_tolerance.setValue(float(q.get("tolerance") or 0))
         self.q_rubric.setPlainText(str(q.get("rubric", "")))
         self.q_varies.setChecked(self._varies is not False and not self._skipped)
-        self._quiz_type_changed()
 
-    def _quiz_type_changed(self) -> None:
-        t = self.q_type.currentData()
-        if not self._loading and self._q_type not in (None, t):
-            self._carry_answer(self._q_type, t)
-        self._q_type = t
-        rows = {"type", "question", "explanation"} | {
+    def _question_rows(self) -> None:
+        t = self.kind
+        rows = {"question", "explanation"} | {
             "choice": {"choices", "correct"}, "truefalse": {"tf"}, "numeric": {"number", "unit", "tolerance", "varies"},
-            "free": {"answer", "rubric", "varies"},
+            "written": {"answer", "rubric", "varies"},
         }[t]
         for key, (label, w) in self.q_rows.items():
             label.setVisible(key in rows)
             w.setVisible(key in rows)
-        self.q_rows["answer"][0].setText("Model answer" if t == "free" else "Answer")
-        self._changed()
+        self.q_rows["answer"][0].setText("Model answer" if t == "written" else "Answer")
 
-    def _carry_answer(self, old: str, new: str) -> None:
-        """Switching a question's type: fill the new type's empty answer from the old one's, so
-        the question can be saved as it is (it can't when the new answer is missing, and the
-        browser would show the old type again)."""
+    def _carry(self, old: str, new: str) -> None:
+        """Fill the new type's empty fields from the old type's (switch_type)."""
+        flashcards = ("flashcard", "reversed")
+        if old in flashcards and new in flashcards or old not in SWITCHABLE or new not in SWITCHABLE:
+            return
+        moves = ((self.fields["front"], self.q_question), (self.fields["extra"], self.q_explanation))
+        if new in flashcards:
+            for target, source in moves:
+                if not target.toPlainText().strip():
+                    target.setPlainText(source.toPlainText())
+            if not self.fields["back"].toPlainText().strip():
+                self.fields["back"].setPlainText(self._answer_text(old))
+            return
+        if old in flashcards:
+            for source, target in moves:
+                if not target.toPlainText().strip():
+                    target.setPlainText(source.toPlainText())
+        self._fill_answer(new, old, self._answer_text(old))
+
+    def _answer_text(self, old: str) -> str:
+        """The answer as typed for type `old`, as text."""
         choices = [c.strip() for c in self.q_choices.toPlainText().splitlines() if c.strip()]
+        if old in ("flashcard", "reversed"):
+            return self.fields["back"].toPlainText().strip()
         if old == "choice":
             i = self.q_correct.value() - 1
             answer = choices[i] if 0 <= i < len(choices) else ""
@@ -329,7 +355,12 @@ class NoteEditor(QWidget):
             answer = " ".join(p for p in (self.q_number.text().strip(), self.q_unit.text().strip()) if p)
         else:
             answer = self.q_answer.toPlainText().strip()
-        if new == "free" and not self.q_answer.toPlainText().strip():
+        return answer
+
+    def _fill_answer(self, new: str, old: str, answer: str) -> None:
+        """Put an answer (text) in question type `new`'s answer field if that is empty."""
+        choices = [c.strip() for c in self.q_choices.toPlainText().splitlines() if c.strip()]
+        if new == "written" and not self.q_answer.toPlainText().strip():
             self.q_answer.setPlainText(answer)
         elif new == "numeric" and not self.q_number.text().strip():
             try:
@@ -357,7 +388,7 @@ class NoteEditor(QWidget):
         return {
             "note_id": self.note_id, "kind": self.kind, "extra": dict(self._extra), "varies": self._varies,
             "fields": {k: e.toPlainText() for k, e in self.fields.items()}, "tags": self.tags.text(),
-            "type": self.q_type.currentData(), "question": self.q_question.toPlainText(),
+            "question": self.q_question.toPlainText(),
             "choices": self.q_choices.toPlainText(), "correct": self.q_correct.value(), "tf": self.q_tf.currentIndex(),
             "answer": self.q_answer.toPlainText(), "number": self.q_number.text(), "unit": self.q_unit.text(),
             "tolerance": self.q_tolerance.value(), "rubric": self.q_rubric.toPlainText(),
@@ -365,7 +396,7 @@ class NoteEditor(QWidget):
         }
 
     def restore(self, d: dict) -> None:
-        """Show a draft() of the loaded note again."""
+        """Show a draft() of the loaded card again."""
         self._loading = True
         try:
             self.set_kind(d["kind"])
@@ -373,7 +404,6 @@ class NoteEditor(QWidget):
             for key, edit in self.fields.items():
                 edit.setPlainText(d["fields"].get(key, ""))
             self.tags.setText(d["tags"])
-            self.q_type.setCurrentIndex(max(self.q_type.findData(d["type"]), 0))
             for w, key in ((self.q_question, "question"), (self.q_choices, "choices"), (self.q_answer, "answer"),
                            (self.q_rubric, "rubric"), (self.q_explanation, "explanation")):
                 w.setPlainText(d[key])
@@ -383,23 +413,22 @@ class NoteEditor(QWidget):
             self.q_tf.setCurrentIndex(d["tf"])
             self.q_tolerance.setValue(d["tolerance"])
             self.q_varies.setChecked(d["varies_box"])
-            self._quiz_type_changed()
         finally:
             self._loading = False
 
     # -- values --------------------------------------------------------------------------
     def values(self) -> tuple[str, dict, list[str]]:
-        """(kind, fields, tags) as entered. Raises cardmodel.NoteError for a note that can't be saved."""
+        """(type, fields, tags) as entered. Raises cardmodel.NoteError for a card that can't be saved."""
         tags = cardmodel.split_tags(self.tags.text())
-        if self.kind == "quiz":
-            return "quiz", self._quiz_fields(), tags
+        if self.kind in cardmodel.QUESTION_TYPES:
+            return self.kind, self._quiz_fields(), tags
         fields = {k: self.fields[k].toPlainText().strip() for k in cardmodel.TEXT_FIELDS[self.kind]}
         fields.update(self._extra if self.kind == "occlusion" else {})
         cardmodel.check(self.kind, fields)
         return self.kind, fields, tags
 
     def _quiz_fields(self) -> dict:
-        t = self.q_type.currentData()
+        t = self.kind
         raw = {"type": t, "question": self.q_question.toPlainText().strip(),
                "explanation": self.q_explanation.toPlainText().strip()}
         if t == "choice":
@@ -419,7 +448,7 @@ class NoteEditor(QWidget):
         else:
             raw["answer"] = self.q_answer.toPlainText().strip()
             raw["rubric"] = self.q_rubric.toPlainText().strip()
-        if t in ("numeric", "free") and self._varies is not None:
+        if t in ("numeric", "written") and self._varies is not None:
             raw["varies"] = self._varies
         try:
             return quiz.validate_question(raw)
@@ -427,11 +456,12 @@ class NoteEditor(QWidget):
             raise cardmodel.NoteError(_sentence(str(e))) from None
 
     def save(self) -> bool:
-        """Store the edits to the loaded note. Raises cardmodel.NoteError if they can't be saved."""
+        """Store the edits to the loaded card (and its siblings). Raises cardmodel.NoteError if they
+        can't be saved."""
         if self.note_id is None:
             return False
         if self.db.card_note(self.note_id) is None:
-            raise cardmodel.NoteError("this card's note was deleted meanwhile")
+            raise cardmodel.NoteError("this card was deleted meanwhile")
         kind, fields, tags = self.values()
         self.db.update_card_note(self.note_id, fields, tags, kind=kind)
         return True
@@ -440,10 +470,6 @@ class NoteEditor(QWidget):
     def _changed(self, *_) -> None:
         if not self._loading:
             self.edited.emit()
-
-    def _switch_reverse(self, index: int) -> None:
-        self.set_kind("reverse" if index == 1 else "basic")
-        self._changed()
 
     def _first_field(self) -> FieldEdit | None:
         return next((f for f in (*self.fields.values(), self.q_question) if f.isVisible()), None)
@@ -537,9 +563,9 @@ class DeckBox(QComboBox):
 
 
 class AddDialog(QDialog):
-    """Make new cards: pick a kind and a deck, fill in the fields, Add (Ctrl+Enter)."""
+    """Make new cards: pick a type and a deck, fill in the fields, Add (Ctrl+Enter)."""
 
-    added = Signal(int)  # note id
+    added = Signal(int)  # card_notes id
 
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
@@ -547,12 +573,12 @@ class AddDialog(QDialog):
         self.setWindowTitle("Add cards")
         self.setWindowFlag(Qt.WindowType.Window)
         self.resize(640, 620)
-        self.kind = QComboBox()
-        for value, label in ADD_KINDS:
-            self.kind.addItem(label, value)
+        self.type = QComboBox()
+        for t in ADD_TYPES:
+            self.type.addItem(cardmodel.TYPE_LABELS[t], t)
         self.deck = DeckBox(db)
-        self.editor = NoteEditor(db)
-        self.kind.currentIndexChanged.connect(lambda: self._set_kind(self.kind.currentData()))
+        self.editor = CardEditor(db)
+        self.type.currentIndexChanged.connect(lambda: self._set_type(self.type.currentData()))
         self.status = QLabel()
         self.status.setProperty("role", "muted")
         add = QPushButton("Add", default=True)
@@ -564,7 +590,7 @@ class AddDialog(QDialog):
         QShortcut(QKeySequence("Ctrl+Return"), self, self.add)
         top = QHBoxLayout()
         top.addWidget(QLabel("Type"))
-        top.addWidget(self.kind)
+        top.addWidget(self.type)
         top.addSpacing(12)
         top.addWidget(QLabel("Deck"))
         top.addWidget(self.deck, 1)
@@ -577,15 +603,14 @@ class AddDialog(QDialog):
         layout.addLayout(top)
         layout.addWidget(self.editor, 1)
         layout.addLayout(buttons)
-        last = db.get_setting("add_kind", "basic")
-        self.kind.setCurrentIndex(max(self.kind.findData(last), 0))
-        self._set_kind(self.kind.currentData())
+        self.type.setCurrentIndex(max(self.type.findData(db.get_setting("add_type")), 0))
+        self._set_type(self.type.currentData())
         self.deck.setCurrentText(db.get_setting("add_deck", ""))
 
-    def _set_kind(self, kind: str) -> None:
-        self.editor.set_kind(kind)
-        self.editor.kind_label.hide()  # the dialog's own Type box says it
-        self.editor.kind_box.hide()
+    def _set_type(self, kind: str) -> None:
+        self.editor.switch_type(kind)
+        self.editor.type_label.hide()  # the dialog's own Type box says it
+        self.editor.type_box.hide()
         self.editor.setEnabled(True)
 
     def set_deck(self, name: str) -> None:
@@ -603,7 +628,7 @@ class AddDialog(QDialog):
             self.status.setText("Choose a deck (type a new name to make one).")
             return
         note_id = self.db.add_card_note(kind, fields, self.db.ensure_deck(name), tags)
-        self.db.set_setting("add_kind", kind)
+        self.db.set_setting("add_type", kind)
         self.db.set_setting("add_deck", name)
         n = len(self.db.note_cards(note_id))
         self.status.setText(f"Added {n} card{'s' * (n != 1)} to {name}.")

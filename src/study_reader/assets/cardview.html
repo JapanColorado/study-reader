@@ -47,7 +47,7 @@ function backHtml(q) {
     if (q.explanation) html += `<div class="explain">${mdq(q, q.explanation)}</div>`;
     return `<div class="q answered">${html}</div>`;
   }
-  if (q.type === "free") {
+  if (q.type === "written") {
     let html = `<div class="q-text">${mdq(q, q.question)}</div>`;
     if (q.answer) html += `<div class="model-answer"><span class="label">Model answer</span><div>${mdq(q, q.answer)}</div></div>`;
     if (q.rubric) html += `<div class="model-answer"><span class="label">Rubric</span><div>${mdq(q, q.rubric)}</div></div>`;

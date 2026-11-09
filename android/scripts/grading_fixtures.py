@@ -359,7 +359,7 @@ def grade_cases() -> list[dict]:
               {"rating": 3.0}, {"rating": 3.5}, {"rating": True}, {"rating": False}, {"rating": "3"},
               {"rating": None}, {}, {"rating": [3]}, {"rating": {"a": 1}}, {"rating": -1}, {"rating": 2 ** 40}]:
         cases.append((card, r))
-    for kind in ["free", "cloze", "occlusion", "basic", "", 5, None]:
+    for kind in ["written", "free", "cloze", "occlusion", "basic", "", 5, None]:
         cases.append(({"type": kind, "question": "Why?", "answer": "Because"}, {"text": "x"}))
     cases.append(({"question": "no type"}, {"choice": 1}))
 

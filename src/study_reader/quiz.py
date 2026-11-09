@@ -1,5 +1,5 @@
 """Quizzes Claude writes into replies as ```quiz <title> fences of JSON: parsing them, grading
-answers (locally, except free responses, which Claude grades, and flashcards, which the user
+answers (locally, except written answers, which Claude grades, and flashcards, which the user
 rates), and describing the answers back to Claude on later questions. Every question also
 becomes a spaced-repetition card (srs.py). Qt-free."""
 
@@ -13,16 +13,14 @@ from .calc_latex import LatexError, expr_to_latex, latex_to_expr
 from .calculator import CalcError, Calculator
 from .cardmodel import clean_tag
 
-TYPES = {
+# A question's "type" as Claude may write it -> its card type (cardmodel.TYPES). "free" is what
+# written answers were once called, still in older replies (and Claude's habits).
+TYPE_NAMES = {
     "choice": "choice", "multiple_choice": "choice", "mc": "choice",
     "truefalse": "truefalse", "true_false": "truefalse", "tf": "truefalse", "boolean": "truefalse",
     "numeric": "numeric", "number": "numeric", "math": "numeric",
-    "free": "free", "free_response": "free", "short_answer": "free", "open": "free",
+    "written": "written", "free": "written", "free_response": "written", "short_answer": "written", "open": "written",
     "flashcard": "flashcard", "card": "flashcard", "basic": "flashcard",
-}
-TYPE_LABELS = {
-    "choice": "Multiple choice", "truefalse": "True or false", "numeric": "Numeric", "free": "Free response",
-    "flashcard": "Flashcard",
 }
 VERDICTS = ("correct", "partial", "incorrect")
 # How well a flashcard was recalled, as the user rates it (FSRS's Again / Hard / Good / Easy).
@@ -87,7 +85,7 @@ def _validate(data, title: str) -> dict:
         data = {"questions": data}
     questions = []
     for q in data["questions"]:
-        kind = TYPES.get(str(q.get("type", "")).lower().replace("-", "_").replace(" ", "_"))
+        kind = TYPE_NAMES.get(str(q.get("type", "")).lower().replace("-", "_").replace(" ", "_"))
         if kind is None:
             raise ValueError(f"unknown question type {q.get('type')!r}")
         if not str(q.get("question", "")).strip():
@@ -124,7 +122,7 @@ def _validate(data, title: str) -> dict:
                 if isinstance(t, str)]
         if any(tags):
             out["tags"] = list(dict.fromkeys(t for t in tags if t))
-        if kind in ("numeric", "free") and isinstance(q.get("varies"), bool):
+        if kind in ("numeric", "written") and isinstance(q.get("varies"), bool):
             out["varies"] = q["varies"]  # whether review can pose it with new numbers (variants.py)
         if isinstance(q.get("section"), str) and q["section"].strip():
             out["section"] = q["section"].strip()  # the book section it practices (srs.find_section)
@@ -294,7 +292,7 @@ def grade(question: dict, response: dict) -> str:
         if tol is None:
             tol = RELATIVE_TOLERANCE * abs(expected)
         return "correct" if math.isclose(given, expected, rel_tol=0, abs_tol=tol + 1e-12) else "incorrect"
-    raise ValueError("free responses are graded by Claude")
+    raise ValueError("written answers are graded by Claude")
 
 
 def grading_prompt(quiz: dict, index: int, response_text: str) -> str:

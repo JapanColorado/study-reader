@@ -380,14 +380,14 @@ class ReviewPanel(QWidget):
         })
 
     def check(self, card_id: int, response: dict) -> None:
-        """An answer, or a request to see the answer (a flashcard's back, or a free response's model
-        answer beside whatever was typed: free responses are self-rated here)."""
+        """An answer, or a request to see the answer (a flashcard's back, or a written answer's model
+        answer beside whatever was typed: written answers are self-rated here)."""
         card = self.db.card(card_id)
         if card is None or card_id != self.card_id or self._answer is not None:
             return
         q = self._question
         verdict = None
-        if q["type"] not in (*cardmodel.SELF_RATED, "free"):
+        if q["type"] not in (*cardmodel.SELF_RATED, "written"):
             try:
                 verdict = quiz.grade(q, response)
             except quiz.AnswerError as e:

@@ -153,8 +153,8 @@ const FLAG_NAMES = { 1: "Red", 2: "Orange", 3: "Green", 4: "Blue", 5: "Pink", 6:
 
 const CARDS_ICON = `<svg viewBox="0 0 24 24"><rect width="14" height="16" x="7" y="5" rx="2"/><path d="M4 16V5a2 2 0 0 1 2-2h9"/></svg>`;
 let CARD = null;  // the card on display, as the app sent it; null on the overview
-// Cards the reviewer rates on their own once the answer shows (in review, free responses too).
-const selfRated = q => SELF_RATED.includes(q.type) || q.type === "free";
+// Cards the reviewer rates on their own once the answer shows (in review, written answers too).
+const selfRated = q => SELF_RATED.includes(q.type) || q.type === "written";
 
 const OPEN = new Set();  // rows expanded in the overview's lists: "d<deck id>", "b<book id>", "s<section tag>"
 const num = (n, cls) => `<span class="n ${cls}${n ? "" : " zero"}">${n}</span>`;
@@ -369,8 +369,8 @@ function showCard(c) {
     c.chat ? `<a class="src" href="#" data-act="chat" title="Open the chat the quiz is in">Open chat</a>` : "",
     c.flag ? `<span title="${FLAG_NAMES[c.flag]} flag"><span class="flagdot" style="background:${FLAG_COLORS[c.flag]}"></span></span>` : "",
   ].filter(Boolean).join("<span>·</span>");
-  // Free responses are rated by the reviewer: recall the answer, or write it out first.
-  const freeActions = `<div class="submit-row"><span class="grow">Answer in your head, or write it out first (Ctrl+Enter)</span>`
+  // Written answers are rated by the reviewer: recall the answer, or write it out first.
+  const writtenActions = `<div class="submit-row"><span class="grow">Answer in your head, or write it out first (Ctrl+Enter)</span>`
     + `<button class="qbtn" data-act="show">Show answer</button></div>`;
   const actions = c.actions || [
     ["skip", "Skip", "Show another card first"],
@@ -387,7 +387,7 @@ function showCard(c) {
     + ` class="${c.flag === n ? "on" : ""}" style="background:${FLAG_COLORS[n]}" title="${FLAG_NAMES[n]}"></button>`).join("")}`
     + `<button class="none" data-act="setflag" data-k="0" title="No flag">✕</button></div>`;
   html += progressHtml(c);
-  html += `<div class="card">${questionHtml(q, a || undefined, { meta, freeActions, openAnswer: true })}`;
+  html += `<div class="card">${questionHtml(q, a || undefined, { meta, writtenActions, openAnswer: true })}`;
   html += `</div>`;
   if (c.previews && MOBILE) {
     html += `<div class="rate-dock"><div class="submit-row">How well did you know it?</div>${ratingRow(c.previews, c.suggested)}</div>`;
@@ -395,7 +395,7 @@ function showCard(c) {
     html += `<div class="submit-row" style="margin-top:12px">How well did you know it?</div>${ratingRow(c.previews, c.suggested)}`
       + `<div class="keys"><kbd>1</kbd>–<kbd>4</kbd> to rate · <kbd>Space</kbd> for ${RATING_LABELS[c.suggested || 3]}</div>`;
   } else if (selfRated(q) && !a) {
-    html += `<div class="keys"><kbd>Space</kbd> to show the answer${q.type === "free" ? " · <kbd>Esc</kbd> leaves the answer box" : ""}</div>`;
+    html += `<div class="keys"><kbd>Space</kbd> to show the answer${q.type === "written" ? " · <kbd>Esc</kbd> leaves the answer box" : ""}</div>`;
   }
   const root = document.getElementById("root");
   root.innerHTML = html;
@@ -492,10 +492,10 @@ document.addEventListener("keydown", ev => {
   if (!bridge || ev.ctrlKey && ev.key !== "Enter" || ev.altKey || ev.metaKey) return;
   const typing = ev.target.matches && ev.target.matches("textarea, input, math-field");
   if (typing) {
-    if (ev.key === "Enter" && ev.ctrlKey && ev.target.matches("textarea.free")) {
+    if (ev.key === "Enter" && ev.ctrlKey && ev.target.matches("textarea.written")) {
       ev.preventDefault();
       answer("show", ev.target.closest(".q"));
-    } else if (ev.key === "Escape" && ev.target.matches("textarea.free")) {
+    } else if (ev.key === "Escape" && ev.target.matches("textarea.written")) {
       ev.target.blur();
     }
     return;

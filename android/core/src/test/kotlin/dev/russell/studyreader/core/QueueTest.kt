@@ -212,4 +212,18 @@ class QueueTest {
         assertTrue(calls.last().contains("\"verdict\":\"correct\""))
         assertNotNull(calls.last())
     }
+
+    @Test
+    fun anOlderSnapshotsFreeResponsesAreWrittenAnswers() {
+        // A desktop from before the rename still writes "free"; such a card is self-rated like a written answer.
+        val card = db.query("SELECT id FROM cards WHERE data LIKE '%\"written\"%' LIMIT 1").first().long("id")
+        db.exec("UPDATE cards SET data=replace(data, '\"written\"', '\"free\"'), variant='' WHERE id=?", card)
+        assertEquals("written", srs.question(srs.card(card)!!)["type"]!!.jsonPrimitive.content)
+        val calls = mutableListOf<String>()
+        val c = ReviewController(db, { calls += it }, now = { now })
+        c.cardId = card
+        c.refresh()
+        c.check(card, "{\"text\": \"Tea.\"}")
+        assertTrue(calls.last(), calls.last().startsWith("showCard(") && calls.last().contains("\"previews\""))
+    }
 }

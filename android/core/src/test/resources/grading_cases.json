@@ -19926,6 +19926,18 @@
 },
 {
 "question": {
+"type": "written",
+"question": "Why?",
+"answer": "Because"
+},
+"response": {
+"text": "x"
+},
+"error": "ValueError",
+"message": "written answers are graded by Claude"
+},
+{
+"question": {
 "type": "free",
 "question": "Why?",
 "answer": "Because"
@@ -19934,7 +19946,7 @@
 "text": "x"
 },
 "error": "ValueError",
-"message": "free responses are graded by Claude"
+"message": "written answers are graded by Claude"
 },
 {
 "question": {
@@ -19946,7 +19958,7 @@
 "text": "x"
 },
 "error": "ValueError",
-"message": "free responses are graded by Claude"
+"message": "written answers are graded by Claude"
 },
 {
 "question": {
@@ -19958,7 +19970,7 @@
 "text": "x"
 },
 "error": "ValueError",
-"message": "free responses are graded by Claude"
+"message": "written answers are graded by Claude"
 },
 {
 "question": {
@@ -19970,7 +19982,7 @@
 "text": "x"
 },
 "error": "ValueError",
-"message": "free responses are graded by Claude"
+"message": "written answers are graded by Claude"
 },
 {
 "question": {
@@ -19982,7 +19994,7 @@
 "text": "x"
 },
 "error": "ValueError",
-"message": "free responses are graded by Claude"
+"message": "written answers are graded by Claude"
 },
 {
 "question": {
@@ -19994,7 +20006,7 @@
 "text": "x"
 },
 "error": "ValueError",
-"message": "free responses are graded by Claude"
+"message": "written answers are graded by Claude"
 },
 {
 "question": {
@@ -20006,7 +20018,7 @@
 "text": "x"
 },
 "error": "ValueError",
-"message": "free responses are graded by Claude"
+"message": "written answers are graded by Claude"
 },
 {
 "question": {

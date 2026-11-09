@@ -254,14 +254,14 @@ class ReviewController(
         })
     }
 
-    /** An answer, or a request to see the answer (self-rated cards and free responses). */
+    /** An answer, or a request to see the answer (self-rated cards and written answers). */
     fun check(id: Long, responseJson: String) {
         if (id != cardId || answer != null || srs.card(id) == null) return
         val q = question ?: return
         val response = try { Json.parseToJsonElement(responseJson).jsonObject } catch (_: Exception) { JsonObject(emptyMap()) }
         val type = (q["type"] as? JsonPrimitive)?.content
         var verdict: String? = null
-        if (type !in SELF_RATED && type != "free") {
+        if (type !in SELF_RATED && type != "written") {
             try {
                 verdict = Grading.grade(q, response)
             } catch (e: AnswerError) {

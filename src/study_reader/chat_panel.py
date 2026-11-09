@@ -577,7 +577,7 @@ class ChatPanel(QWidget):
             response = json.loads(response_json)
         except (IndexError, ValueError):
             return
-        if spec["type"] == "free":
+        if spec["type"] == "written":
             answer_id = self.db.save_quiz_answer(message_id, index, question, response_json, "pending")
             self._grade(message, q, question, answer_id, response.get("text", ""))
         else:
@@ -626,7 +626,7 @@ class ChatPanel(QWidget):
         self._update_quiz(message_id, index)
 
     def _grade(self, message: dict, q: dict, question: int, answer_id: int, text: str) -> None:
-        """Have Claude grade a free response, in a detached fork of the chat at the quiz's reply."""
+        """Have Claude grade a written answer, in a detached fork of the chat at the quiz's reply."""
         chat = self.db.chat(message["chat_id"])
         page = q["questions"][question]["page"]
         prior = [m for m in self.db.messages(message["chat_id"]) if m["id"] <= message["id"] and m["role"] != "error"]

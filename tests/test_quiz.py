@@ -31,7 +31,8 @@ def test_split_replaces_fences_and_forgives_latex_backslashes():
     text, quizzes = quiz.split(QUIZ)
     assert "```quiz\n#0\n```" in text and "questions" not in text and text.startswith("Here's a quiz.")
     (q,) = quizzes
-    assert q["title"] == "Zorblatts" and [x["type"] for x in q["questions"]] == ["choice", "truefalse", "numeric", "free"]
+    # "free" (in older replies) is a written answer.
+    assert q["title"] == "Zorblatts" and [x["type"] for x in q["questions"]] == ["choice", "truefalse", "numeric", "written"]
     # \frac and \theta would otherwise be a form feed and a tab.
     assert q["questions"][0]["choices"][2] == r"$\frac{15}{2}$" and r"$\theta$" in q["questions"][2]["question"]
     assert q["questions"][0]["page"] == 1 and q["questions"][1]["page"] is None
@@ -43,7 +44,7 @@ def test_split_replaces_fences_and_forgives_latex_backslashes():
 def test_unreadable_quiz_keeps_its_source():
     text, (q,) = quiz.split("```quiz Broken\n{\"questions\": [{\"type\": \"essay\", \"question\": \"x\"}]}\n```")
     assert text == "```quiz\n#0\n```" and q["title"] == "Broken" and "essay" in q["error"] and "essay" in q["raw"]
-    _, (q,) = quiz.split('```quiz\n[{"type": "free", "question": "Why?", "rubric": ["tea", "static"]}]\n```')
+    _, (q,) = quiz.split('```quiz\n[{"type": "written", "question": "Why?", "rubric": ["tea", "static"]}]\n```')
     assert q["questions"][0]["rubric"] == "- tea\n- static"
     _, (q,) = quiz.split("```quiz\nnot json\n```")
     assert "error" in q and q["raw"] == "not json"
@@ -52,7 +53,7 @@ def test_unreadable_quiz_keeps_its_source():
 
 # -- grading ----------------------------------------------------------------------------
 def test_local_grading():
-    choice, tf, numeric, free = quiz.quizzes(QUIZ)[0]["questions"]
+    choice, tf, numeric, written = quiz.quizzes(QUIZ)[0]["questions"]
     assert quiz.grade(choice, {"choice": 1}) == "correct" and quiz.grade(choice, {"choice": 0}) == "incorrect"
     assert quiz.grade(tf, {"value": False}) == "correct" and quiz.grade(tf, {"value": True}) == "incorrect"
     assert quiz.grade(numeric, {"latex": "41"}) == "correct"

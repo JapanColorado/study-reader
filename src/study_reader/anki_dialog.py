@@ -32,7 +32,7 @@ class AnkiImportDialog(QDialog):
         self.resize(760, 720)
 
         intro = QLabel(
-            "Brings decks over from Anki: notes and their cards (basic, reversed, cloze and image occlusion), tags, "
+            "Brings decks over from Anki: their cards (as flashcards, flashcards both ways, cloze and image occlusion), tags, "
             "each card's schedule and review history, images, and Anki's FSRS parameters. Anki itself isn't changed "
             "(the app reads a copy), so delete or suspend the decks there yourself once you're happy. Running it again "
             "skips cards already brought over.")
@@ -273,7 +273,7 @@ class AnkiImportDialog(QDialog):
 
 def summary(report: anki_import.Report) -> str:
     lines = [f"Brought over {report.cards} card{'s' * (report.cards != 1)} from {report.notes} "
-             f"note{'s' * (report.notes != 1)}, with {report.reviews} review{'s' * (report.reviews != 1)} "
+             f"Anki note{'s' * (report.notes != 1)}, with {report.reviews} review{'s' * (report.reviews != 1)} "
              f"and {report.media_copied} image{'s' * (report.media_copied != 1)}."]
     if report.skipped:
         lines.append(f"{report.skipped} card{'s were' if report.skipped != 1 else ' was'} already here and left as is.")
@@ -282,10 +282,10 @@ def summary(report: anki_import.Report) -> str:
         lines.append(f"Using Anki's FSRS parameters{retention}.")
     if report.fallback_types:
         kinds = ", ".join(f"{name} ({n})" for name, n in report.fallback_types.items())
-        lines.append(f"Note types brought over as basic cards from their fields: {kinds}.")
+        lines.append(f"Anki note types brought over as flashcards from their fields: {kinds}.")
     if report.missing_media:
         shown = ", ".join(report.missing_media[:5]) + (" …" if len(report.missing_media) > 5 else "")
         lines.append(f"{len(report.missing_media)} image(s) weren't in Anki's media folder: {shown}")
     if report.errors:
-        lines.append(f"{len(report.errors)} note(s) couldn't be brought over: " + "; ".join(report.errors[:3]))
+        lines.append(f"{len(report.errors)} Anki note(s) couldn't be brought over: " + "; ".join(report.errors[:3]))
     return "\n\n".join(lines)

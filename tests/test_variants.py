@@ -21,8 +21,8 @@ REPLY = r'''Original: 41 s. New: a 3-legged zorblatt rinses $\frac{3}{2}\cdot 6 
 
 MARKED = """```quiz Marked
 [{"type": "numeric", "question": "2+2?", "answer": 4, "varies": true},
- {"type": "free", "question": "Why?", "answer": "Tea.", "varies": false},
- {"type": "free", "question": "How?", "answer": "Rinse."},
+ {"type": "written", "question": "Why?", "answer": "Tea.", "varies": false},
+ {"type": "written", "question": "How?", "answer": "Rinse."},
  {"type": "truefalse", "question": "Wet?", "answer": true, "varies": true}]
 ```"""
 
@@ -34,7 +34,7 @@ def test_parse_new_versions():
     assert variants.parse('Nothing to vary.\n```json\n{"skip": true}\n```', NUMERIC) == variants.SKIP
     assert variants.parse('{"skip": true}', NUMERIC) == variants.SKIP  # no fence
     with pytest.raises(ValueError):
-        variants.parse('```json\n{"type": "free", "question": "Why?", "answer": "Tea."}\n```', NUMERIC)
+        variants.parse('```json\n{"type": "written", "question": "Why?", "answer": "Tea."}\n```', NUMERIC)
     with pytest.raises(ValueError):
         variants.parse('```json\n{"type": "numeric", "question": "?", "answer": "lots"}\n```', NUMERIC)
 
@@ -105,17 +105,17 @@ def test_reviewed_numeric_cards_come_back_with_new_numbers(chat_panel):
     assert "<last_version>" in worker.variants[-1][0].question
 
 
-def test_free_cards_without_numbers_are_skipped_for_good(chat_panel):
+def test_written_cards_without_numbers_are_skipped_for_good(chat_panel):
     review, worker, db, reply, shown = _review(chat_panel)
-    free = db.card_for(reply, 0, 3)["id"]
+    written = db.card_for(reply, 0, 3)["id"]
     review.start()
-    while review.card_id != free:
+    while review.card_id != written:
         review.act(review.card_id, "skip")
-    review.check(free, {"text": "Tea."})
-    review.rate(free, 3)
-    assert worker.variants[-1][1] == free
-    worker.varied.emit(free, '{"skip": true}')
-    card = db.card(free)
+    review.check(written, {"text": "Tea."})
+    review.rate(written, 3)
+    assert worker.variants[-1][1] == written
+    worker.varied.emit(written, '{"skip": true}')
+    card = db.card(written)
     assert not variants.is_varied(card) and not variants.wants_variant(card)
     assert variants.question(card) == srs.question(card)
 
@@ -186,19 +186,19 @@ def test_a_cards_new_versions_are_switched_in_the_browser(chat_panel):
     from study_reader.browser import CardBrowser
 
     review, worker, db, reply, shown = _review(chat_panel)
-    free = db.card_for(reply, 0, 3)["id"]
-    db.update_card(free, variant=json.dumps(variants.SKIP))  # Claude found nothing to vary
+    written = db.card_for(reply, 0, 3)["id"]
+    db.update_card(written, variant=json.dumps(variants.SKIP))  # Claude found nothing to vary
     browser = CardBrowser(db)
     browser.show()
-    browser.set_search(f"cid:{free}")
+    browser.set_search(f"cid:{written}")
     e = browser.editor
     assert e.q_varies.isVisible() and not e.q_varies.isChecked()
     e.q_varies.click()  # on: asked again, and told to rephrase rather than skip
     browser.save_note()
-    card = db.card(free)
+    card = db.card(written)
     assert srs.question(card)["varies"] is True and variants.wants_variant(card)
     assert "skip" not in variants.request(srs.question(card))
     e.q_varies.click()
     browser.save_note()
-    assert srs.question(db.card(free))["varies"] is False and not variants.wants_variant(db.card(free))
+    assert srs.question(db.card(written))["varies"] is False and not variants.wants_variant(db.card(written))
     browser.close()

@@ -1,8 +1,11 @@
 """Anki-style card search for the card browser: a query like `deck:Physics tag:exam -is:new`
-compiled to SQL over cards (c), their notes (n), decks (d) and books (b). Qt-free.
+compiled to SQL over cards (c), their fields and tags (n, card_notes), decks (d) and books (b).
+Qt-free.
 
 Terms are ANDed unless joined by OR; parentheses group, and `-` negates a term or group.
-Bare words search the notes' text (`*` any run, `_` one character). See compile() for keys."""
+Bare words search the cards' text (`*` any run, `_` one character). `type:` takes a card type
+(cardmodel.TYPES; `type:flashcard` is only one-sided flashcards, `type:reversed` the others);
+see KEYS for the rest."""
 
 from __future__ import annotations
 
@@ -10,17 +13,17 @@ import re
 import time
 from functools import lru_cache
 
-from . import cardmodel, quiz, srs
+from . import cardmodel, srs
 
 FROM = ("cards c JOIN card_notes n ON n.id=c.note_id JOIN decks d ON d.id=c.deck_id "
         "LEFT JOIN books b ON b.id=c.book_id")
 
-# Every question type a card can have: quiz.py's, and those of cloze and occlusion notes.
-TYPE_LABELS = {"flashcard": quiz.TYPE_LABELS["flashcard"], **quiz.TYPE_LABELS, "cloze": "Cloze",
-               "occlusion": "Image occlusion"}
-QUESTION_TYPES = tuple(TYPE_LABELS)
-KEYS = ("deck", "tag", "note", "type", "book", "flag", "is", "cid", "nid", "added", "edited", "rated",
+KEYS = ("deck", "tag", "type", "note", "book", "flag", "is", "cid", "nid", "added", "edited", "rated",
         "introduced", "prop", "re")
+# Older names searches may still use: `note:` was what `type:` is, with the kinds basic, reverse
+# and quiz (any question that is answered), and written answers were free responses.
+TYPE_ALIASES = {"basic": ("flashcard",), "reverse": ("reversed",), "quiz": cardmodel.QUESTION_TYPES,
+                "free": ("written",)}
 PROPS = ("ivl", "due", "reps", "lapses", "s", "d", "r")
 PROP = re.compile(r"^(\w+)(<=|>=|!=|=|<|>)(-?\d+(?:\.\d+)?)$")
 
@@ -28,8 +31,7 @@ PROP = re.compile(r"^(\w+)(<=|>=|!=|=|<|>)(-?\d+(?:\.\d+)?)$")
 SORTS: dict[str, str] = {
     "question": "n.sort_text COLLATE NOCASE",
     "deck": "d.name COLLATE NOCASE",
-    "type": "json_extract(c.data, '$.type')",
-    "note": "n.kind",
+    "type": "n.kind",
     # Scheduled cards by due date, then new ones in the order they were added.
     "due": "CASE WHEN c.stage=0 THEN 1e12 + c.created_at ELSE c.due END",
     "interval": "CASE WHEN c.stage>0 THEN c.due - c.last_review END",
@@ -197,15 +199,16 @@ class _Parser:
         pattern = " " + "".join(body) + r"(::\S*)? "
         return f"n.tags REGEXP {self.arg(pattern)}"
 
-    def _note(self, value: str) -> str:
-        if value.lower() not in cardmodel.KINDS:
-            raise SearchError(f"note: is one of {', '.join(cardmodel.KINDS)}.")
-        return f"n.kind={self.arg(value.lower())}"
-
     def _type(self, value: str) -> str:
-        if value.lower() not in QUESTION_TYPES:
-            raise SearchError(f"type: is one of {', '.join(QUESTION_TYPES)}.")
-        return f"json_extract(c.data, '$.type')={self.arg(value.lower())}"
+        value = value.lower()
+        types = TYPE_ALIASES.get(value) or ((value,) if value in cardmodel.TYPES else None)
+        if types is None:
+            raise SearchError(f"type: is one of {', '.join(cardmodel.TYPES)}.")
+        if len(types) == 1:
+            return f"n.kind={self.arg(types[0])}"
+        return f"n.kind IN ({', '.join(self.arg(t) for t in types)})"
+
+    _note = _type
 
     def _book(self, value: str) -> str:
         if value.lower() == "none":
