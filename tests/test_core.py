@@ -94,6 +94,19 @@ def test_old_database_gets_chat_model_column(tmp_path):
     assert db.book(1)["finished_at"] is None
 
 
+
+def test_book_review_panel_settings_migrate(tmp_path):
+    """The book's Review panel is gone: books that had it open show chats, or the calculator that sat under it."""
+    path = tmp_path / "t.db"
+    db = Database(path)
+    for i, panel in enumerate(("review", "calc+review", "notes", ""), 1):
+        db.upsert_book(f"h{i}", f"/{i}.pdf", str(i), 1)
+        db.update_book(i, right_panel=panel)
+    db.conn.close()
+    db = Database(path)
+    assert [db.book(i)["right_panel"] for i in range(1, 5)] == ["chat", "calc", "notes", ""]
+
+
 # -- document ---------------------------------------------------------------------
 def test_pdf_document(pdf_path):
     doc = Document(pdf_path)
@@ -230,7 +243,7 @@ def test_asking_highlights_and_shows_chats(pdf_path, tmp_path, monkeypatch):
     win.show()
     win.open_book(pdf_path)
     win.calc_action.trigger()  # the calculator has the right-hand slot
-    assert win.calc.isVisible() and not win.review.isVisible()
+    assert win.calc.isVisible() and win.right.currentWidget() is win.calc
 
     words = win.doc.words(0)
     win.reader._selection = {0: words[:3]}

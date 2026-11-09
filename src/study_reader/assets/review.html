@@ -15,15 +15,10 @@
 <script src="confetti.js"></script>
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 <style>
-  #root { max-width:720px; margin:0 auto; padding:14px 6px 30px; overflow-wrap:anywhere; }
-  html.page #root { padding-top:28px; }
-  html.page, html.page body { background:var(--window); }
+  #root { max-width:760px; margin:0 auto; padding:28px 6px 30px; overflow-wrap:anywhere; }
+  html, body { background:var(--window); }
   header { margin:0 0 14px; }
-  header h1 { font-size:1.35em; font-weight:700; letter-spacing:-0.01em; margin:0; line-height:1.25; }
-  html.page header h1 { font-size:27px; }
-  html.page #root { max-width:760px; }
-  html.page .card .q { font-size:16px; padding:20px 24px 22px; }
-  html.page .bar { font-size:13px; }
+  header h1 { font-size:27px; font-weight:700; letter-spacing:-0.01em; margin:0; line-height:1.25; }
   header .head-row { display:flex; align-items:center; gap:8px; }
   header .head-row h1 { flex:1; min-width:0; }
   header .crumbs { color:var(--muted); font-size:13px; margin-top:2px; }
@@ -44,19 +39,19 @@
   .hero .keys { text-align:left; }
   .empty svg { display:block; margin:30px auto 12px; width:36px; height:36px; stroke:var(--faint); fill:none;
                stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
-  .bar { display:flex; align-items:center; gap:4px; font-size:12px; color:var(--muted); margin-bottom:8px; }
+  .bar { display:flex; align-items:center; gap:4px; font-size:13px; color:var(--muted); margin-bottom:8px; }
   .bar .grow { flex:1; }
   .bar a { color:var(--muted); text-decoration:none; padding:2px 8px; border-radius:6px; }
   .bar a:hover { color:var(--fg); background:var(--hover); }
   .bar .count { font-weight:650; font-variant-numeric:tabular-nums; }
   .bar .count .due { color:var(--accent); } .bar .count .new { color:var(--new); }
   .card { background:var(--raised); border:1px solid var(--border); border-radius:14px; overflow:hidden; box-shadow:0 1px 3px var(--shadow); }
-  .card .q { border-bottom:none; padding:14px 16px 16px; }
+  .card .q { border-bottom:none; padding:20px 24px 22px; font-size:16px; }
   .card .q-meta { flex-wrap:wrap; gap:4px 8px; }
   .card .q-meta .tag { color:var(--new); }
   .card .q-meta .book { color:var(--fg); }
   .card .q-meta .src { white-space:nowrap; }
-  /* What to review: decks, books (with their sections) or the open book's sections */
+  /* What to review: decks, or books with their sections */
   .tabs { display:flex; gap:2px; margin:-4px 0 8px; border-bottom:1px solid var(--border); }
   .tabs a { font-size:13px; font-weight:600; color:var(--muted); text-decoration:none; padding:4px 10px 7px; margin-bottom:-1px;
             border-bottom:2px solid transparent; }
@@ -215,7 +210,7 @@ function sectionRows(sections, bookId, selected, depth) {
   return (byParent[""] || []).map(s => row(s, depth)).join("");
 }
 
-// Every book with cards (all_books), each opening onto its sections.
+// Every book with cards, each opening onto its sections.
 function booksHtml(o) {
   return `<div class="decks"><div class="deck-head"><span class="tw"></span><span class="name">Book</span><span class="n">Due</span><span class="n">New</span></div>`
     + allRow(o) + o.books.map(b => {
@@ -227,20 +222,8 @@ function booksHtml(o) {
     }).join("") + `</div>`;
 }
 
-// The open book's sections, to review just one.
-function sectionsHtml(o) {
-  return `<div class="decks"><div class="deck-head"><span class="tw"></span><span class="name">Section</span><span class="n">Due</span><span class="n">New</span></div>`
-    + `<div class="deck all${o.section ? "" : " sel"}" data-act="section" data-book="0" data-tag=""><span class="tw"></span><span class="name">Whole book</span>`
-    + `${num(o.whole_due, "due")}${num(o.whole_new, "new")}</div>`
-    + sectionRows(o.sections, 0, o.section, 0) + `</div>`;
-}
-
-// What to review: decks or books (the Review page), or the open book's sections.
+// What to review: decks or books.
 function pickerHtml(o) {
-  if (!o.all) {
-    return o.sections && o.sections.length
-      ? `<section class="panel"><div class="tabs"><a class="on">Sections</a></div>${sectionsHtml(o)}</section>` : "";
-  }
   const hasDecks = !!(o.decks && o.decks.length), hasBooks = !!(o.books && o.books.length);
   if (!hasDecks && !hasBooks) return "";
   let tab = PICK || (o.book !== null && hasBooks ? "books" : hasDecks ? "decks" : "books");
@@ -274,9 +257,7 @@ function heroHtml(o) {
 }
 
 function headerHtml(o) {
-  let crumbs;
-  if (o.all) crumbs = o.title ? `<a href="#" data-act="deck" data-deck="0">← Every deck and book</a>` : "Every deck and book";
-  else crumbs = o.section ? `<a href="#" data-act="section" data-book="0" data-tag="">← The whole book</a>` : "This book's cards";
+  const crumbs = o.title ? `<a href="#" data-act="deck" data-deck="0">← Every deck and book</a>` : "Every deck and book";
   // The desktop's Calculator button comes with o.calc (whether it is open), which the app never sends.
   const calc = o.calc == null ? "" : `<a class="btn ghost calc${o.calc ? " on" : ""}" href="#" data-act="calc" title="${CALC_TITLE}">${CALC_ICON}Calculator</a>`;
   return `<header><div class="head-row"><h1>${o.title ? esc(o.title) : "Review"}</h1>${calc}</div><div class="crumbs">${crumbs}</div></header>`;
@@ -286,13 +267,11 @@ function showOverview(o) {
   CARD = null;
   LAST = o;
   const root = document.getElementById("root");
-  if (o.disabled) { root.innerHTML = ""; return; }
-  document.documentElement.classList.toggle("page", !!o.all);
   const how = `Every question in a quiz Claude writes becomes a review card. Choose <em>Quiz me</em>
     (<kbd>Ctrl+Shift+Q</kbd>) on a selection or the section you're reading, or under one of
     Claude's replies.`;
   if (!o.total) {
-    root.innerHTML = headerHtml(o) + `<div class="empty">${CARDS_ICON}<div class="msg">${o.empty ? esc(o.empty) : `No review cards ${o.all ? "yet" : "for this book yet"}.`}</div></div>`
+    root.innerHTML = headerHtml(o) + `<div class="empty">${CARDS_ICON}<div class="msg">${o.empty ? esc(o.empty) : "No review cards yet."}</div></div>`
       + `<div class="hint">${how}</div>`;
     return;
   }
@@ -303,9 +282,9 @@ function showOverview(o) {
   if (g) html += `<div>${playerHtml(g)}</div>`;
   html += pickerHtml(o);
   if (g) html += extrasHtml(g);
-  // The Android app (o.links) offers its own links, or none.
-  const links = o.links || (o.all ? [] : [["browse", "Browse cards"], ["stats", "Statistics"]]);
-  if (links.length) html += `<div class="links">${links.map(([act, label]) => `<a class="btn ghost" href="#" data-act="${act}">${esc(label)}</a>`).join("")}</div>`;
+  // The Android app may offer links of its own (o.links: [what, label], sent to bridge.open).
+  const links = o.links || [];
+  if (links.length) html += `<div class="links">${links.map(([what, label]) => `<a class="btn ghost" href="#" data-act="open" data-what="${esc(what)}">${esc(label)}</a>`).join("")}</div>`;
   html += `<div class="hint">${how}</div></div>`;
   root.innerHTML = html;
   if (g) heatmap(document.getElementById("heat"), g.heat, { fit: true });
@@ -499,7 +478,8 @@ document.addEventListener("click", ev => {
   else if (act === "deck") bridge.chooseDeck(+target.dataset.deck);
   else if (act === "book") bridge.chooseBook(+target.dataset.book);
   else if (act === "section") bridge.chooseSection(+target.dataset.book, target.dataset.tag);
-  else if (act === "browse" || act === "stats" || act === "calc") bridge.open(act);
+  else if (act === "calc") bridge.open("calc");
+  else if (act === "open") bridge.open(target.dataset.what);
   else if (!CARD) return;
   else if (act === "rate") { FLAGS_OPEN = false; bridge.rate(CARD.id, +target.dataset.k); }
   else if (act === "flag") { FLAGS_OPEN = !FLAGS_OPEN; showCard(CARD); }

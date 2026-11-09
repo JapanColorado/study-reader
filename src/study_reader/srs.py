@@ -1,6 +1,6 @@
 """Spaced repetition: every quiz question Claude writes becomes a card, scheduled with FSRS, as do
 the cards made in the card browser or migrated from Anki. A quiz question's first answer in the
-chat counts as its first review; after that it comes back in the Review panel. Qt-free."""
+chat counts as its first review; after that it comes back on the Review page. Qt-free."""
 
 from __future__ import annotations
 
@@ -296,17 +296,16 @@ def section_root(book) -> str:
     return tag_part(book["title"]) or "Book"
 
 
-def sections(db: Database, book_id: int | None = None, now: float | None = None) -> dict[int, list[dict]]:
-    """For every book (or one), the sections its cards are tagged with, as a tree in reading
-    order: {book id: [{tag, name, parent (tag or None), due, new, total}]}. A section's counts
-    include those of the sections in it; new: cards waiting, not capped by today's allowance."""
+def sections(db: Database, now: float | None = None) -> dict[int, list[dict]]:
+    """For every book, the sections its cards are tagged with, as a tree in reading order:
+    {book id: [{tag, name, parent (tag or None), due, new, total}]}. A section's counts include
+    those of the sections in it; new: cards waiting, not capped by today's allowance."""
     now = time.time() if now is None else now
     roots = {b["id"]: section_root(b) for b in db.conn.execute("SELECT id, title FROM books")}
-    scope = "AND c.book_id=?" if book_id is not None else ""
     rows = db.conn.execute(
         f"SELECT c.book_id, c.page, n.tags, {due_sql('c.')} AS due, c.suspended=0 AND c.stage=0 AS new "
-        f"FROM cards c JOIN card_notes n ON n.id=c.note_id WHERE c.book_id IS NOT NULL AND n.tags!='' {scope}",
-        (next_day(now), now, *(() if book_id is None else (book_id,))),
+        f"FROM cards c JOIN card_notes n ON n.id=c.note_id WHERE c.book_id IS NOT NULL AND n.tags!=''",
+        (next_day(now), now),
     )
     nodes: dict[int, dict[str, dict]] = {}
     for r in rows:

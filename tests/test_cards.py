@@ -236,7 +236,7 @@ def test_reviewing_cloze_and_bookless_free_cards(db, chat_panel):
     db.add_card_note("cloze", {"text": "{{c1::Gauss}}'s law"}, deck, now=NOW - 10)
     db.add_card_note("quiz", {"type": "free", "question": "Why?", "answer": "Because.", "explanation": ""}, deck, now=NOW)
     db.ensure_deck("Elsewhere")
-    review = ReviewPanel(db, all_books=True)
+    review = ReviewPanel(db)
     shown = []
     review._js = lambda fn, *args: shown.append((fn, args))
     review.choose_deck(db.deck_by_name("Anki")["id"])
@@ -384,10 +384,10 @@ def test_main_window_cards_menu(pdf_path, tmp_path, monkeypatch):
     assert win.center.currentWidget() is win.cards_page and browser.isVisible() and not browser.isWindow()
     assert win.nav.buttons["cards"].isChecked() and not win.web_action.isEnabled()  # its Ctrl+Shift+O wins
     browser.reviewDeckRequested.emit(deck)
-    assert win.page() == "review" and win.review_all.deck_id == deck
+    assert win.page() == "review" and win.review.deck_id == deck
     assert win.web_action.isEnabled()
-    win.review_all.start()
-    win.review_all.act(win.review_all.card_id, "edit")
+    win.review.start()
+    win.review.act(win.review.card_id, "edit")
     assert win.page() == "cards" and browser.search_box.text().startswith("cid:")
     win.show_stats(deck)
     assert win.page() == "stats" and win.stats_window.isVisible() and not win.stats_window.isWindow()

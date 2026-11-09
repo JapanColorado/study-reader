@@ -196,7 +196,7 @@ def test_quiz_cards_are_tagged_with_their_section(tmp_path):
     card = srs.next_card(db, book_id, NOW, tag="A::Part_I::Chapter_1:_Rinsing_mostly")
     assert card["id"] == db.card_for(reply, 0, 0)["id"]
 
-    tree = srs.sections(db, book_id, NOW)[book_id]
+    tree = srs.sections(db, NOW)[book_id]
     assert [(n["tag"], n["parent"], n["total"]) for n in tree] == [
         ("A::Part_I", None, 6), ("A::Part_I::Chapter_1:_Rinsing_mostly", "A::Part_I", 2),
         ("A::Part_I::Chapter_2", "A::Part_I", 4), ("A::Part_I::Chapter_2::2.1_Storage", "A::Part_I::Chapter_2", 4),
@@ -241,7 +241,7 @@ def test_quiz_questions_name_the_section_they_practice(tmp_path):
     assert db.card_note(second["note_id"])["tags"] == " A::Chapter_6_Firms::Exercises "
     assert first["page"] == 5 and "section" not in srs.question(first)
     # Sections come in the book's order, not that of their cards' pages.
-    tree = srs.sections(db, book_id, NOW)[book_id]
+    tree = srs.sections(db, NOW)[book_id]
     assert [n["name"] for n in tree] == ["Chapter 6 Firms", "6.4 Long-Run Production", "Exercises"]
 
 
@@ -283,7 +283,7 @@ def test_chat_quizzes_feed_the_deck(chat_panel):
     assert worker.jobs[-1].question == "Quiz me on your last reply."
 
 
-# -- the review panel ----------------------------------------------------------------------
+# -- the Review page -----------------------------------------------------------------------
 def test_reviewing_cards(chat_panel):
     from study_reader.review import ReviewPanel
 
@@ -292,7 +292,7 @@ def test_reviewing_cards(chat_panel):
     worker.done.emit(panel.chat_id, "s1", QUIZ, "u1")
     reply = db.messages(panel.chat_id)[1]["id"]
     review = ReviewPanel(db)
-    review.set_book(book_id)
+    review.choose_book(book_id)
     shown = []
     review._js = lambda fn, *args: shown.append((fn, args))
     reviewed = []
@@ -340,7 +340,7 @@ def test_skipped_cards_stay_skipped_for_the_session(chat_panel):
     panel.start_quiz("Quiz me.", "Quiz", 0)
     worker.done.emit(panel.chat_id, "s1", QUIZ, "u1")
     review = ReviewPanel(db)
-    review.set_book(book_id)
+    review.choose_book(book_id)
     shown = []
     review._js = lambda fn, *args: shown.append((fn, args))
 
@@ -385,46 +385,42 @@ def test_reviewing_one_book_or_section(chat_panel):
     db.add_card_note("basic", {"front": "q", "back": "a"}, db.book_deck(other), book_id=other)
 
     review = ReviewPanel(db)
-    review.set_book(book_id)
     shown = []
     review._js = lambda fn, *args: shown.append((fn, args))
     review.refresh()
     o = shown[-1][1][0]
-    assert [s["name"] for s in o["sections"]] == ["Part I", "Chapter 1: Rinsing mostly"] and o["section"] is None
-    review.choose_section(0, "A::Part_I::Chapter_1:_Rinsing_mostly")
-    o = shown[-1][1][0]
-    assert o["total"] == 1 and o["title"] == "Part I › Chapter 1: Rinsing mostly" and o["whole_new"] == 4
-    review.start()
-    assert review.card_id == db.card_for(reply, 0, 0)["id"]
-    review.set_book(book_id)
-    assert review.section is None
-
-    everything = ReviewPanel(db, all_books=True)
-    everything._js = lambda fn, *args: shown.append((fn, args))
-    everything.refresh()
-    o = shown[-1][1][0]
     assert [b["title"] for b in o["books"]] == ["A", "B"] and o["total"] == 5
     assert o["decks"] == []  # books' own decks are listed as books
-    assert o["books"][0]["sections"][0]["tag"] == "A::Part_I"
-    everything.choose_book(other)
+    assert [s["name"] for s in o["books"][0]["sections"]] == ["Part I", "Chapter 1: Rinsing mostly"]
+    review.choose_book(other)
     assert shown[-1][1][0]["total"] == 1 and shown[-1][1][0]["title"] == "B"
-    everything.choose_section(book_id, "A::Part_I")
+    review.choose_section(book_id, "A::Part_I")
     o = shown[-1][1][0]
     assert o["total"] == 4 and o["book"] == book_id and o["title"] == "A › Part I"
-    everything.choose_deck(None)
-    assert shown[-1][1][0]["total"] == 5 and everything.picked_book is None
+    review.choose_section(book_id, "A::Part_I::Chapter_1:_Rinsing_mostly")
+    o = shown[-1][1][0]
+    assert o["total"] == 1 and o["title"] == "A › Part I › Chapter 1: Rinsing mostly"
+    review.start()
+    assert review.card_id == db.card_for(reply, 0, 0)["id"]
+    review.choose_book(book_id)
+    assert review.section is None and shown[-1][1][0]["total"] == 4
+    review.choose_deck(None)
+    assert shown[-1][1][0]["total"] == 5 and review.book_id is None
 
 
-def test_main_window_review_panel(pdf_path, tmp_path, monkeypatch):
+def test_main_window_review_of_the_open_book(pdf_path, tmp_path, monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
     from study_reader.main_window import MainWindow
 
-    QApplication.instance() or QApplication([])
+    app = QApplication.instance() or QApplication([])
     db = Database(tmp_path / "t.db")
     win = MainWindow(db)
     win.show()
+    win.activateWindow()
+    app.processEvents()
     win.open_book(pdf_path)
     chat = db.create_chat(win.book_id, "Quiz")
     reply = db.add_message(chat, "assistant", CARDS)
@@ -432,22 +428,30 @@ def test_main_window_review_panel(pdf_path, tmp_path, monkeypatch):
     win._on_cards_changed()
     assert "2 cards to review" in win.review_action.toolTip()
 
-    win.review_action.trigger()
-    assert win.review.isVisible() and db.book(win.book_id)["right_panel"] == "review"
-    win._review_source(win.book_id, 2)
-    assert win.reader.current_page() == 2
-
     assert win.review_action.text() == "Review · 2" and win.nav.buttons["review"].badge == "2"
+    other = db.upsert_book("h2", "/b.pdf", "B", 3)["id"]
+    db.add_card_note("basic", {"front": "q", "back": "a"}, db.book_deck(other), book_id=other)
     book_id = win.book_id
-    win.show_review_all()  # the book stays open behind the Review page
-    assert win.page() == "review" and win.book_id == book_id
+
+    # F8 (the toolbar's Review): the Review page narrowed to the open book, which stays open behind it.
+    QTest.keyClick(win, Qt.Key.Key_F8)
+    assert win.page() == "review" and win.book_id == book_id and win.review.book_id == book_id
+    assert win.review.deck_id is None and win.review.section is None
+    assert db.card(win.review.card_id)["book_id"] == book_id
     assert not win.toolbar.isVisible() and not win.right.isVisible() and win.nav.book.isVisible()
+    assert not win.review_action.isEnabled()  # only while reading
+    win.review.act(win.review.card_id, "source")  # a card's page: back in the book
+    assert win.page() == "book" and win.reader.current_page() == db.card(win.review.card_id)["page"]
+    assert db.book(book_id)["right_panel"] == "chat"  # the right-hand panel is left as it was
+
     win._review_chat(book_id, chat)
     assert win.center.currentWidget() is win.book_view and win.chat.chat_id == chat
     assert win.toolbar.isVisible() and win.right.isVisible()
 
-    win.library.reviewBookRequested.emit(book_id)  # the Library's Review button
-    assert win.page() == "review" and win.review_all.picked_book == book_id and win.review_all.card_id is not None
+    win.show_page("review")
+    win.review.choose_deck(None)
+    win.library.reviewBookRequested.emit(book_id)  # the Library's Review button does the same
+    assert win.page() == "review" and win.review.book_id == book_id and win.review.card_id is not None
     win.close()
 
 
@@ -489,7 +493,7 @@ def test_navigating_pages_keeps_the_book_open(pdf_path, tmp_path, monkeypatch):
 
 
 def test_calculator_beside_review(pdf_path, tmp_path, monkeypatch):
-    """In a book the calculator can sit under the review; on the Review page F11 opens one beside
+    """In a book the calculator takes the right-hand slot; on the Review page F11 opens one beside
     the cards, showing the history of the card's book (or, without one, a shared history)."""
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
@@ -509,22 +513,16 @@ def test_calculator_beside_review(pdf_path, tmp_path, monkeypatch):
     srs.add_quiz_cards(db, book_id, reply, CARDS)
     db.add_card_note("basic", {"front": "Loose", "back": "card"}, db.ensure_deck("Loose"))
 
-    win.review_action.trigger()
-    win.calc_action.trigger()  # joins the review instead of replacing it
-    assert win.review_action.isChecked() and win.review.isVisible() and win.calc.isVisible()
-    assert db.book(book_id)["right_panel"] == "calc+review"
-    win.notes_action.trigger()  # the others still take the whole slot
-    assert not win.review_action.isChecked() and not win.calc_action.isChecked() and win.notes.isVisible()
+    win.calc_action.trigger()  # replaces the chats
+    assert win.calc.isVisible() and not win.chat.isVisible() and db.book(book_id)["right_panel"] == "calc"
+    win.notes_action.trigger()
+    assert not win.calc_action.isChecked() and win.notes.isVisible()
     win.calc_action.trigger()
-    win.review_action.trigger()
     win.show_library()
     win.open_book(pdf_path)
-    assert win.review.isVisible() and win.calc.isVisible() and not win.notes_action.isChecked()
-    win.calc_action.trigger()
-    assert win.review.isVisible() and not win.calc.isVisible() and db.book(book_id)["right_panel"] == "review"
-    win.calc_action.trigger()
+    assert win.calc.isVisible() and win.right.currentWidget() is win.calc and not win.notes_action.isChecked()
 
-    win.show_review_all()
+    win.show_page("review")
     assert not win.review_calc.isVisible() and not win.calc_action.isEnabled()
     app.processEvents()
     QTest.keyClick(win, Qt.Key.Key_F11)
@@ -532,14 +530,14 @@ def test_calculator_beside_review(pdf_path, tmp_path, monkeypatch):
     assert db.get_setting("review_calc") == "1"
     assert win.review_calc.book_id is None  # before any card: the shared history
 
-    win.review_all.choose_deck(None)
-    win.review_all.start()
+    win.review.choose_deck(None)
+    win.review.start()
     seen = set()
     for _ in range(3):
-        card = db.card(win.review_all.card_id)
+        card = db.card(win.review.card_id)
         assert win.review_calc.book_id == card["book_id"]
         seen.add(card["book_id"])
-        win.review_all.act(card["id"], "skip")
+        win.review.act(card["id"], "skip")
     assert seen == {book_id, None}
 
     win.review_calc.set_book(book_id)
@@ -549,25 +547,21 @@ def test_calculator_beside_review(pdf_path, tmp_path, monkeypatch):
     win.show_page("book")
     QTest.keyClick(win, Qt.Key.Key_F11)  # in the book, F11 is the book's calculator
     assert not win.calc_action.isChecked() and db.get_setting("review_calc") == "1"
-    win.show_review_all()
+    win.show_page("review")
     assert win.review_calc.isVisible()
     win.review_calc.closeRequested.emit()
     assert not win.review_calc.isVisible() and db.get_setting("review_calc") == "0"
 
-    # Each review panel's Calculator button toggles its own calculator and shows whether it's open.
+    # The Review page's Calculator button toggles its calculator and shows whether it's open.
     shown = []
-    monkeypatch.setattr(win.review_all, "_js", lambda f, *args: shown.append((f, args)))
-    bridge = win.review_all.channel.registeredObjects()["review"]
+    monkeypatch.setattr(win.review, "_js", lambda f, *args: shown.append((f, args)))
+    bridge = win.review.channel.registeredObjects()["review"]
     bridge.open("calc")
-    assert win.review_calc.isVisible() and win.review_all.calculator is True and ("setCalc", (True,)) in shown
-    win.review_all.refresh()
+    assert win.review_calc.isVisible() and win.review.calculator is True and ("setCalc", (True,)) in shown
+    win.review.refresh()
     assert shown[-1][1][0]["calc"] is True
     bridge.open("calc")
-    assert not win.review_calc.isVisible() and win.review_all.calculator is False
-    win.show_page("book")
-    assert win.review.calculator is False  # F11 closed the book's calculator above
-    win.review.channel.registeredObjects()["review"].open("calc")
-    assert win.calc_action.isChecked() and win.calc.isVisible() and win.review.calculator is True
+    assert not win.review_calc.isVisible() and win.review.calculator is False
     win.close()
 
 

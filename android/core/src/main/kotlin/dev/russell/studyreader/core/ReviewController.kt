@@ -14,10 +14,10 @@ import kotlinx.serialization.json.put
 import kotlin.math.min
 
 /**
- * The phone's review panel: the desktop's ReviewPanel (review.py) in its all-books form, driving
- * the same review.html. The page calls the bridge methods (start, stop, check, rate, act,
- * chooseDeck, chooseBook, chooseSection, refresh, open); this answers with JavaScript to run
- * (showOverview, showCard, celebrate, inputError) through [js]. Every change for the desktop is
+ * The phone's review panel: the desktop's ReviewPanel (review.py), driving the same review.html.
+ * The page calls the bridge methods (start, stop, check, rate, act, chooseDeck, chooseBook,
+ * chooseSection, refresh, open); this answers with JavaScript to run (showOverview, showCard,
+ * celebrate, inputError) through [js]. Every change for the desktop is
  * queued with SyncStore.record.
  *
  * [now] is wall-clock epoch seconds; [mono] a monotonic clock in seconds (review durations).

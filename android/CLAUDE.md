@@ -35,8 +35,8 @@ Every push to `main` that passes `../.github/workflows/android.yml` (the same ch
   - `Grading.kt` (and the calculator/LaTeX ports beside it) ports `quiz.grade` (`GradingTest`).
   - `Srs.kt` and `Gamify.kt` port `srs.py`'s queue, counts, sections and previews, and `gamify.py`
     (`QueueTest`, over `queue_snapshot.db`, a real export).
-  - `ReviewController.kt` ports `review.ReviewPanel` (all-books mode). It drives the desktop's own
-    `review.html` through `js` callbacks (`showOverview`, `showCard`, `celebrate`, `inputError`).
+  - `ReviewController.kt` ports `review.ReviewPanel`. It drives the desktop's own `review.html`
+    through `js` callbacks (`showOverview`, `showCard`, `celebrate`, `inputError`).
   - `SyncStore.kt` is the phone's half of the sync format: the `pending` event queue, batches,
     `adopt` (take over a new snapshot, drop acknowledged events, replay the rest) and the local
     tables (`pending`, `buried`, `local`). The desktop half and the format itself are in

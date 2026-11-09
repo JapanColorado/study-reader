@@ -304,7 +304,7 @@ def status(db: Database, now: float | None = None) -> dict:
 # -- sessions --------------------------------------------------------------------------------
 @dataclass
 class Session:
-    """One sitting in the Review panel: its combo, what it achieved, and how long it runs (limit
+    """One sitting on the Review page: its combo, what it achieved, and how long it runs (limit
     "cards": QUICK_CARDS cards; "time": QUICK_SECONDS; "": until nothing is left). Times are
     time.monotonic()."""
 

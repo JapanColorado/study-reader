@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS books (
     zoom REAL NOT NULL DEFAULT 0,   -- 0 = fit width
     crop_margins INTEGER NOT NULL DEFAULT 0,
     show_toc INTEGER NOT NULL DEFAULT 1,
-    right_panel TEXT NOT NULL DEFAULT 'chat', -- 'chat' | 'calc' | 'notes' | 'review' | 'calc+review' (both) | '' (collapsed)
+    right_panel TEXT NOT NULL DEFAULT 'chat', -- 'chat' | 'calc' | 'notes' | '' (collapsed)
     show_chat_list INTEGER NOT NULL DEFAULT 1,
     base_session_id TEXT,
     context_mode TEXT,              -- NULL (not prepared) | 'full' | 'partial'
@@ -244,6 +244,10 @@ class Database:
             self.conn.execute("ALTER TABLE books ADD COLUMN right_panel TEXT NOT NULL DEFAULT 'chat'")
         if "show_chat_list" not in book_cols:
             self.conn.execute("ALTER TABLE books ADD COLUMN show_chat_list INTEGER NOT NULL DEFAULT 1")
+        # The book's Review panel is gone (the Review page took its place): chats instead, and the
+        # calculator that sat under it alone.
+        self.conn.execute("UPDATE books SET right_panel='chat' WHERE right_panel='review'")
+        self.conn.execute("UPDATE books SET right_panel='calc' WHERE right_panel='calc+review'")
         if "source_url" not in book_cols:
             self.conn.execute("ALTER TABLE books ADD COLUMN source_url TEXT")
         if "finished_at" not in book_cols:

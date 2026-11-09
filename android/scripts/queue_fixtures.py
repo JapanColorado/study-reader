@@ -101,7 +101,7 @@ def row(r):
 scopes = [{"book": None, "deck": None, "tag": None}]
 scopes += [{"book": b, "deck": None, "tag": None} for b in books]
 scopes += [{"book": None, "deck": d["id"], "tag": None} for d in db.decks()]
-for b, secs in srs.sections(db, None, NOW).items():
+for b, secs in srs.sections(db, NOW).items():
     scopes += [{"book": b, "deck": None, "tag": s["tag"]} for s in secs]
 
 cases = {"now": NOW, "new_left_today": srs.new_left_today(db, NOW), "scopes": [], "previews": {}, "sections": {},
@@ -114,7 +114,7 @@ for sc in scopes:
     cases["scopes"].append({**sc, "counts": srs.counts(db, sc["book"], NOW, **args),
                             "next": first["id"] if first else None, "next_skipping": second["id"] if second else None,
                             "next_due": srs.next_due(db, sc["book"], NOW, **args)})
-for b, secs in srs.sections(db, None, NOW).items():
+for b, secs in srs.sections(db, NOW).items():
     cases["sections"][str(b)] = secs
 srs.scheduler(db).enable_fuzzing = False  # previews comparable with the Kotlin port (Srs(fuzz = false))
 for card in db.conn.execute("SELECT * FROM cards WHERE stage>0 ORDER BY id").fetchall():

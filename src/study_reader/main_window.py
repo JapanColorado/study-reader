@@ -1,5 +1,5 @@
-"""Main window: the navigation rail | the open book (contents | reader | chats, calculator, notes
-or review) or a page: Home, Library, Review, Cards, Stats."""
+"""Main window: the navigation rail | the open book (contents | reader | chats, notes or the
+calculator) or a page: Home, Library, Review, Cards, Stats."""
 
 from __future__ import annotations
 
@@ -37,10 +37,6 @@ from .theme import MODES, icon, theme
 from .tts_engines import ENGINES
 from .web_import import WebImportError, normalize_url
 from .web_render import WebImporter
-
-
-# The right-hand panels that may be open together: the calculator under the review.
-COMBINED = {"review", "calc"}
 
 
 class MainWindow(QMainWindow):
@@ -95,14 +91,14 @@ class MainWindow(QMainWindow):
         col.addWidget(self.read_aloud.bar)
         self.library = LibraryView(self.db)
         self.variants = VariantMaker(self.db, self.worker, self)  # new numbers for reviewed calculation cards
-        self.review_all = ReviewPanel(self.db, all_books=True, variants=self.variants)  # every book's cards: the Review page
+        self.review = ReviewPanel(self.db, variants=self.variants)  # the Review page's cards
         # The Review page's calculator (F11 there), beside the cards: the history of the book of the card under review.
         self.review_calc = CalculatorPanel(self.db, shared=True, closable=True)
         self.review_calc.closeRequested.connect(lambda: self.review_calc_action.trigger())
-        self.review_all.cardShown.connect(self._review_card_book)
+        self.review.cardShown.connect(self._review_card_book)
         self.review_page = QSplitter()
         self.review_page.setChildrenCollapsible(False)
-        self.review_page.addWidget(self.review_all)
+        self.review_page.addWidget(self.review)
         self.review_page.addWidget(self.review_calc)
         self.review_page.setStretchFactor(0, 1)
         self.review_page.setSizes([1000, 420])
@@ -120,18 +116,10 @@ class MainWindow(QMainWindow):
         self.chat.current_page = self.reader.current_page
         self.calc = CalculatorPanel(self.db)
         self.notes = NotesPanel(self.db)
-        self.review = ReviewPanel(self.db, variants=self.variants)
         for a, b in ((self.calc, self.review_calc), (self.review_calc, self.calc)):
             a.historyChanged.connect(lambda book_id, b=b: b.saves and b.book_id == book_id and b.reload())
-        # Review and the calculator may be open together, the calculator under the cards.
-        self.review_split = QSplitter(Qt.Orientation.Vertical)
-        self.review_split.setChildrenCollapsible(False)
-        self.review_split.addWidget(self.review)
-        self.review_split.addWidget(self.calc)
-        self.review_split.setStretchFactor(0, 3)
-        self.review_split.setStretchFactor(1, 2)
-        self.right = QStackedWidget()  # chats, notes and review / the calculator take turns in the same slot
-        for w in (self.chat, self.notes, self.review_split):
+        self.right = QStackedWidget()  # chats, notes and the calculator take turns in the same slot
+        for w in (self.chat, self.notes, self.calc):
             self.right.addWidget(w)
 
         split = QSplitter()
@@ -143,11 +131,10 @@ class MainWindow(QMainWindow):
 
         self._build_actions()
         self.review_calc.setVisible(self.review_calc_action.isChecked())
-        # Both review panels' Calculator buttons, lit while their calculator is open.
-        for panel, a in ((self.review_all, self.review_calc_action), (self.review, self.calc_action)):
-            panel.set_calculator(a.isChecked())
-            a.toggled.connect(panel.set_calculator)
-            panel.calculatorRequested.connect(a.trigger)
+        # The Review page's Calculator button, lit while its calculator is open.
+        self.review.set_calculator(self.review_calc_action.isChecked())
+        self.review_calc_action.toggled.connect(self.review.set_calculator)
+        self.review.calculatorRequested.connect(self.review_calc_action.trigger)
         self.nav = NavRail(self._build_settings_menu())
         self.nav.pageRequested.connect(self.show_page)
         central = QWidget()
@@ -196,13 +183,10 @@ class MainWindow(QMainWindow):
         self.chat.jumpRequested.connect(self.reader.flash)
         self.chat.pageRequested.connect(self.reader.go_to)
         self.chat.cardsChanged.connect(self._on_cards_changed)
-        for panel in (self.review, self.review_all):
-            panel.countsChanged.connect(self._on_cards_changed)
-            panel.sourceRequested.connect(self._review_source)
-            panel.chatRequested.connect(self._review_chat)
-            panel.browseRequested.connect(self.show_browser)
-            panel.statsRequested.connect(lambda p=panel: self.show_stats(p.deck, None if p.all_books else p.book_id))
-            panel.editRequested.connect(lambda card_id: self.show_browser().show_card(card_id))
+        self.review.countsChanged.connect(self._on_cards_changed)
+        self.review.sourceRequested.connect(self._book_page)
+        self.review.chatRequested.connect(self._review_chat)
+        self.review.editRequested.connect(lambda card_id: self.show_browser().show_card(card_id))
         theme().changed.connect(self._on_theme_changed)
         self._on_theme_changed()
 
@@ -325,21 +309,20 @@ class MainWindow(QMainWindow):
         self.stop_reading_action = action("Stop reading aloud", "Shift+F5", ra.stop)
         self.prev_sentence_action = action("Previous sentence", "F4", ra.prev_sentence)
         self.next_sentence_action = action("Next sentence", "F6", ra.next_sentence)
-        self.book_actions = [
-            zoom_out, zoom_in, fit, self.crop_action, self.region_action, self.quiz_action,
-            self.finished_action, new_chat, add_note, self.close_action, self.read_action, self.play_action,
-            find, find_next, find_prev,
-        ]
-        self._on_reading(False)
-
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         bar.addWidget(spacer)
 
-        # The right-hand panels; Review leads, with the open book's count on it.
-        self.review_action = action("Review", "F8", lambda on: self._toggle_right("review", on), "cards", checkable=True)
+        # The Review page narrowed to this book, with its count on it; then the right-hand panels.
+        self.review_action = action("Review", "F8", self.review_open_book, "cards")
         bar.addAction(self.review_action)
         labelled(self.review_action)
+        self.book_actions = [
+            zoom_out, zoom_in, fit, self.crop_action, self.region_action, self.quiz_action,
+            self.finished_action, new_chat, add_note, self.close_action, self.read_action, self.play_action,
+            find, find_next, find_prev, self.review_action,
+        ]
+        self._on_reading(False)
         self.chat_action = action("Chats", "F10", lambda on: self._toggle_right("chat", on), "message", checkable=True)
         self.chat_action.setChecked(True)
         bar.addAction(self.chat_action)
@@ -351,13 +334,11 @@ class MainWindow(QMainWindow):
         # The Review page's calculator; F11 is this or the book's, whichever screen is up.
         self.review_calc_action = action("Calculator", "F11", self._toggle_review_calc, "calculator", checkable=True)
         self.review_calc_action.setChecked(self.db.get_setting("review_calc") == "1")
-        # The right-hand slot's panels, by the names books.right_panel stores ("+"-joined); one
-        # at most is shown, except that review and the calculator may be open together.
+        # The right-hand slot's panels, by the names books.right_panel stores; one at most is shown.
         self.right_panels = {
             "chat": (self.chat_action, self.chat),
             "calc": (self.calc_action, self.calc),
             "notes": (self.notes_action, self.notes),
-            "review": (self.review_action, self.review),
         }
 
     def _build_settings_menu(self) -> QMenu:
@@ -455,17 +436,12 @@ class MainWindow(QMainWindow):
     def _toggle_right(self, name: str, on: bool) -> None:
         if on:
             for other, (a, _) in self.right_panels.items():
-                if other != name and {name, other} != COMBINED:
+                if other != name:
                     a.setChecked(False)
         self._sync_right()
         self._save_panels()
         if on and name == "calc" and self.right.isVisible():
             self.calc.focus_input()
-        if on and name == "review" and self.right.isVisible():
-            self.review.refresh()
-            self.review.focus()
-        if not on and name == "calc" and self.review_action.isChecked() and self.right.isVisible():
-            self.review.focus()
 
     def _toggle_review_calc(self, on: bool) -> None:
         """F11 on the Review page: the calculator beside the cards (remembered)."""
@@ -474,7 +450,7 @@ class MainWindow(QMainWindow):
         if on:
             self.review_calc.focus_input()
         else:
-            self.review_all.focus()
+            self.review.focus()
 
     def _review_card_book(self, book_id: int | None) -> None:
         """A card came up on the Review page: its book's calculator history (or the shared one)."""
@@ -489,17 +465,14 @@ class MainWindow(QMainWindow):
         """Remember per book which sidebars are open, so reopening it restores them."""
         if self.book_id is None:
             return
-        right = "+".join(name for name, (a, _) in self.right_panels.items() if a.isChecked())
+        right = next((name for name, (a, _) in self.right_panels.items() if a.isChecked()), "")
         self.db.update_book(self.book_id, show_toc=int(self.toc_action.isChecked()), right_panel=right)
 
     def _sync_right(self) -> None:
-        """Show whichever of chats / calculator / notes / review is toggled on (review and the
-        calculator may be both), or none."""
+        """Show whichever of chats / notes / calculator is toggled on, or none."""
         on = [w for a, w in self.right_panels.values() if a.isChecked()]
-        for w in (self.review, self.calc):
-            w.setVisible(w in on)
         if on:
-            self.right.setCurrentWidget(self.review_split if on[0] in (self.review, self.calc) else on[0])
+            self.right.setCurrentWidget(on[0])
         self.right.setVisible(bool(on) and self.reading)
 
     # -- pages ----------------------------------------------------------------------
@@ -548,8 +521,8 @@ class MainWindow(QMainWindow):
                 self.library.refresh()
                 self.library.list.setFocus()
             elif name == "review":
-                self.review_all.refresh()
-                self.review_all.focus()
+                self.review.refresh()
+                self.review.focus()
             elif name == "cards":
                 self.browser.refresh()
             elif name == "stats":
@@ -576,7 +549,6 @@ class MainWindow(QMainWindow):
         self.chat.set_book(None)
         self.calc.set_book(None)
         self.notes.set_book(None)
-        self.review.set_book(None)
         self.nav.set_book(None)
         self.show_page("home")
 
@@ -700,9 +672,8 @@ class MainWindow(QMainWindow):
         self.find.set_document(doc)
         self._fill_toc()
         self.toc_action.setChecked(bool(book["show_toc"]))
-        shown = set(book["right_panel"].split("+"))
         for name, (a, _) in self.right_panels.items():
-            a.setChecked(name in shown)
+            a.setChecked(name == book["right_panel"])
         self.page_spin.blockSignals(True)
         self.page_spin.setRange(1, doc.page_count)
         self.page_spin.blockSignals(False)
@@ -724,7 +695,6 @@ class MainWindow(QMainWindow):
         self.chat.set_book(self.book_id)
         self.calc.set_book(self.book_id)
         self.notes.set_book(self.book_id)
-        self.review.set_book(self.book_id)
         self._update_review_counts()
         self._refresh_highlights()
         return True
@@ -864,29 +834,29 @@ class MainWindow(QMainWindow):
         self._show_chat(lambda: self.chat.start_quiz(question, title, snippet["page"], snippet))
 
     # -- review ---------------------------------------------------------------------
-    def show_review_all(self) -> None:
-        """The Review page: every deck and book's cards."""
-        self.show_page("review")
-
     def review_everything(self, limit: str = "") -> None:
         """Start reviewing every deck (Home's Start review): "" or a quick session's limit."""
         self.show_page("review")
-        self.review_all.choose_deck(None)
-        self.review_all.start(limit)
-        self.review_all.focus()
+        self.review.choose_deck(None)
+        self.review.start(limit)
+        self.review.focus()
 
     def review_book(self, book_id: int) -> None:
         """Start reviewing one book's cards on the Review page (the Library's and Home's Review)."""
         self.show_page("review")
-        self.review_all.choose_book(book_id)
-        self.review_all.start()
-        self.review_all.focus()
+        self.review.choose_book(book_id)
+        self.review.start()
+        self.review.focus()
+
+    def review_open_book(self) -> None:
+        """F8 / the reader's Review: the open book's cards on the Review page."""
+        if self.book_id is not None:
+            self.review_book(self.book_id)
 
     def _on_cards_changed(self) -> None:
-        for panel in (self.review, self.review_all):
-            # A card being answered stays put; a hidden panel refreshes when it is shown.
-            if panel.card_id is None and panel.isVisible():
-                panel.refresh()
+        # A card being answered stays put; a hidden page refreshes when it is shown.
+        if self.review.card_id is None and self.review.isVisible():
+            self.review.refresh()
         self._update_review_counts()
         if self.home.isVisible():
             self.home.refresh()
@@ -903,18 +873,9 @@ class MainWindow(QMainWindow):
         waiting = c["due"] + c["new"] if c else 0
         self.review_action.setText(f"Review · {waiting}" if waiting else "Review")
         self.review_action.setToolTip(
-            f"Review this book's cards (F8) · {waiting} card{'s' * (waiting != 1)} to review" if c else "Review (F8)"
+            f"Review this book's cards on the Review page (F8) · {waiting} card{'s' * (waiting != 1)} to review"
+            if c else "Review (F8)"
         )
-
-    def _review_source(self, book_id: int, page: int) -> None:
-        """A card's page: in the open book, or the book opened with its Review panel."""
-        if book_id != self.book_id and not self._open_book_id(book_id):
-            return
-        self.show_page("book")
-        if not self.review_action.isChecked():
-            self.review_action.trigger()
-        if page >= 0:
-            self.reader.go_to(page)
 
     def _review_chat(self, book_id: int, chat_id: int) -> None:
         if book_id != self.book_id and not self._open_book_id(book_id):
@@ -938,7 +899,7 @@ class MainWindow(QMainWindow):
             from .browser import CardBrowser
             self.browser = CardBrowser(self.db, embedded=True)
             self.browser.cardsChanged.connect(self._on_cards_changed)
-            self.browser.bookRequested.connect(self._browser_book)
+            self.browser.bookRequested.connect(self._book_page)
             self.browser.reviewDeckRequested.connect(self._review_deck)
             self.browser.statsRequested.connect(lambda deck: self.show_stats(deck or None))
             self.browser.migrateRequested.connect(self.migrate_from_anki)
@@ -973,7 +934,8 @@ class MainWindow(QMainWindow):
         elif self.browser is not None:
             self.browser.refresh()
 
-    def _browser_book(self, book_id: int, page: int) -> None:
+    def _book_page(self, book_id: int, page: int) -> None:
+        """A card's page (-1: none) in its book, opened if it isn't (a card's link, the browser's Open in book)."""
         if book_id != self.book_id and not self._open_book_id(book_id):
             return
         self.show_page("book")
@@ -982,10 +944,10 @@ class MainWindow(QMainWindow):
 
     def _review_deck(self, deck_id: int, start: bool = False) -> None:
         self.show_page("review")
-        self.review_all.choose_deck(deck_id)
+        self.review.choose_deck(deck_id)
         if start:
-            self.review_all.start()
-        self.review_all.focus()
+            self.review.start()
+        self.review.focus()
 
     def _set_retention(self) -> None:
         r, ok = QInputDialog.getDouble(

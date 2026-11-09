@@ -105,7 +105,7 @@ def test_quick_review_session(chat_panel, tmp_path):
     _, worker, _, _ = chat_panel
     (tmp_path / "q").mkdir()
     db, ids = cards(tmp_path / "q", gamify.QUICK_CARDS + 2)
-    review = ReviewPanel(db, all_books=True)
+    review = ReviewPanel(db)
     shown = []
     review._js = lambda fn, *args: shown.append((fn, args))
     review.start("cards")
