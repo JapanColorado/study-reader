@@ -89,6 +89,16 @@ CREATE TABLE IF NOT EXISTS notes (
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
+-- Passages Claude made review cards from (Make cards), kept highlighted in the book.
+CREATE TABLE IF NOT EXISTS card_passages (
+    id INTEGER PRIMARY KEY,
+    book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    page INTEGER NOT NULL,
+    kind TEXT NOT NULL,             -- 'text' | 'image' (a screenshot region)
+    text TEXT NOT NULL DEFAULT '',
+    rects TEXT NOT NULL DEFAULT '[]', -- JSON [[x0,y0,x1,y1],...] in page points, like snippets
+    created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS decks (
     id INTEGER PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,      -- full path, levels joined by '::' (as in Anki); parents have rows too
@@ -135,6 +145,7 @@ CREATE TABLE IF NOT EXISTS cards (
     anki_id INTEGER,                -- the Anki card it was migrated from
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL DEFAULT 0,
+    passage_id INTEGER REFERENCES card_passages(id) ON DELETE SET NULL, -- the passage it was made from (Make cards)
     UNIQUE (message_id, quiz, question)
 );
 CREATE TABLE IF NOT EXISTS reviews (
@@ -172,6 +183,7 @@ INDEXES = """
 CREATE INDEX IF NOT EXISTS cards_due ON cards (book_id, suspended, stage, due);
 CREATE INDEX IF NOT EXISTS cards_deck ON cards (deck_id, suspended, stage, due);
 CREATE INDEX IF NOT EXISTS cards_note ON cards (note_id);
+CREATE INDEX IF NOT EXISTS cards_passage ON cards (passage_id) WHERE passage_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS reviews_card ON reviews (card_id);
 CREATE INDEX IF NOT EXISTS reviews_time ON reviews (reviewed_at);
 CREATE UNIQUE INDEX IF NOT EXISTS card_notes_anki ON card_notes (anki_id) WHERE anki_id IS NOT NULL;
@@ -305,6 +317,9 @@ class Database:
             self._migrate_cards_to_notes()
         elif "variant" not in card_cols:
             self.conn.execute("ALTER TABLE cards ADD COLUMN variant TEXT NOT NULL DEFAULT ''")
+        if "passage_id" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(cards)")}:
+            self.conn.execute("ALTER TABLE cards ADD COLUMN passage_id INTEGER "
+                              "REFERENCES card_passages(id) ON DELETE SET NULL")
         # Flashcards were once quiz notes too; they are Basic notes now.
         for r in self.conn.execute("SELECT id, fields FROM card_notes "
                                    "WHERE kind='quiz' AND json_extract(fields, '$.type')='flashcard'").fetchall():
@@ -551,6 +566,31 @@ class Database:
         out = [{**dict(n), "rects": json.loads(n["rects"])} for n in rows]
         out.sort(key=lambda n: (n["page"], min((r[1] for r in n["rects"]), default=0.0), n["id"]))
         return out
+
+    # -- passages cards were made from ---------------------------------------
+    def add_card_passage(self, book_id: int, page: int, kind: str, text: str, rects: list, card_ids) -> int:
+        """Remember the passage some cards were made from, so it stays highlighted."""
+        with self.conn:
+            passage_id = self.conn.execute(
+                "INSERT INTO card_passages (book_id, page, kind, text, rects, created_at) VALUES (?,?,?,?,?,?)",
+                (book_id, page, kind, text, json.dumps(rects), time.time()),
+            ).lastrowid
+            self.conn.executemany("UPDATE cards SET passage_id=? WHERE id=?", [(passage_id, i) for i in card_ids])
+        return passage_id
+
+    def card_passages(self, book_id: int) -> list[dict]:
+        """The book's passages that still have cards, each with its card ids and title."""
+        rows = self.conn.execute(
+            "SELECT p.*, group_concat(c.id) AS card_ids, MIN(c.title) AS title FROM card_passages p "
+            "JOIN cards c ON c.passage_id=p.id WHERE p.book_id=? GROUP BY p.id ORDER BY p.id", (book_id,),
+        )
+        return [{**dict(r), "rects": json.loads(r["rects"]), "card_ids": sorted(map(int, r["card_ids"].split(",")))}
+                for r in rows]
+
+    def delete_card_passage(self, passage_id: int) -> None:
+        """Forget a passage (its highlight); its cards stay."""
+        with self.conn:
+            self.conn.execute("DELETE FROM card_passages WHERE id=?", (passage_id,))
 
     def update_note(self, note_id: int, body: str) -> None:
         self._update("notes", note_id, {"body": body, "updated_at": time.time()})

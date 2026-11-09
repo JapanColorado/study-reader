@@ -339,6 +339,7 @@ QFrame#chip { background: $accent_soft; border-radius: 8px; }
 QFrame#chip QLabel { font-size: 9pt; }
 QToolButton#angle { color: $muted; font-size: 8pt; font-weight: 600; padding: 4px 6px; }
 QFrame#popup { background: $raised; border: 1px solid $border; border-radius: 10px; }
+QLabel#notice { background: $raised; color: $fg; border: 1px solid $border; border-radius: 10px; padding: 8px 14px; }
 QFrame#readBar { background: $window; border-top: 1px solid $border; }
 """)
 

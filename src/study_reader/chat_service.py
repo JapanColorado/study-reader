@@ -78,7 +78,8 @@ class ChatService:
     done(chat_id, session_id, text, message_uuid), failed(chat_id, message),
     for quiz grading graded(answer_id, text), gradeFailed(answer_id, message),
     titled(chat_id, title) when a chat's auto-title is ready, varied(card_id, text) and
-    variantFailed(card_id, message) for a card's next version (variants.py), and for Claude Conversion
+    variantFailed(card_id, message) for a card's next version (variants.py), carded(request_id, text)
+    and cardsFailed(request_id, message) for cards made from a passage (passage_cards.py), and for Claude Conversion
     converted(batch_id, text), convertFailed(batch_id, message)."""
 
     def __init__(self, emit: Callable[..., None], sessions_dir: str | Path):
@@ -151,6 +152,10 @@ class ChatService:
     async def vary(self, job: Job, card_id: int) -> None:
         """Ask Claude for a review card's next version with new numbers, as a detached turn like grading."""
         await self._side_turn(job, card_id, "varied", "variantFailed")
+
+    async def make_cards(self, job: Job, request_id: int) -> None:
+        """Ask Claude for review cards on a passage, as a detached turn forked from the book."""
+        await self._side_turn(job, request_id, "carded", "cardsFailed")
 
     async def _side_turn(self, job: Job, id: int, done: str, failed: str) -> None:
         """A detached turn whose reply is reported as done(id, text), or failed(id, message)."""
@@ -236,6 +241,8 @@ class ChatWorker(QObject):
     gradeFailed = Signal(int, str)
     varied = Signal(int, str)
     variantFailed = Signal(int, str)
+    carded = Signal(int, str)
+    cardsFailed = Signal(int, str)
     titled = Signal(int, str)
     converted = Signal(int, str)
     convertFailed = Signal(int, str)
@@ -261,6 +268,9 @@ class ChatWorker(QObject):
 
     def submit_variant(self, job: Job, card_id: int) -> None:
         asyncio.run_coroutine_threadsafe(self.service.vary(job, card_id), self.loop)
+
+    def submit_cards(self, job: Job, request_id: int) -> None:
+        asyncio.run_coroutine_threadsafe(self.service.make_cards(job, request_id), self.loop)
 
     def submit_title(self, chat_id: int, question: str, passage: str, reply: str) -> None:
         asyncio.run_coroutine_threadsafe(self.service.title(chat_id, question, passage, reply), self.loop)

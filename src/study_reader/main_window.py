@@ -21,6 +21,7 @@ from . import gamify, quiz, srs, variants
 from .calculator import CalculatorPanel
 from .chat_panel import MODELS, ChatPanel
 from .chat_service import ChatWorker
+from .card_maker import CardMaker, Notice
 from .convert_dialog import ConversionManager
 from .db import Database, data_dir
 from .document import Document, file_hash
@@ -165,6 +166,11 @@ class MainWindow(QMainWindow):
         col.addWidget(split, 1)
         row.addLayout(col, 1)
         self.setCentralWidget(central)
+        self.notice = Notice(central)
+        self.card_maker = CardMaker(self.db, self.worker, self)  # cards from a highlight, made in the background
+        self.card_maker.cardsChanged.connect(lambda: self._on_cards_changed())
+        self.card_maker.notice.connect(self.notice.show_text)
+        self.card_maker.passagesChanged.connect(lambda: self._refresh_highlights())
 
         self.home.startRequested.connect(self.review_everything)
         self.home.openRequested.connect(self._open_book_id)
@@ -186,6 +192,7 @@ class MainWindow(QMainWindow):
         self._refetching: int | None = None  # the book a fresh web snapshot replaces
         self.reader.snippetChosen.connect(lambda sn, new: self._show_chat(lambda: self.chat.add_snippet(sn, new)))
         self.reader.quizChosen.connect(self._quiz_on)
+        self.reader.cardsChosen.connect(self._make_cards)
         self.reader.noteChosen.connect(lambda sn: self._show_notes(lambda: self.notes.add_note(sn)))
         self.reader.highlightClicked.connect(self._highlight_menu)
         self.reader.readRequested.connect(self.read_aloud.read_selection)
@@ -319,6 +326,7 @@ class MainWindow(QMainWindow):
             a.triggered.connect(lambda _=False, new=new: self.reader.choose(new))
             self.reader.addAction(a)
         add_note = action("Add note", "Ctrl+Shift+N", self.reader.choose_note)
+        make_cards = action("Make cards from the selection", "Ctrl+Shift+M", self.reader.choose_cards)
         ra = self.read_aloud
         self.read_action = action("Read aloud", "", self._toggle_reading, "volume", checkable=True)
         self.read_action.setToolTip("Read the book aloud from this page, following along on the page (F5 plays and pauses)")
@@ -330,7 +338,7 @@ class MainWindow(QMainWindow):
         self.next_sentence_action = action("Next sentence", "F6", ra.next_sentence)
         self.book_actions = [
             zoom_out, zoom_in, fit, self.crop_action, self.region_action, self.quiz_action,
-            self.finished_action, new_chat, add_note, self.close_action, self.read_action, self.play_action,
+            self.finished_action, new_chat, add_note, make_cards, self.close_action, self.read_action, self.play_action,
             find, find_next, find_prev,
         ]
         self._on_reading(False)
@@ -766,12 +774,25 @@ class MainWindow(QMainWindow):
         if self.book_id is not None:
             # Pending snippets are marked too, so a passage stays highlighted while its question is drafted.
             pending = [{**sn, "chat_id": None} for sn in self.chat.pending_snippets()]
-            self.reader.set_highlights(self.db.book_snippets(self.book_id) + pending, self.db.notes(self.book_id))
+            passages = self.db.card_passages(self.book_id) + self.card_maker.pending_passages(self.book_id)
+            self.reader.set_highlights(self.db.book_snippets(self.book_id) + pending, self.db.notes(self.book_id),
+                                       passages)
 
-    def _highlight_menu(self, snippets: list[dict], notes: list[dict], pos) -> None:
-        """Clicked highlight: open its note or one of the chats that asked about it, or start another."""
+    def _highlight_menu(self, snippets: list[dict], notes: list[dict], passages: list[dict], pos) -> None:
+        """Clicked highlight: open its note, its review cards or one of the chats that asked about
+        it, or start another."""
         menu = QMenu(self)
         metrics = menu.fontMetrics()
+        made = [c for c in passages if c["id"] is not None]
+        for passage in made:
+            n = len(passage["card_ids"])
+            label = f"{n} card{'s' if n != 1 else ''}" + (f": {passage['title']}" if passage["title"] else "")
+            menu.addAction(icon("cards", "muted"), metrics.elidedText(label, Qt.TextElideMode.ElideRight, 360)) \
+                .triggered.connect(lambda _=False, ids=passage["card_ids"]: self.show_passage_cards(ids))
+        if len(made) < len(passages):
+            menu.addAction(icon("cards", "muted"), "Making cards…").setEnabled(False)
+        if passages:
+            menu.addSeparator()
         for note in notes:
             body = " ".join(note["body"].split()) or "Empty note"
             title = metrics.elidedText(body, Qt.TextElideMode.ElideRight, 360)
@@ -789,12 +810,15 @@ class MainWindow(QMainWindow):
                     lambda _=False, c=chat_id: self._show_chat(lambda: self.chat.open_chat(c))
                 )
         menu.addSeparator()
-        latest = snippets[-1] if snippets else {**notes[-1], "kind": "text"}
+        latest = snippets[-1] if snippets else {**notes[-1], "kind": "text"} if notes else passages[-1]
         menu.addAction(icon("message-plus"), "New chat about this").triggered.connect(
             lambda: self._show_chat(lambda: self.chat.add_snippet(self.reader.snippet_from(latest), True))
         )
         menu.addAction("Add to current chat").triggered.connect(
             lambda: self._show_chat(lambda: self.chat.add_snippet(self.reader.snippet_from(latest), False))
+        )
+        menu.addAction(icon("cards"), "Make cards from this").triggered.connect(
+            lambda: self._make_cards(self.reader.snippet_from(latest))
         )
         if notes:
             menu.addAction(icon("trash", "muted"), "Delete note" if len(notes) == 1 else "Delete notes").triggered.connect(
@@ -804,7 +828,20 @@ class MainWindow(QMainWindow):
             menu.addAction(icon("note"), "Add note…").triggered.connect(
                 lambda: self._show_notes(lambda: self.notes.add_note(latest))
             )
+        if made:
+            menu.addAction(icon("x", "muted"), "Remove card highlight (keep the cards)").triggered.connect(
+                lambda: self._remove_passages([c["id"] for c in made])
+            )
         menu.exec(pos)
+
+    def show_passage_cards(self, card_ids: list[int]) -> None:
+        """The cards made from a highlighted passage, in the card browser."""
+        self.show_browser().set_search("cid:" + ",".join(map(str, card_ids)))
+
+    def _remove_passages(self, passage_ids: list[int]) -> None:
+        for passage_id in passage_ids:
+            self.db.delete_card_passage(passage_id)
+        self._refresh_highlights()
 
     # -- quizzes --------------------------------------------------------------------
     def quiz(self) -> None:
@@ -866,6 +903,10 @@ class MainWindow(QMainWindow):
         question, title = quiz.snippet_request(snippet)
         self._show_chat(lambda: self.chat.start_quiz(question, title, snippet["page"], snippet))
 
+    def _make_cards(self, snippet: dict) -> None:
+        if self.book_id is not None:
+            self.card_maker.make(self.book_id, snippet, self.chat.default_model())
+
     # -- review ---------------------------------------------------------------------
     def show_review_all(self) -> None:
         """The Review page: every deck and book's cards."""
@@ -886,6 +927,7 @@ class MainWindow(QMainWindow):
         self.review_all.focus()
 
     def _on_cards_changed(self) -> None:
+        self._refresh_highlights()  # a passage whose cards are all gone is no longer marked
         for panel in (self.review, self.review_all):
             # A card being answered stays put; a hidden panel refreshes when it is shown.
             if panel.card_id is None and panel.isVisible():
