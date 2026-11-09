@@ -31,9 +31,6 @@ MARK_LIGHT = (QColor(255, 228, 130), QColor(255, 204, 80))  # (normal, hovered)
 MARK_DARK = (QColor(80, 62, 22), QColor(125, 95, 30))
 NOTE_LIGHT = (QColor(178, 218, 255), QColor(138, 196, 250))  # annotated passages, in blue
 NOTE_DARK = (QColor(26, 58, 92), QColor(40, 84, 130))
-CARDS_LIGHT = (QColor(190, 232, 196), QColor(150, 214, 162))  # passages review cards were made from, in green
-CARDS_DARK = (QColor(28, 72, 44), QColor(40, 102, 62))
-CARDS_FRAME = (QColor(80, 170, 105), QColor(50, 140, 78))  # ...from a screenshot region
 FRAME_COLOR = (QColor(232, 168, 40), QColor(214, 130, 20))  # screenshot regions: (normal, hovered)
 # Link pills, blended like the highlighter: footnote markers, and fainter cross-references.
 FOOTNOTE_LIGHT = (QColor(200, 190, 252), QColor(172, 156, 246))
@@ -55,11 +52,10 @@ class ReaderView(QAbstractScrollArea):
     # dict(kind, page, text, rects, png) and whether it should start a new chat
     snippetChosen = Signal(dict, bool)
     quizChosen = Signal(dict)  # a snippet to be quizzed on
-    cardsChosen = Signal(dict)  # a snippet for Claude to make review cards from
     noteChosen = Signal(dict)  # a text snippet to annotate
     pageChanged = Signal(int)
     zoomChanged = Signal(float)
-    highlightClicked = Signal(list, list, list, QPoint)  # snippets, notes and card passages under the click; where
+    highlightClicked = Signal(list, list, QPoint)  # snippets and notes under the click, global position
     readRequested = Signal(object, bool)  # selected words by page; whether to read on past them
     speechClicked = Signal(int, float, float)  # a click while reading aloud: page, x, y
     escapePressed = Signal()  # Escape with nothing selected
@@ -118,9 +114,6 @@ class ReaderView(QAbstractScrollArea):
         add.clicked.connect(lambda: self.choose(False))
         quiz = QPushButton("Quiz me")
         quiz.clicked.connect(self.choose_quiz)
-        cards = QPushButton("Make cards")
-        cards.setToolTip("Have Claude make review cards from this in the background (Ctrl+Shift+M)")
-        cards.clicked.connect(self.choose_cards)
         self._note_btn = QPushButton("Note")
         self._note_btn.clicked.connect(self.choose_note)
         self._copy_btn = QPushButton("Copy")
@@ -131,7 +124,7 @@ class ReaderView(QAbstractScrollArea):
         self._read_on_btn = QPushButton("Read from here")
         self._read_on_btn.setToolTip("Read aloud from the selection on")
         self._read_on_btn.clicked.connect(lambda: self.choose_read(True))
-        for b in (ask, add, quiz, cards, self._note_btn, self._copy_btn, self._read_btn, self._read_on_btn):
+        for b in (ask, add, quiz, self._note_btn, self._copy_btn, self._read_btn, self._read_on_btn):
             row.addWidget(b)
         self._popup.hide()
 
@@ -275,23 +268,19 @@ class ReaderView(QAbstractScrollArea):
         return range(first, min(last, len(self._tops) - 1) + 1)
 
     # -- highlights ----------------------------------------------------------------
-    def set_highlights(self, snippets: list[dict], notes: list[dict] = (), passages: list[dict] = ()) -> None:
-        """snippets: db rows (page, kind, rects, chat_id, ...); notes: db rows (page, rects, body, ...);
-        passages: those review cards were made from (page, kind, rects, card_ids, ...). Identical
-        passages share one mark."""
+    def set_highlights(self, snippets: list[dict], notes: list[dict] = ()) -> None:
+        """snippets: db rows (page, kind, rects, chat_id, ...); notes: db rows (page, rects, body, ...).
+        Identical passages share one mark."""
         groups: dict[tuple, dict] = {}
 
         def group(row: dict, kind: str) -> dict:
             key = (row["page"], tuple(map(tuple, row["rects"])))
-            return groups.setdefault(key, {"kind": kind, "rects": row["rects"], "snippets": [], "notes": [],
-                                           "passages": []})
+            return groups.setdefault(key, {"kind": kind, "rects": row["rects"], "snippets": [], "notes": []})
 
         for sn in snippets:
             group(sn, sn["kind"])["snippets"].append(sn)
         for note in notes:
             group(note, "text")["notes"].append(note)
-        for passage in passages:
-            group(passage, passage["kind"])["passages"].append(passage)
         self._marks = {}
         for (page, _), mark in groups.items():
             self._marks.setdefault(page, []).append(mark)
@@ -603,8 +592,7 @@ class ReaderView(QAbstractScrollArea):
             if m["kind"] == "image":
                 # A frame just outside the region, so the figure itself stays untouched.
                 p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-                p.setPen(QPen((CARDS_FRAME if m["passages"] and not m["snippets"] else FRAME_COLOR)[hover],
-                              3 if hover else 2))
+                p.setPen(QPen(FRAME_COLOR[hover], 3 if hover else 2))
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 for r in m["rects"]:
                     p.drawRoundedRect(self._to_view(page, rect, r).adjusted(-4, -4, 4, 4), 4, 4)
@@ -615,8 +603,6 @@ class ReaderView(QAbstractScrollArea):
                 )
                 if m["notes"]:
                     normal, hovered = NOTE_DARK if dark else NOTE_LIGHT
-                elif m["passages"]:
-                    normal, hovered = CARDS_DARK if dark else CARDS_LIGHT
                 else:
                     normal, hovered = MARK_DARK if dark else MARK_LIGHT
                 for r in m["rects"]:
@@ -722,9 +708,7 @@ class ReaderView(QAbstractScrollArea):
             if marks:
                 snippets = [sn for m in marks for sn in m["snippets"]]
                 notes = [n for m in marks for n in m["notes"]]
-                passages = [c for m in marks for c in m["passages"]]
-                self.highlightClicked.emit(snippets, notes, passages,
-                                           self.viewport().mapToGlobal(event.position().toPoint()))
+                self.highlightClicked.emit(snippets, notes, self.viewport().mapToGlobal(event.position().toPoint()))
             return
         if self._region:
             r = self._region[1]
@@ -749,13 +733,8 @@ class ReaderView(QAbstractScrollArea):
             self.viewport().update()
             # A note's text shows on hover, so a passage's note can be read without opening the panel.
             bodies = [n["body"].strip() for m in marks for n in m["notes"] if n["body"].strip()]
-            passages = [c for m in marks for c in m["passages"]]
-            n = len({i for c in passages for i in c["card_ids"]})
             if bodies and not link:
                 tip = "\n\n".join(b if len(b) <= 600 else b[:600] + "…" for b in bodies)
-                QToolTip.showText(self.viewport().mapToGlobal(pos.toPoint()), tip, self.viewport())
-            elif passages and not link:
-                tip = f"{n} review card{'s' if n != 1 else ''} made from this" if n else "Making review cards from this…"
                 QToolTip.showText(self.viewport().mapToGlobal(pos.toPoint()), tip, self.viewport())
             elif not link:
                 QToolTip.hideText()
@@ -804,12 +783,6 @@ class ReaderView(QAbstractScrollArea):
         """Ask for a quiz on the current selection or region; False if there is none."""
         if snippet := self.take_selection():
             self.quizChosen.emit(snippet)
-        return snippet is not None
-
-    def choose_cards(self) -> bool:
-        """Have Claude make review cards from the current selection or region; False if there is none."""
-        if snippet := self.take_selection():
-            self.cardsChosen.emit(snippet)
         return snippet is not None
 
     def choose_note(self) -> bool:

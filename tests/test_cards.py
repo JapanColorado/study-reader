@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from study_reader import cardmodel, convert, srs
+from study_reader import cardmodel, srs
 from study_reader.db import Database
 
 from test_srs import NOW, setup
@@ -136,6 +136,45 @@ def test_old_cards_become_notes_in_book_decks(tmp_path):
     assert db.conn.execute("SELECT COUNT(*) FROM reviews").fetchone()[0] == 0
 
 
+def test_migration_drops_card_passages_and_conversions(tmp_path):
+    """Make cards from a highlight and Claude Conversion are gone: their tables and cards.passage_id
+    go, and the cards they made stay."""
+    path = tmp_path / "t.db"
+    db = Database(path)
+    book = db.upsert_book("h", "/a.pdf", "A", 3)["id"]
+    note = db.add_card_note("basic", {"front": "F", "back": "B"}, db.book_deck(book), book_id=book)
+    (card,) = db.note_cards(note)
+    srs.review(db, card["id"], 3, now=NOW)
+    db.conn.executescript("""
+        CREATE TABLE card_passages (id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL REFERENCES books(id)
+            ON DELETE CASCADE, page INTEGER NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL DEFAULT '',
+            rects TEXT NOT NULL DEFAULT '[]', created_at REAL NOT NULL);
+        ALTER TABLE cards ADD COLUMN passage_id INTEGER REFERENCES card_passages(id) ON DELETE SET NULL;
+        CREATE INDEX cards_passage ON cards (passage_id) WHERE passage_id IS NOT NULL;
+        CREATE TABLE conversions (id INTEGER PRIMARY KEY, card_id INTEGER NOT NULL REFERENCES cards(id)
+            ON DELETE CASCADE, status TEXT NOT NULL, proposal TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '', original TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL);
+    """)
+    db.conn.execute("INSERT INTO card_passages (id, book_id, page, kind, created_at) VALUES (1, ?, 0, 'text', 0)",
+                    (book,))
+    db.conn.execute("UPDATE cards SET passage_id=1 WHERE id=?", (card["id"],))
+    db.conn.execute("INSERT INTO conversions (card_id, status, created_at) VALUES (?, 'accepted', 0)", (card["id"],))
+    db.set_setting("convert_instructions", "be brief")
+    db.conn.commit()
+    db.conn.close()
+
+    db = Database(path)
+    tables = {r[0] for r in db.conn.execute("SELECT name FROM sqlite_master")}
+    assert not tables & {"card_passages", "conversions", "cards_passage"}
+    assert "passage_id" not in {r["name"] for r in db.conn.execute("PRAGMA table_info(cards)")}
+    assert db.get_setting("convert_instructions") == ""
+    kept = db.card(card["id"])
+    assert kept["note_id"] == note and kept["reps"] == 1 and len(db.reviews(card["id"])) == 1
+    assert db.conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    db.conn.close()
+    Database(path).conn.close()  # opening it again is a no-op
+
+
 # -- scheduling ----------------------------------------------------------------------------
 def test_parameters_retention_forget_and_due_dates(db):
     deck = db.ensure_deck("D")
@@ -174,143 +213,6 @@ def test_deck_counts_and_deck_scoped_queue(db):
     assert card["deck_id"] == a
 
 
-# -- Claude Conversion ---------------------------------------------------------------------
-def test_conversion_proposals_keep_the_schedule(db):
-    deck = db.ensure_deck("Physics")
-    cloze = db.add_card_note("cloze", {"text": "{{c1::Gauss}} found {{c2::flux}} laws", "extra": ""}, deck, tags=["em"])
-    first, second = db.note_cards(cloze)
-    srs.review(db, first["id"], 3, now=NOW)
-    basic = db.add_card_note("basic", {"front": "What is 2+2?", "back": "4"}, deck)
-    (plain,) = db.note_cards(basic)
-
-    payload = convert.card_payload(db, db.card(first["id"]))
-    assert payload["front"] == "[…] found flux laws" and payload["back"] == "[Gauss] found flux laws"
-    assert payload["deck"] == "Physics" and payload["tags"] == ["em"]
-    assert convert.batches(db, [first["id"], plain["id"]]) == [[first["id"], plain["id"]]]
-    blocks = convert.blocks(db, [first["id"]], "prefer free responses")
-    assert "learner_instructions" in blocks[1]["text"] and '"id": %d' % first["id"] in blocks[-1]["text"]
-
-    ids = convert.start(db, [first["id"], second["id"], plain["id"]])
-    reply = json.dumps({"cards": [
-        {"id": first["id"], "action": "convert", "reason": "conceptual",
-         "question": {"type": "free", "question": "Who found the law of flux, and what does it relate?",
-                      "answer": "Gauss; flux to enclosed charge.", "rubric": "Gauss; enclosed charge"}},
-        {"id": plain["id"], "action": "convert", "question": {"type": "numeric", "question": "2+2?", "answer": "4"}},
-    ]})
-    convert.record(db, ids, "Here you go:\n" + reply)
-    assert db.conversion(ids[first["id"]])["status"] == "proposed"
-    assert db.conversion(ids[second["id"]])["status"] == "error"  # left out of the reply
-    assert convert.accept(db, ids[first["id"]])
-    card = db.card(first["id"])
-    assert json.loads(card["data"])["type"] == "free" and card["reps"] == 1 and len(db.reviews(card["id"])) == 1
-    assert db.card_note(card["note_id"])["tags"] == " em " and card["deck_id"] == deck
-    assert db.card(second["id"])["note_id"] == cloze  # the other deletion stays on the cloze note
-
-    assert convert.revert(db, convert.accepted_conversion(db, first["id"])["id"])
-    back = db.card(first["id"])
-    assert back["note_id"] == cloze and back["ord"] == 0 and json.loads(back["data"])["type"] == "cloze"
-
-    with pytest.raises(convert.ConvertError):
-        convert.parse("no json here", [1])
-    bad = convert.parse('{"cards": [{"id": 1, "action": "convert", "question": {"type": "choice", "question": "q"}}]}', [1])
-    assert bad[1]["action"] == "error"
-
-
-def test_conversion_splits_a_card(db):
-    deck = db.ensure_deck("D")
-    note = db.add_card_note("quiz", {"type": "free", "question": "What is flux, and why is it conserved?",
-                                     "answer": "A flow; no sources.", "rubric": ""}, deck, tags=["gauss"], page=3)
-    (card,) = db.note_cards(note)
-    srs.review(db, card["id"], 3, now=NOW)
-    ids = convert.start(db, [card["id"]])
-    flux = {"type": "flashcard", "question": "What is flux?", "answer": "A flow."}
-    why = {"type": "truefalse", "question": "Flux is conserved where there are no sources.", "answer": True}
-    convert.record(db, ids, json.dumps({"cards": [
-        {"id": card["id"], "action": "split", "reason": "two parts", "questions": [flux, why]}]}))
-    c = db.conversion(ids[card["id"]])
-    assert c["status"] == "proposed" and [q["question"] for q in convert.questions(c["proposal"])] == [
-        "What is flux?", "Flux is conserved where there are no sources."]
-
-    assert convert.accept(db, c["id"])
-    kept = db.card(card["id"])
-    assert json.loads(kept["data"])["question"] == "What is flux?" and kept["reps"] == 1
-    (added,) = json.loads(db.conversion(c["id"])["original"])["added"]
-    new = db.card(added)
-    assert json.loads(new["data"])["type"] == "truefalse" and srs.is_new(new)
-    assert (new["deck_id"], new["page"]) == (deck, 3) and db.card_note(new["note_id"])["tags"].split() == ["gauss"]
-
-    assert convert.revert(db, c["id"])
-    assert db.card(added) is None and json.loads(db.card(card["id"])["data"])["type"] == "free"
-
-    # Too many parts, or a reviewed card a split added, which an undo keeps.
-    ids = convert.start(db, [card["id"]])
-    convert.record(db, ids, json.dumps({"cards": [{"id": card["id"], "action": "split", "questions": [flux] * 5}]}))
-    assert db.conversion(ids[card["id"]])["status"] == "error"
-    ids = convert.start(db, [card["id"]])
-    convert.record(db, ids, json.dumps({"cards": [{"id": card["id"], "action": "split", "questions": [flux, why]}]}))
-    convert.accept(db, ids[card["id"]])
-    (added,) = json.loads(db.conversion(ids[card["id"]])["original"])["added"]
-    srs.review(db, added, 3, now=NOW)
-    convert.revert(db, ids[card["id"]])
-    assert db.card(added) is not None
-
-
-def test_conversion_manager(db, chat_panel):
-    from study_reader.convert_dialog import ConversionManager
-
-    _, worker, _, _ = chat_panel
-    deck = db.ensure_deck("D")
-    ids = [c["id"] for n in range(3) for c in db.note_cards(db.add_card_note("basic", {"front": f"q{n}", "back": "a"}, deck))]
-    manager = ConversionManager(db, worker)
-    changed = []
-    manager.changed.connect(lambda: changed.append(1))
-    assert manager.start(ids, "be brief") == 1 and manager.busy()
-    batch_id, blocks, model, system = worker.conversions[-1]
-    assert model == "sonnet" and system == convert.SYSTEM_PROMPT
-    worker.converted.emit(batch_id, json.dumps({"cards": [
-        {"id": ids[0], "action": "keep"},
-        {"id": ids[1], "action": "convert", "question": {"type": "truefalse", "question": "q1 is true", "answer": True}},
-        {"id": ids[2], "action": "convert", "question": {"type": "flashcard", "question": "q2?", "answer": "a"}},
-    ]}))
-    assert not manager.busy() and changed
-    assert [c["status"] for c in db.conversions()] == ["kept", "proposed", "proposed"]
-    assert manager.accept_all() == 2 and json.loads(db.card(ids[1])["data"])["type"] == "truefalse"
-    assert db.card_note(db.card(ids[2])["note_id"])["kind"] == "basic"  # a flashcard stays a Basic note
-    manager.start([ids[0]])
-    worker.convertFailed.emit(worker.conversions[-1][0], "rate limited")
-    assert db.conversions(("error",))[0]["reason"] == "rate limited"
-
-
-def test_conversion_never_makes_needless_flashcards(db):
-    deck = db.ensure_deck("D")
-    choice = db.add_card_note("quiz", {"type": "choice", "question": "Which?", "choices": ["A", "B"], "answer": 0}, deck)
-    free = db.add_card_note("quiz", {"type": "free", "question": "Why?", "answer": "Because.", "rubric": ""}, deck)
-    basic = db.add_card_note("basic", {"front": "What is $x$?", "back": "A variable"}, deck)
-    other = db.add_card_note("basic", {"front": "Vague", "back": "Too much"}, deck)
-    (c,), (q,), (b,), (o,) = db.note_cards(choice), db.note_cards(free), db.note_cards(basic), db.note_cards(other)
-    ids = convert.start(db, [c["id"], q["id"], b["id"], o["id"]])
-    convert.record(db, ids, json.dumps({"cards": [
-        {"id": c["id"], "action": "convert", "reason": "recall", "question":
-            {"type": "flashcard", "question": "Which?", "answer": "A"}},
-        {"id": q["id"], "action": "convert", "reason": "faster", "question":
-            {"type": "flashcard", "question": "Why?", "answer": "Because."}},
-        {"id": b["id"], "action": "convert", "question": {"type": "flashcard", "question": "What is $x$?",
-                                                         "answer": "A  variable"}},
-        {"id": o["id"], "action": "convert", "question": {"type": "flashcard", "question": "Sharp?", "answer": "Short"}},
-    ]}))
-    statuses = [db.conversion(ids[i])["status"] for i in (c["id"], q["id"], b["id"], o["id"])]
-    assert statuses == ["kept", "proposed", "kept", "proposed"]
-    assert "quiz questions stay" in db.conversion(ids[c["id"]])["reason"]
-    # A free response may become a flashcard, keeping its schedule.
-    assert convert.accept(db, ids[q["id"]])
-    assert db.card_note(db.card(q["id"])["note_id"])["kind"] == "basic"
-    assert convert.accept(db, ids[o["id"]])
-    note = db.card_note(db.card(o["id"])["note_id"])
-    assert note["kind"] == "basic" and json.loads(note["fields"])["front"] == "Sharp?"
-    with pytest.raises(cardmodel.NoteError):
-        db.add_card_note("quiz", {"type": "flashcard", "question": "F", "answer": "B"}, deck)
-
-
 def test_flashcards_in_quizzes_are_basic_notes(tmp_path):
     db = Database(tmp_path / "t.db")
     book = db.upsert_book("h", "/a.pdf", "A", 3)["id"]
@@ -321,6 +223,8 @@ def test_flashcards_in_quizzes_are_basic_notes(tmp_path):
     note = db.card_note(db.card(card_id)["note_id"])
     assert note["kind"] == "basic" and json.loads(note["fields"]) == {"front": "F", "back": "B", "extra": "E"}
     assert srs.question(db.card(card_id))["type"] == "flashcard" and db.card_for(reply, 0, 0)["id"] == card_id
+    with pytest.raises(cardmodel.NoteError):
+        db.add_card_note("quiz", {"type": "flashcard", "question": "F", "answer": "B"}, db.ensure_deck("D"))
 
 
 # -- review of cards from no book ----------------------------------------------------------
@@ -493,7 +397,7 @@ def test_main_window_cards_menu(pdf_path, tmp_path, monkeypatch):
 
 
 # -- regressions ---------------------------------------------------------------------------
-def test_edits_never_lose_reviewed_cards_or_revive_converted_ones(db):
+def test_edits_never_lose_reviewed_cards_or_revive_deleted_ones(db):
     deck = db.ensure_deck("D")
     note = db.add_card_note("cloze", {"text": "{{c1::a}} {{c2::b}} {{c3::c}}"}, deck, now=NOW)
     c1, c2, c3 = db.note_cards(note)
@@ -505,14 +409,10 @@ def test_edits_never_lose_reviewed_cards_or_revive_converted_ones(db):
     cards = {c["ord"]: c for c in db.note_cards(note)}
     assert cards[1]["id"] == c2["id"] and "B" in cards[1]["data"] and len(db.reviews(c2["id"])) == 1 and 2 in cards
 
-    # A converted card isn't brought back by editing its old note, and undo puts it back there.
-    (conversion,) = convert.start(db, [c1["id"]]).values()
-    convert.record(db, {c1["id"]: conversion}, json.dumps({"cards": [{"id": c1["id"], "action": "convert",
-                   "question": {"type": "flashcard", "question": "a?", "answer": "a"}}]}))
-    convert.accept(db, conversion)
+    # A deleted card isn't brought back by editing its note.
+    db.delete_cards([c1["id"]])
     db.update_card_note(note, {"text": "{{c1::a}} {{c2::B}} {{c3::c}} fixed typo"})
     assert 0 not in {c["ord"] for c in db.note_cards(note)}
-    assert convert.revert(db, conversion) and db.card(c1["id"])["note_id"] == note
 
 
 def test_forgotten_cards_count_as_new_and_outlive_their_chat(tmp_path):
@@ -571,31 +471,6 @@ def test_browser_columns_fit_the_table(db, chat_panel):
     browser.close()
 
 
-def test_browser_editor_follows_accepted_conversions(db, chat_panel):
-    from study_reader.browser import CardBrowser
-    from study_reader.convert_dialog import ConversionManager
-
-    _, worker, _, _ = chat_panel
-    note = db.add_card_note("basic", {"front": "2+2?", "back": "4"}, db.ensure_deck("D"))
-    (card,) = db.note_cards(note)
-    manager = ConversionManager(db, worker)
-    browser = CardBrowser(db, manager)
-    browser.show()
-    browser.set_search("")
-    browser.table.selectRow(0)
-    manager.start([card["id"]])
-    worker.converted.emit(worker.conversions[-1][0], json.dumps({"cards": [{"id": card["id"], "action": "convert",
-                          "question": {"type": "numeric", "question": "2+2?", "answer": 4}}]}))
-    browser.editor.fields["back"].setPlainText("four")  # an edit pending when the proposal is accepted is saved first
-    browser._save_timer.start()
-    saved = []
-    manager.aboutToChange.connect(lambda: saved.append(json.loads(db.card_note(note)["fields"])["back"]))
-    manager.accept_all()
-    assert saved == ["four"]
-    assert browser.editor.note_id == db.card(card["id"])["note_id"] and browser.editor.kind == "quiz"
-    browser.close()
-
-
 def test_clicking_a_row_shows_that_card(db, chat_panel):
     from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest
@@ -616,21 +491,6 @@ def test_clicking_a_row_shows_that_card(db, chat_panel):
     QTest.mouseClick(browser.table.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ControlModifier, rect.center())
     assert len(browser.selected_ids()) == 2 and browser.editor.fields["front"].toPlainText() == browser.model.data(browser.model.index(1, 0))
     browser.close()
-
-
-def test_stopping_conversions(db, chat_panel):
-    from study_reader.convert_dialog import ConversionManager
-
-    _, worker, _, _ = chat_panel
-    deck = db.ensure_deck("D")
-    ids = [c["id"] for n in range(2) for c in db.note_cards(db.add_card_note("basic", {"front": f"q{n}", "back": "a"}, deck))]
-    manager = ConversionManager(db, worker)
-    manager.start(ids)
-    batch_id = worker.conversions[-1][0]
-    manager.stop()
-    assert worker.conversions_stopped and not manager.busy() and db.conversions() == []
-    worker.converted.emit(batch_id, json.dumps({"cards": [{"id": i, "action": "keep"} for i in ids]}))
-    assert db.conversions() == []  # a reply that arrives anyway is ignored
 
 
 def test_switching_a_questions_type_in_the_browser(db, chat_panel):

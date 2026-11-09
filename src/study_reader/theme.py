@@ -75,9 +75,6 @@ ICONS = {
     "note": '<path d="M15.5 3H5a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2V8.5L15.5 3Z"/><path d="M15 3v6h6"/>',
     "cards": '<rect width="14" height="16" x="7" y="5" rx="2"/><path d="M4 16V5a2 2 0 0 1 2-2h9"/>',
     "chart": '<path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
-    "sparkles": '<path d="M9.94 15.5A2 2 0 0 0 8.5 14.06l-6.14-1.58a.5.5 0 0 1 0-.96L8.5 9.94A2 2 0 0 0 9.94 8.5l1.58-6.14'
-                'a.5.5 0 0 1 .96 0L14.06 8.5A2 2 0 0 0 15.5 9.94l6.14 1.58a.5.5 0 0 1 0 .96L15.5 14.06a2 2 0 0 0-1.44 1.44'
-                'l-1.58 6.14a.5.5 0 0 1-.96 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/>',
     "search": '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
     "import": '<path d="M12 3v12"/><path d="m8 11 4 4 4-4"/>'
               '<path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4"/>',
@@ -339,7 +336,6 @@ QFrame#chip { background: $accent_soft; border-radius: 8px; }
 QFrame#chip QLabel { font-size: 9pt; }
 QToolButton#angle { color: $muted; font-size: 8pt; font-weight: 600; padding: 4px 6px; }
 QFrame#popup { background: $raised; border: 1px solid $border; border-radius: 10px; }
-QLabel#notice { background: $raised; color: $fg; border: 1px solid $border; border-radius: 10px; padding: 8px 14px; }
 QFrame#readBar { background: $window; border-top: 1px solid $border; }
 """)
 

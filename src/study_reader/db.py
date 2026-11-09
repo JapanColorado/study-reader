@@ -89,16 +89,6 @@ CREATE TABLE IF NOT EXISTS notes (
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
--- Passages Claude made review cards from (Make cards), kept highlighted in the book.
-CREATE TABLE IF NOT EXISTS card_passages (
-    id INTEGER PRIMARY KEY,
-    book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
-    page INTEGER NOT NULL,
-    kind TEXT NOT NULL,             -- 'text' | 'image' (a screenshot region)
-    text TEXT NOT NULL DEFAULT '',
-    rects TEXT NOT NULL DEFAULT '[]', -- JSON [[x0,y0,x1,y1],...] in page points, like snippets
-    created_at REAL NOT NULL
-);
 CREATE TABLE IF NOT EXISTS decks (
     id INTEGER PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,      -- full path, levels joined by '::' (as in Anki); parents have rows too
@@ -145,7 +135,6 @@ CREATE TABLE IF NOT EXISTS cards (
     anki_id INTEGER,                -- the Anki card it was migrated from
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL DEFAULT 0,
-    passage_id INTEGER REFERENCES card_passages(id) ON DELETE SET NULL, -- the passage it was made from (Make cards)
     UNIQUE (message_id, quiz, question)
 );
 CREATE TABLE IF NOT EXISTS reviews (
@@ -158,17 +147,6 @@ CREATE TABLE IF NOT EXISTS reviews (
     reviewed_at REAL NOT NULL,
     duration INTEGER NOT NULL DEFAULT 0, -- ms spent on the card (0 if unknown)
     was_new INTEGER NOT NULL DEFAULT 0 -- the card was new (never reviewed, or forgotten) before this review
-);
-CREATE TABLE IF NOT EXISTS conversions (
-    id INTEGER PRIMARY KEY,
-    card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
-    status TEXT NOT NULL,           -- 'pending' (Claude is working) | 'proposed' | 'kept' (Claude would keep
-                                    -- it) | 'accepted' | 'rejected' | 'error'
-    proposal TEXT NOT NULL DEFAULT '', -- JSON quiz question Claude proposed (a list of them for a split)
-    reason TEXT NOT NULL DEFAULT '',   -- Claude's note on it, or the error
-    original TEXT NOT NULL DEFAULT '', -- JSON {kind, fields, ord, data, added?}: the card before an accepted
-                                       -- change (added: the ids of the cards a split made)
-    created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 -- Phone sync (phone_sync.py): events applied from the phone app, by their ids, and the batch
@@ -183,7 +161,6 @@ INDEXES = """
 CREATE INDEX IF NOT EXISTS cards_due ON cards (book_id, suspended, stage, due);
 CREATE INDEX IF NOT EXISTS cards_deck ON cards (deck_id, suspended, stage, due);
 CREATE INDEX IF NOT EXISTS cards_note ON cards (note_id);
-CREATE INDEX IF NOT EXISTS cards_passage ON cards (passage_id) WHERE passage_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS reviews_card ON reviews (card_id);
 CREATE INDEX IF NOT EXISTS reviews_time ON reviews (reviewed_at);
 CREATE UNIQUE INDEX IF NOT EXISTS card_notes_anki ON card_notes (anki_id) WHERE anki_id IS NOT NULL;
@@ -317,9 +294,13 @@ class Database:
             self._migrate_cards_to_notes()
         elif "variant" not in card_cols:
             self.conn.execute("ALTER TABLE cards ADD COLUMN variant TEXT NOT NULL DEFAULT ''")
-        if "passage_id" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(cards)")}:
-            self.conn.execute("ALTER TABLE cards ADD COLUMN passage_id INTEGER "
-                              "REFERENCES card_passages(id) ON DELETE SET NULL")
+        # Cards made from a highlight and Claude Conversion are gone (their cards stay as they are).
+        self.conn.execute("DROP INDEX IF EXISTS cards_passage")
+        if "passage_id" in {r["name"] for r in self.conn.execute("PRAGMA table_info(cards)")}:
+            self.conn.execute("ALTER TABLE cards DROP COLUMN passage_id")
+        self.conn.execute("DROP TABLE IF EXISTS card_passages")
+        self.conn.execute("DROP TABLE IF EXISTS conversions")
+        self.conn.execute("DELETE FROM settings WHERE key='convert_instructions'")
         # Flashcards were once quiz notes too; they are Basic notes now.
         for r in self.conn.execute("SELECT id, fields FROM card_notes "
                                    "WHERE kind='quiz' AND json_extract(fields, '$.type')='flashcard'").fetchall():
@@ -567,31 +548,6 @@ class Database:
         out.sort(key=lambda n: (n["page"], min((r[1] for r in n["rects"]), default=0.0), n["id"]))
         return out
 
-    # -- passages cards were made from ---------------------------------------
-    def add_card_passage(self, book_id: int, page: int, kind: str, text: str, rects: list, card_ids) -> int:
-        """Remember the passage some cards were made from, so it stays highlighted."""
-        with self.conn:
-            passage_id = self.conn.execute(
-                "INSERT INTO card_passages (book_id, page, kind, text, rects, created_at) VALUES (?,?,?,?,?,?)",
-                (book_id, page, kind, text, json.dumps(rects), time.time()),
-            ).lastrowid
-            self.conn.executemany("UPDATE cards SET passage_id=? WHERE id=?", [(passage_id, i) for i in card_ids])
-        return passage_id
-
-    def card_passages(self, book_id: int) -> list[dict]:
-        """The book's passages that still have cards, each with its card ids and title."""
-        rows = self.conn.execute(
-            "SELECT p.*, group_concat(c.id) AS card_ids, MIN(c.title) AS title FROM card_passages p "
-            "JOIN cards c ON c.passage_id=p.id WHERE p.book_id=? GROUP BY p.id ORDER BY p.id", (book_id,),
-        )
-        return [{**dict(r), "rects": json.loads(r["rects"]), "card_ids": sorted(map(int, r["card_ids"].split(",")))}
-                for r in rows]
-
-    def delete_card_passage(self, passage_id: int) -> None:
-        """Forget a passage (its highlight); its cards stay."""
-        with self.conn:
-            self.conn.execute("DELETE FROM card_passages WHERE id=?", (passage_id,))
-
     def update_note(self, note_id: int, body: str) -> None:
         self._update("notes", note_id, {"body": body, "updated_at": time.time()})
 
@@ -768,7 +724,7 @@ class Database:
                          now: float | None = None) -> None:
         """Change a note's fields (and kind) and/or tags. Its cards are remade from the fields. A
         cloze number (or reverse side) the edit introduces gets a new card; one the note made
-        before but no longer has a card for (deleted, converted, left behind in Anki) isn't
+        before but no longer has a card for (deleted, left behind in Anki) isn't
         brought back. A card whose deletion the edit removes goes if it was never reviewed;
         reviewed ones stay, showing what they did, so an edit (or a pause while retyping) can't
         lose review history."""
@@ -807,28 +763,6 @@ class Database:
                 "SELECT 1 FROM reviews WHERE card_id=? LIMIT 1", (c["id"],)).fetchone()]
             if gone:
                 self.conn.execute(f"DELETE FROM cards WHERE id IN ({','.join('?' * len(gone))})", gone)
-
-    def move_card_to_note(self, card_id: int, kind: str, fields: dict, now: float | None = None) -> int:
-        """Give one card new content as a note of its own (the card keeps its schedule and history);
-        its old note goes if no other card is left on it. Returns the new note's id."""
-        cardmodel.check(kind, fields)
-        card = self.card(card_id)
-        old = self.card_note(card["note_id"])
-        now = time.time() if now is None else now
-        with self.conn:
-            note_id = self._insert_note(kind, fields, old["tags"] if old else "", now, created_at=old["created_at"] if old else None)
-            self.move_card(card_id, note_id, 0, now)
-        return note_id
-
-    def move_card(self, card_id: int, note_id: int, ord: int, now: float | None = None) -> None:
-        """Put a card on another note as its card `ord` (keeping its schedule and history); its
-        old note goes if no other card is left on it."""
-        card, note = self.card(card_id), self.card_note(note_id)
-        data = cardmodel.dumps(cardmodel.card_data(note["kind"], json.loads(note["fields"]), ord))
-        with self.conn:
-            self.conn.execute("UPDATE cards SET note_id=?, ord=?, data=?, variant='', updated_at=? WHERE id=?",
-                              (note_id, ord, data, time.time() if now is None else now, card_id))
-            self._drop_orphan_notes([card["note_id"]])
 
     def _drop_orphan_notes(self, note_ids) -> None:
         """Delete those of these notes that no card is left on."""
@@ -1026,34 +960,6 @@ class Database:
             out += [r[0] for r in self.conn.execute(
                 f"SELECT DISTINCT note_id FROM cards WHERE id IN ({','.join('?' * len(chunk))})", chunk)]
         return list(dict.fromkeys(out))
-
-    # -- Claude conversions ----------------------------------------------------
-    def add_conversion(self, card_id: int) -> int:
-        """A conversion of a card being worked on, replacing any earlier one not yet accepted."""
-        with self.conn:
-            self.conn.execute("DELETE FROM conversions WHERE card_id=? AND status!='accepted'", (card_id,))
-            return self.conn.execute(
-                "INSERT INTO conversions (card_id, status, created_at) VALUES (?, 'pending', ?)", (card_id, time.time())
-            ).lastrowid
-
-    def conversion(self, conversion_id: int) -> sqlite3.Row | None:
-        return self.conn.execute("SELECT * FROM conversions WHERE id=?", (conversion_id,)).fetchone()
-
-    def conversions(self, statuses=("pending", "proposed", "kept", "error")) -> list[sqlite3.Row]:
-        return self.conn.execute(
-            f"SELECT * FROM conversions WHERE status IN ({','.join('?' * len(statuses))}) ORDER BY id", tuple(statuses)
-        ).fetchall()
-
-    def conversion_counts(self) -> dict[str, int]:
-        """How many conversions there are in each status."""
-        return {r[0]: r[1] for r in self.conn.execute("SELECT status, COUNT(*) FROM conversions GROUP BY status")}
-
-    def delete_conversions(self, conversion_ids) -> None:
-        with self.conn:
-            self.conn.executemany("DELETE FROM conversions WHERE id=?", [(i,) for i in conversion_ids])
-
-    def update_conversion(self, conversion_id: int, **fields) -> None:
-        self._update("conversions", conversion_id, fields)
 
     # -- settings ------------------------------------------------------------
     def get_setting(self, key: str, default: str = "") -> str:

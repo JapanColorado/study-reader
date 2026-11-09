@@ -153,16 +153,9 @@ def revise_request(title: str, change: str) -> str:
     return f"Revise your quiz “{title}”: {change.strip()}"
 
 
-def parse_question(raw: dict) -> dict:
-    """One question as a quiz holds it (page, tags and so on kept). Raises ValueError, TypeError
-    or KeyError if unusable."""
-    (q,) = _validate({"questions": [raw]}, "")["questions"]
-    return q
-
-
 def validate_question(raw: dict) -> dict:
     """One question as a card holds it (no page). Raises ValueError, TypeError or KeyError if unusable."""
-    q = parse_question(raw)
+    (q,) = _validate({"questions": [raw]}, "")["questions"]
     for key in ("page", "tags", "revises", "section"):
         q.pop(key, None)
     return q

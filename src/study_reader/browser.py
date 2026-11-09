@@ -1,7 +1,7 @@
 """The card browser: every review card in a searchable, sortable table (Anki-style search, see
 search.py), a sidebar of decks, tags, books and saved searches, an editor and preview for the
 current card, and actions on the selection (move, tag, suspend, flag, reschedule, delete, find
-and replace, convert with Claude)."""
+and replace)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from PySide6.QtCore import (
     QAbstractTableModel, QEvent, QItemSelection, QItemSelectionModel, QModelIndex, Qt, QTimer, QUrl, Signal,
 )
 from PySide6.QtGui import QAction, QColor, QFontMetrics, QKeySequence
-from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
@@ -22,7 +21,7 @@ from PySide6.QtWidgets import (
     QSplitter, QTableView, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import cardmodel, convert, quiz, search, srs
+from . import cardmodel, quiz, search, srs
 from .card_editor import AddDialog, DeckBox, NoteEditor
 from .db import Database, media_url
 from .notes import LocalPage
@@ -388,15 +387,11 @@ def _quote(s: str) -> str:
 
 
 class CardView(QWebEngineView):
-    """cardview.html: read-only card sides (the browser's preview, Claude Conversion's review)."""
+    """cardview.html: read-only card sides (the browser's preview)."""
 
-    def __init__(self, bridge=None, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
         self.setPage(LocalPage(self))
-        if bridge is not None:
-            self.channel = QWebChannel(self.page())
-            self.channel.registerObject("view", bridge)
-            self.page().setWebChannel(self.channel)
         self._ready = False
         self._pending: list[str] = []
         self.loadFinished.connect(self._on_loaded)
@@ -434,10 +429,9 @@ class CardBrowser(QMainWindow):
     statsRequested = Signal(int)  # deck id (0 = all)
     migrateRequested = Signal()
 
-    def __init__(self, db: Database, conversions=None, parent=None, embedded: bool = False):
+    def __init__(self, db: Database, parent=None, embedded: bool = False):
         super().__init__(parent)
         self.db = db
-        self.conversions = conversions  # convert_dialog.ConversionManager, for Claude Conversion
         self.embedded = embedded
         self.setWindowTitle("Browse cards — Study Reader")
         if embedded:
@@ -537,11 +531,6 @@ class CardBrowser(QMainWindow):
             b.setToolTip(tip)
             b.clicked.connect(slot)
             top.addWidget(b)
-        self.conversions_button = QPushButton("Conversions")
-        self.conversions_button.setIcon(icon("sparkles"))
-        self.conversions_button.setToolTip("Review Claude's proposed conversions")
-        self.conversions_button.clicked.connect(self.show_conversions)
-        top.addWidget(self.conversions_button)
 
         center = QWidget()
         mid = QVBoxLayout(center)
@@ -579,11 +568,6 @@ class CardBrowser(QMainWindow):
 
         self._load_settings()
         self._build_menus()
-        if self.conversions is not None:
-            self.conversions.changed.connect(self._conversions_changed)
-            self.conversions.aboutToChange.connect(self.save_note)
-            self.conversions.cardsChanged.connect(self._cards_converted)
-        self._conversions_changed()
         self.refresh()
 
     # -- settings ------------------------------------------------------------------------
@@ -742,11 +726,6 @@ class CardBrowser(QMainWindow):
             act(notes, "Remove tags…", self.remove_tags, "Ctrl+Alt+Shift+A"),
             act(notes, "Toggle mark", self.toggle_mark, "Ctrl+K"),
         ]
-        claude = bar.addMenu("C&laude")
-        self.convert_action = act(claude, "Convert with Claude…", self.convert, "Ctrl+Shift+K")
-        self.selection_actions.append(self.convert_action)
-        act(claude, "Review conversions…", self.show_conversions)
-        self.undo_convert_action = act(claude, "Undo conversion of this card", self.undo_conversion)
         go = bar.addMenu("&Go")
         act(go, "Previous card", lambda: self._step(-1), "Ctrl+P")
         act(go, "Next card", lambda: self._step(1), "Ctrl+N")
@@ -798,8 +777,6 @@ class CardBrowser(QMainWindow):
         menu.addSeparator()
         for a in self.selection_actions[12:]:
             menu.addAction(a)
-        if self.undo_convert_action.isEnabled():
-            menu.addAction(self.undo_convert_action)
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
     # -- searching -----------------------------------------------------------------------
@@ -913,7 +890,6 @@ class CardBrowser(QMainWindow):
                 del self._drafts[card["note_id"]]
         self._show_card_line(card)
         self.preview.js("showPreview", json.loads(card["data"]) if card else None, "both")
-        self.undo_convert_action.setEnabled(card is not None and convert.accepted_conversion(self.db, card["id"]) is not None)
 
     def _show_card_line(self, card) -> None:
         if card is None:
@@ -1195,39 +1171,6 @@ class CardBrowser(QMainWindow):
                 == QMessageBox.StandardButton.Yes:
             self.db.rename_tag(tag, "")
             self._changed(refresh_sidebar=True)
-
-    # -- Claude Conversion -----------------------------------------------------------------
-    def convert(self) -> None:
-        ids = self.selected_ids()
-        if not ids or self.conversions is None:
-            return
-        from .convert_dialog import ConvertStartDialog
-        dialog = ConvertStartDialog(self.db, len(ids), self)
-        if dialog.exec():
-            self.conversions.start(ids, dialog.instructions(), dialog.model())
-            self.show_conversions()
-
-    def show_conversions(self) -> None:
-        if self.conversions is not None:
-            self.conversions.show_dialog(self)
-
-    def undo_conversion(self) -> None:
-        self.save_note()
-        c = convert.accepted_conversion(self.db, self._card_id) if self._card_id is not None else None
-        if c and convert.revert(self.db, c["id"]):
-            self._changed()
-
-    def _cards_converted(self) -> None:
-        """Accepted proposals gave cards new notes: re-read them, and the editor's card."""
-        self.model.invalidate()
-        if self.isVisible():
-            self._show_current()
-
-    def _conversions_changed(self) -> None:
-        counts = self.db.conversion_counts()
-        open_ = counts.get("pending", 0) + counts.get("proposed", 0)
-        self.conversions_button.setText(f"Conversions · {open_}" if open_ else "Conversions")
-        self.conversions_button.setVisible(bool(open_ + counts.get("kept", 0) + counts.get("error", 0)))
 
     def closeEvent(self, event) -> None:
         self.save_note()

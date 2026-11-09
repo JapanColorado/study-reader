@@ -15,7 +15,6 @@ from . import claude_client as cc
 from .document import Document
 
 PARTIAL_CONTEXT_CHARS = 200_000
-CONVERSIONS_AT_ONCE = 3  # Claude Conversion requests running at the same time
 
 
 @dataclass
@@ -78,17 +77,13 @@ class ChatService:
     done(chat_id, session_id, text, message_uuid), failed(chat_id, message),
     for quiz grading graded(answer_id, text), gradeFailed(answer_id, message),
     titled(chat_id, title) when a chat's auto-title is ready, varied(card_id, text) and
-    variantFailed(card_id, message) for a card's next version (variants.py), carded(request_id, text)
-    and cardsFailed(request_id, message) for cards made from a passage (passage_cards.py), and for Claude Conversion
-    converted(batch_id, text), convertFailed(batch_id, message)."""
+    variantFailed(card_id, message) for a card's next version (variants.py)."""
 
     def __init__(self, emit: Callable[..., None], sessions_dir: str | Path):
         self.emit = emit
         self.sessions_dir = Path(sessions_dir)
         self._locks: dict[int, asyncio.Lock] = {}
         self._base: dict[int, tuple[str | None, str]] = {}
-        self._conversions: asyncio.Semaphore | None = None  # made on the worker's loop
-        self._conversion_tasks: set[asyncio.Task] = set()
 
     def forget_base(self, book_id: int) -> None:
         """Drop the cached base session, e.g. after the book's file was replaced."""
@@ -153,10 +148,6 @@ class ChatService:
         """Ask Claude for a review card's next version with new numbers, as a detached turn like grading."""
         await self._side_turn(job, card_id, "varied", "variantFailed")
 
-    async def make_cards(self, job: Job, request_id: int) -> None:
-        """Ask Claude for review cards on a passage, as a detached turn forked from the book."""
-        await self._side_turn(job, request_id, "carded", "cardsFailed")
-
     async def _side_turn(self, job: Job, id: int, done: str, failed: str) -> None:
         """A detached turn whose reply is reported as done(id, text), or failed(id, message)."""
         try:
@@ -178,27 +169,6 @@ class ChatService:
             return
         if title:
             self.emit("titled", chat_id, title)
-
-    async def convert(self, batch_id: int, blocks: list[dict], model: str, system_prompt: str) -> None:
-        """Ask Claude to rewrite a batch of review cards (convert.py), in a fresh bookless session."""
-        if self._conversions is None:
-            self._conversions = asyncio.Semaphore(CONVERSIONS_AT_ONCE)
-        task = asyncio.current_task()
-        self._conversion_tasks.add(task)
-        try:
-            async with self._conversions:
-                res = await cc.run_turn(blocks, cwd=self.sessions_dir / "convert", model=model,
-                                        system_prompt=system_prompt)
-            self.emit("converted", batch_id, res.text)
-        except Exception as e:
-            self.emit("convertFailed", batch_id, str(e) or type(e).__name__)
-        finally:
-            self._conversion_tasks.discard(task)
-
-    def stop_conversions(self) -> None:
-        """Cancel every conversion request, running or waiting its turn; they report nothing."""
-        for task in self._conversion_tasks:
-            task.cancel()
 
     async def _turn(self, job: Job, chat_session_id: str | None, on_delta) -> cc.TurnResult:
         if job.book is None:
@@ -241,11 +211,7 @@ class ChatWorker(QObject):
     gradeFailed = Signal(int, str)
     varied = Signal(int, str)
     variantFailed = Signal(int, str)
-    carded = Signal(int, str)
-    cardsFailed = Signal(int, str)
     titled = Signal(int, str)
-    converted = Signal(int, str)
-    convertFailed = Signal(int, str)
 
     def __init__(self, sessions_dir: str | Path, parent: QObject | None = None):
         super().__init__(parent)
@@ -269,17 +235,8 @@ class ChatWorker(QObject):
     def submit_variant(self, job: Job, card_id: int) -> None:
         asyncio.run_coroutine_threadsafe(self.service.vary(job, card_id), self.loop)
 
-    def submit_cards(self, job: Job, request_id: int) -> None:
-        asyncio.run_coroutine_threadsafe(self.service.make_cards(job, request_id), self.loop)
-
     def submit_title(self, chat_id: int, question: str, passage: str, reply: str) -> None:
         asyncio.run_coroutine_threadsafe(self.service.title(chat_id, question, passage, reply), self.loop)
-
-    def submit_conversion(self, batch_id: int, blocks: list[dict], model: str, system_prompt: str) -> None:
-        asyncio.run_coroutine_threadsafe(self.service.convert(batch_id, blocks, model, system_prompt), self.loop)
-
-    def stop_conversions(self) -> None:
-        self.loop.call_soon_threadsafe(self.service.stop_conversions)
 
     def shutdown(self) -> None:
         self.loop.call_soon_threadsafe(self.loop.stop)

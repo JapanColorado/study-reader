@@ -8,7 +8,6 @@
 <script src="markdown-it.min.js"></script>
 <script src="markdown.js"></script>
 <script src="quiz.js"></script>
-<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 <style>
   /* Fallbacks; the app sets these from theme.py. */
   :root { --surface:#fbfaf8; --raised:#ffffff; --fg:#1f1e1c; --muted:#6b6862; --faint:#a19d95; --border:#dedad2;
@@ -26,33 +25,12 @@
   .side .q .choice { cursor:default; }
   .side .q .choice:hover { border-color:var(--border); background:var(--raised); }
   .side .q .choice.right { border-color:var(--success); }
-  /* Claude Conversion proposals */
-  .pair { border:1px solid var(--border); border-radius:12px; margin-bottom:14px; background:var(--surface); }
-  .pair.decided { opacity:0.6; }
-  .pair .head { display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--border); font-size:12.5px; }
-  .pair .head .deck { color:var(--muted); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .pair .head .status { font-weight:650; font-size:11.5px; padding:1px 7px; border-radius:9px; background:var(--hover); color:var(--muted); }
-  .pair .head .status.proposed { background:var(--accent-soft); color:var(--accent); }
-  .pair .head .status.accepted { color:var(--success); }
-  .pair .head .status.error { color:var(--error); }
-  .pair .part + .part { margin-top:10px; padding-top:8px; border-top:1px dashed var(--border); }
-  .pair .part > .label { font-size:11px; font-weight:650; color:var(--muted); margin-bottom:4px; }
-  .pair .reason { padding:6px 12px 0; font-size:12.5px; color:var(--muted); font-style:italic; }
-  .pair .cols { display:grid; grid-template-columns:1fr 1fr; gap:10px; padding:10px 12px; }
-  @media (max-width: 760px) { .pair .cols { grid-template-columns:1fr; } }
-  .pair .col h3 { margin:0 0 6px; font-size:11.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
-  .pair .actions { display:flex; gap:8px; justify-content:flex-end; padding:0 12px 10px; }
-  .spinner { display:inline-block; width:11px; height:11px; border:2px solid var(--border); border-top-color:var(--accent);
-             border-radius:50%; animation:spin .8s linear infinite; vertical-align:-1px; margin-right:6px; }
-  @keyframes spin { to { transform:rotate(360deg); } }
 </style>
 </head>
 <body>
 <div id="root"><div class="empty">No card selected.</div></div>
 <script>
-// Read-only card rendering for the card browser's preview and the Claude Conversion review.
-let bridge = null;
-if (typeof qt !== "undefined") new QWebChannel(qt.webChannelTransport, channel => { bridge = channel.objects.view || null; });
+// Read-only card rendering for the card browser's preview.
 
 function setTheme(colors, dark) {
   const root = document.documentElement;
@@ -92,9 +70,7 @@ function sides(q, which = "both") {
 }
 
 function afterRender(root) {
-  for (const el of root.querySelectorAll("button, textarea, math-field")) {
-    if (!el.dataset.decide) el.setAttribute("disabled", "");
-  }
+  for (const el of root.querySelectorAll("button, textarea, math-field")) el.setAttribute("disabled", "");
 }
 
 // From the app: a card's question (null for none), and which sides to show.
@@ -106,43 +82,7 @@ function showPreview(q, which) {
   afterRender(root);
 }
 
-const STATUS_LABELS = { pending: "Converting…", proposed: "Proposed", kept: "Keep as is", error: "Error",
-                        accepted: "Accepted", rejected: "Rejected" };
-
-// From the app: Claude Conversion results: [{id, status, deck, reason, before, after}].
-function showProposals(items) {
-  const root = document.getElementById("root");
-  if (!items.length) { root.innerHTML = `<div class="empty">Nothing to review.</div>`; return; }
-  root.innerHTML = items.map(c => {
-    const decided = c.status === "accepted" || c.status === "rejected";
-    const status = c.status === "pending" ? `<span class="spinner"></span>${STATUS_LABELS.pending}` : STATUS_LABELS[c.status];
-    let html = `<div class="pair${decided ? " decided" : ""}" data-id="${c.id}"><div class="head">`
-      + `<span class="deck" title="${esc(c.deck)}">${esc(c.deck)}</span><span class="status ${c.status}">${status}</span></div>`;
-    if (c.reason) html += `<div class="reason">${esc(c.reason)}</div>`;
-    let before = "", after = "";
-    try { before = backHtml(c.before); } catch (e) { before = esc(String(e)); }
-    const split = c.after && c.after.length > 1;
-    if (c.after) {
-      after = c.after.map((q, k) => {
-        let one;
-        try { one = sides(q); } catch (e) { one = esc(String(e)); }
-        return split ? `<div class="part"><div class="label">Card ${k + 1} of ${c.after.length}${k ? " · new" : " · keeps the history"}</div>${one}</div>` : one;
-      }).join("");
-    }
-    else after = `<div class="empty" style="margin:20px 0">${c.status === "pending" ? "Waiting for Claude…" : c.status === "error" ? "No proposal." : "No change."}</div>`;
-    html += `<div class="cols"><div class="col"><h3>Now</h3><div class="side">${before}</div></div>`
-      + `<div class="col"><h3>${split ? `Proposed: split into ${c.after.length}` : "Proposed"}</h3>${after}</div></div>`;
-    if (c.status === "proposed") html += `<div class="actions"><button class="qbtn quiet" data-decide="reject">Reject</button>`
-      + `<button class="qbtn" data-decide="accept">Accept</button></div>`;
-    else if (c.status === "error" || c.status === "kept") html += `<div class="actions"><button class="qbtn quiet" data-decide="dismiss">Dismiss</button></div>`;
-    return html + `</div>`;
-  }).join("");
-  afterRender(root);
-}
-
 document.addEventListener("click", ev => {
-  const b = ev.target.closest("[data-decide]");
-  if (b && bridge) bridge.decide(+b.closest(".pair").dataset.id, b.dataset.decide);
   const a = ev.target.closest("a[href]");
   if (a && a.getAttribute("href").startsWith("#")) ev.preventDefault();
 });

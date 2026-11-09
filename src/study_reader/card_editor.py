@@ -431,8 +431,7 @@ class NoteEditor(QWidget):
         if self.note_id is None:
             return False
         if self.db.card_note(self.note_id) is None:
-            raise cardmodel.NoteError("this card's content was replaced meanwhile (e.g. by an accepted conversion); "
-                                      "select it again to edit it")
+            raise cardmodel.NoteError("this card's note was deleted meanwhile")
         kind, fields, tags = self.values()
         self.db.update_card_note(self.note_id, fields, tags, kind=kind)
         return True
