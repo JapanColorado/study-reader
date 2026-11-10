@@ -112,6 +112,25 @@ function occlusionHtml(q, showing) {
     + `<svg viewBox="0 0 1 1" preserveAspectRatio="none">${shapes}</svg></div>`;
 }
 
+// The order to draw a multiple-choice question's options in, mixed anew on every call:
+// order[k] is the index in q.choices of the k-th option drawn. Choices that speak of the others
+// ("none of the above") keep their places, and nothing moves when a choice or the explanation
+// names options by letter ("Both A and B", "Option C is…").
+const CHOICE_LETTERS = /\b(?:[Oo]ptions?|[Cc]hoices?|[Aa]nswers?) \(?[A-E]\b|\b[A-E]\)?,? (?:and|or|&) \(?[A-E]\b/;
+const CHOICE_PLACED = /\b(?:of the above|of these|of those|of the others?|the above)\b/i;
+function choiceOrder(q, random = Math.random) {
+  const order = q.choices.map((_, k) => k);
+  if (CHOICE_LETTERS.test([q.explanation || "", ...q.choices].join("\n"))) return order;
+  const free = order.filter(k => !CHOICE_PLACED.test(q.choices[k]));
+  const mixed = free.slice();
+  for (let i = mixed.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [mixed[i], mixed[j]] = [mixed[j], mixed[i]];
+  }
+  free.forEach((k, i) => { order[k] = mixed[i]; });
+  return order;
+}
+
 // Again / Hard / Good / Easy. previews: {rating: "10m"} for when each brings the card back;
 // suggested: the rating the answer's grade suggests (Space or Enter picks it).
 function ratingRow(previews = null, suggested = null) {

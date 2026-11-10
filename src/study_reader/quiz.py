@@ -122,8 +122,8 @@ def _validate(data, title: str) -> dict:
                 if isinstance(t, str)]
         if any(tags):
             out["tags"] = list(dict.fromkeys(t for t in tags if t))
-        if kind in ("numeric", "written") and isinstance(q.get("varies"), bool):
-            out["varies"] = q["varies"]  # whether review can pose it with new numbers (variants.py)
+        if kind in ("numeric", "written", "choice") and isinstance(q.get("varies"), bool):
+            out["varies"] = q["varies"]  # whether review can pose it anew: new numbers or choices (variants.py)
         if isinstance(q.get("section"), str) and q["section"].strip():
             out["section"] = q["section"].strip()  # the book section it practices (srs.find_section)
         if isinstance(q.get("revises"), int) and not isinstance(q["revises"], bool) and q["revises"] >= 1:

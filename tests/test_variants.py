@@ -83,7 +83,9 @@ def test_reviewed_numeric_cards_come_back_with_new_numbers(chat_panel):
     assert card_id == numeric and job.book is None and job.chat_session_id is None and not job.history
     assert "fresh version" in job.question and "<last_version>" not in job.question and 'on "A"' in job.question
 
-    # Choice and true/false cards aren't varied.
+    # True/false cards aren't varied.
+    truefalse = db.card_for(reply, 0, 1)["id"]
+    review.variants.after_review(truefalse)
     assert [c for _, c in worker.variants] == [numeric]
 
     worker.varied.emit(numeric, REPLY)
@@ -103,6 +105,64 @@ def test_reviewed_numeric_cards_come_back_with_new_numbers(chat_panel):
     assert review._answer["verdict"] == "correct" and shown[-1][1][0]["question"]["answer"] == "3/2*6"
     review.rate(numeric, 3)
     assert "<last_version>" in worker.variants[-1][0].question
+
+
+CHOICE = {"type": "choice", "question": "What rinses a zorblatt?", "choices": ["Tea", "Sand", "Wind", "Soap"],
+          "answer": 0, "explanation": "Tea does.", "page": 2, "tags": ["x"]}
+CHOICES_REPLY = r'''Tea is the one.
+
+```json
+{"question": "Something else?", "choices": ["Dust", "A brew of $\frac{1}{2}$ tea", "Air", "Suds"], "answer": 1}
+```'''
+
+
+def test_multiple_choice_requests_and_replies():
+    text = variants.request(CHOICE, {**CHOICE, "choices": ["Mud", "Fog", "Brewed leaves", "Oil"], "answer": 2}, "A")
+    assert "new set of choices" in text and "random order" in text and "skip" not in text
+    assert '"Sand"' in text and "<last_version>" in text and '"Brewed leaves"' in text and "the last version's" in text
+    assert "<last_version>" not in variants.request(CHOICE) and "new set of choices" not in variants.request(NUMERIC)
+    q = variants.parse(CHOICES_REPLY, {**CHOICE, "html": True})
+    # The question is the card's own, whatever the reply says; the explanation too when none is given.
+    assert q["question"] == CHOICE["question"] and q["explanation"] == "Tea does." and q["page"] == 2
+    assert q["choices"][1] == r"A brew of $\frac{1}{2}$ tea" and q["answer"] == 1 and q["html"] and "tags" not in q
+    assert quiz.grade(q, {"choice": 1}) == "correct"
+    with pytest.raises(ValueError):
+        variants.parse('{"choices": ["Dust", "Tea"], "answer": 2}', CHOICE)
+    with pytest.raises(ValueError):
+        variants.parse(REPLY, CHOICE)
+
+
+def test_reviewed_multiple_choice_cards_come_back_with_new_choices(chat_panel):
+    review, worker, db, reply, shown = _review(chat_panel)
+    choice = db.card_for(reply, 0, 0)["id"]
+    own = srs.question(db.card(choice))
+    review.start()
+    while review.card_id != choice:
+        review.act(review.card_id, "skip")
+    review.check(choice, {"choice": own["answer"]})
+    review.rate(choice, 3)
+    job, card_id = worker.variants[-1]
+    assert card_id == choice and job.book is None and "new set of choices" in job.question
+    right = (own["answer"] + 1) % len(own["choices"])
+    worker.varied.emit(choice, json.dumps({"choices": [f"new {k}" for k in range(len(own["choices"]))], "answer": right}))
+    assert srs.question(db.card(choice)) == own
+
+    db.update_card(choice, due=0)
+    while review.card_id != choice:
+        review.act(review.card_id, "skip")
+    payload = shown[-1][1][0]
+    assert payload["varied"] and payload["question"]["question"] == own["question"]
+    assert payload["question"]["choices"][right] == f"new {right}"
+    review.check(choice, {"choice": right})  # graded against the new choices
+    assert review._answer["verdict"] == "correct"
+    review.rate(choice, 3)
+    assert "<last_version>" in worker.variants[-1][0].question
+
+    # "varies": false (the browser's checkbox) leaves a card's choices alone.
+    note = db.card_note(db.card(choice)["note_id"])
+    db.update_card_note(note["id"], {**json.loads(note["fields"]), "varies": False})
+    card = db.card(choice)
+    assert srs.question(card)["varies"] is False and not variants.wants_variant(card) and not variants.is_varied(card)
 
 
 def test_written_cards_without_numbers_are_skipped_for_good(chat_panel):
@@ -125,8 +185,10 @@ def test_first_answer_in_chat_asks_for_a_new_version(chat_panel):
     review, worker, db, reply, shown = _review(chat_panel)
     panel._on_quiz_answer(reply, 0, 2, json.dumps({"latex": "41"}))
     assert worker.variants[-1][1] == db.card_for(reply, 0, 2)["id"]
-    panel._on_quiz_answer(reply, 0, 0, json.dumps({"choice": 1}))
+    panel._on_quiz_answer(reply, 0, 1, json.dumps({"value": True}))
     assert len(worker.variants) == 1
+    panel._on_quiz_answer(reply, 0, 0, json.dumps({"choice": 1}))  # multiple choice: new choices
+    assert worker.variants[-1][1] == db.card_for(reply, 0, 0)["id"] and len(worker.variants) == 2
 
 
 def test_questions_marked_not_to_vary_are_never_asked_about(tmp_path):

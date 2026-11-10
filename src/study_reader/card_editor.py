@@ -170,9 +170,7 @@ class CardEditor(QWidget):
         self.q_tolerance = QDoubleSpinBox(decimals=6, maximum=1e12, specialValueText="1% of the answer")
         self.q_rubric = FieldEdit("The key points a full answer covers, shown when you rate it (optional)")
         self.q_explanation = FieldEdit("Why the answer is right (shown after answering)")
-        self.q_varies = QCheckBox("New numbers after each review", toolTip=(
-            "After each review Claude writes a fresh version of this problem (new givens, perhaps a new "
-            "setting) for the next time it comes up. Settings → Review settings turns this off for every card."))
+        self.q_varies = QCheckBox("New numbers after each review")  # text and tooltip: _question_rows
         self.q_varies.clicked.connect(self._varies_clicked)
         self.q_rows: dict[str, tuple] = {}
         for key, label, w in (("question", "Question", self.q_question),
@@ -314,12 +312,18 @@ class CardEditor(QWidget):
     def _question_rows(self) -> None:
         t = self.kind
         rows = {"question", "explanation"} | {
-            "choice": {"choices", "correct"}, "truefalse": {"tf"}, "numeric": {"number", "unit", "tolerance", "varies"},
+            "choice": {"choices", "correct", "varies"}, "truefalse": {"tf"}, "numeric": {"number", "unit", "tolerance", "varies"},
             "written": {"answer", "rubric", "varies"},
         }[t]
         for key, (label, w) in self.q_rows.items():
             label.setVisible(key in rows)
             w.setVisible(key in rows)
+        self.q_varies.setText("New choices after each review" if t == "choice" else "New numbers after each review")
+        self.q_varies.setToolTip(
+            ("After each review Claude rewords the right answer and writes new wrong ones for the next time "
+             "this comes up; the question stays as it is." if t == "choice" else
+             "After each review Claude writes a fresh version of this problem (new givens, perhaps a new "
+             "setting) for the next time it comes up.") + " Settings → Review settings turns this off for every card.")
         self.q_rows["answer"][0].setText("Model answer" if t == "written" else "Answer")
 
     def _carry(self, old: str, new: str) -> None:
@@ -448,7 +452,7 @@ class CardEditor(QWidget):
         else:
             raw["answer"] = self.q_answer.toPlainText().strip()
             raw["rubric"] = self.q_rubric.toPlainText().strip()
-        if t in ("numeric", "written") and self._varies is not None:
+        if t in ("numeric", "written", "choice") and self._varies is not None:
             raw["varies"] = self._varies
         try:
             return quiz.validate_question(raw)

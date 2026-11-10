@@ -265,6 +265,7 @@ function headerHtml(o) {
 
 function showOverview(o) {
   CARD = null;
+  ORDER = null;
   LAST = o;
   const root = document.getElementById("root");
   const how = `Every question in a quiz Claude writes becomes a review card. Choose <em>Quiz me</em>
@@ -357,12 +358,34 @@ function celebrate(events) {
   }
 }
 
+// Multiple-choice options are drawn in a new order each time a card comes up, so the right
+// answer can't be known by its place. Only the drawing is mixed: answers go to the app, and
+// into the review log, as indices into the question's own choices.
+let ORDER = null;  // {id, order, answered} of the card showing: order[k] is the k-th option drawn
+
+function cardOrder(c) {
+  const q = c.question;
+  if (q.type !== "choice") return ORDER = null;
+  // The same card again once it has been answered is a new showing (rated Again with nothing else left).
+  if (!ORDER || ORDER.id !== c.id || ORDER.order.length !== q.choices.length || ORDER.answered && !c.answer)
+    ORDER = { id: c.id, order: choiceOrder(q) };
+  ORDER.answered = !!c.answer;
+  return ORDER.order;
+}
+
 function showCard(c) {
   CARD = c;
-  const q = c.question, a = c.answer;
+  let q = c.question, a = c.answer;
+  const order = cardOrder(c);
+  if (order) {
+    q = { ...q, choices: order.map(k => q.choices[k]), answer: order.indexOf(q.answer) };
+    if (a && a.response && Number.isInteger(a.response.choice))
+      a = { ...a, response: { ...a.response, choice: order.indexOf(a.response.choice) } };
+  }
   const meta = [
     c.new ? `<span class="tag">New</span>` : "",
-    c.varied ? `<span class="tag" title="Claude wrote this version with new numbers after your last review">New numbers</span>` : "",
+    c.varied && q.type === "choice" ? `<span class="tag" title="Claude wrote these choices after your last review">New choices</span>`
+      : c.varied ? `<span class="tag" title="Claude wrote this version with new numbers after your last review">New numbers</span>` : "",
     c.book ? `<span class="book">${esc(c.book)}</span>` : "",
     `<span title="${esc(c.deck)}">${esc(c.title || c.deck.split("::").pop())}</span>`,
     c.page !== null ? `<a class="src" href="#" data-act="source" title="Show this page in the book">p. ${c.page + 1}</a>` : "",
@@ -448,6 +471,7 @@ function answer(act, qEl, button) {
   }
   const response = readResponse(q, qEl, act, button);
   if (!response) return;
+  if (ORDER && "choice" in response) response.choice = ORDER.order[response.choice];
   qEl.classList.add("busy");
   bridge.check(CARD.id, JSON.stringify(response));
 }

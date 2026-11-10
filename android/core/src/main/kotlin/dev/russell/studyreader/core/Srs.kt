@@ -274,7 +274,7 @@ class Srs(val db: Sql, val zone: ZoneId = ZoneId.systemDefault(), val fuzz: Bool
     // -- cards ------------------------------------------------------------------------------
     fun isNew(card: Row) = card.long("reps") == 0L
 
-    /** The question review shows: the latest version with new numbers (variants.py), else the card's own. */
+    /** The question review shows: the latest version with new numbers or new choices (variants.py), else the card's own. */
     fun question(card: Row): JsonObject {
         val variant = card.str("variant")
         if (variant.isNotBlank()) {

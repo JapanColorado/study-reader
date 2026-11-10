@@ -1,12 +1,15 @@
-"""Fresh versions of calculation problems for review: after a numeric or written-answer card
-is reviewed (or first answered in its chat), Claude writes the same problem with new numbers,
-which review shows the next time the card comes up (cards.variant), so a remembered answer
-doesn't stand in for doing the problem. It is asked in a fresh session without the book (the
-problem and its solution are enough), to keep it cheap. Questions Claude marked "varies": false
-when writing the quiz are never asked about; for older ones without the mark Claude may decline
-(a concept rather than a calculation), and that is remembered. The card browser can turn a
-question's "varies" on or off, and the ENABLED_SETTING turns new versions off for every card
-(review then shows the cards' own questions). Qt-free."""
+"""Fresh versions of questions for review: after a numeric or written-answer card is reviewed
+(or first answered in its chat), Claude writes the same problem with new numbers, which review
+shows the next time the card comes up (cards.variant), so a remembered answer doesn't stand in
+for doing the problem. A multiple-choice card gets new choices instead: its question stays as
+written, the right answer is reworded and the wrong ones replaced, so it can't be picked by its
+familiar wording (review also draws the choices in a new order each time, in review.html). It is
+asked in a fresh session without the book (the problem and its solution are enough), to keep it
+cheap. Calculation questions Claude marked "varies": false when writing the quiz are never asked
+about; for older ones without the mark Claude may decline (a concept rather than a calculation),
+and that is remembered. The card browser can turn a question's "varies" on or off, and the
+ENABLED_SETTING turns new versions off for every card (review then shows the cards' own
+questions). Qt-free."""
 
 from __future__ import annotations
 
@@ -15,7 +18,7 @@ import re
 
 from . import quiz
 
-TYPES = ("numeric", "written")
+TYPES = ("numeric", "written", "choice")
 ENABLED_SETTING = "variants"  # "0": no new versions, and review shows the cards' own questions
 SKIP = {"skip": True}
 # Fields of a question that aren't part of the problem itself.
@@ -31,8 +34,8 @@ def enabled(db) -> bool:
 
 
 def wants_variant(card) -> bool:
-    """A card whose next version is worth asking for: a numeric or written-answer question not
-    known to have nothing to vary."""
+    """A card whose next version is worth asking for: a numeric, written-answer or multiple-choice
+    question not known to have nothing to vary."""
     q = json.loads(card["data"])
     return q.get("type") in TYPES and q.get("varies") is not False and _load(card) != SKIP
 
@@ -61,6 +64,8 @@ def request(original: dict, last: dict | None = None, book: str = "", title: str
     source = f" on \"{book}\"" if book else ""
     named = f" (\"{title}\")" if title else ""
     intro = f"I just reviewed this question{named} from my spaced-repetition cards{source}."
+    if original.get("type") == "choice":
+        return _choices_request(intro, original, last)
     parts = [
         intro + " When it comes back I want a fresh version of the problem rather than the same one, "
         "so I practice the method instead of remembering the answer.",
@@ -86,6 +91,34 @@ def request(original: dict, last: dict | None = None, book: str = "", title: str
     return "\n\n".join(parts)
 
 
+def _choices_request(intro: str, original: dict, last: dict | None) -> str:
+    """Asking for a multiple-choice question's next set of choices."""
+    parts = [
+        intro + " When it comes back I want to pick the right answer because I know it, not because I "
+        "recognize its wording or the wrong answers I have seen beside it.",
+        f"<question>\n{_problem(original)}\n</question>",
+    ]
+    if last:
+        parts.append(f"<last_version>\n{_problem(last)}\n</last_version>")
+    parts.append(
+        "Write a new set of choices for it. The question itself stays exactly as written, and so does what "
+        "it tests: the same number of choices, exactly one of them right, no harder and no easier. Say the "
+        "right answer in other words (leave it as it is only where it can't be put differently, as with a "
+        "number, a formula or a name), and write fresh wrong answers, different from the original's"
+        + (" and the last version's" if last else "") + " where the material allows: plausible, the "
+        "mistakes someone who half understands the material would make, yet clearly wrong to someone who "
+        "knows it. Keep all the choices alike in length, form and level of detail, so the right one doesn't "
+        "stand out. Check that the right one is right and each of the others wrong before writing them.\n\n"
+        "The choices are shown in a random order, so none may refer to another by letter or position "
+        "(a choice like \"none of the above\" only if the original has one), and \"explanation\", which "
+        "briefly says why the right answer is right, doesn't name choices by letter either.\n\n"
+        "End your reply with the JSON object in a ```json fence: {\"choices\": [...], \"answer\": the "
+        "0-based index of the right one, \"explanation\": \"...\"}. Double every LaTeX backslash "
+        "(\"$\\\\frac{a}{b}$\")."
+    )
+    return "\n\n".join(parts)
+
+
 def parse(text: str, original: dict) -> dict:
     """The new version from Claude's reply (SKIP if it declined). ValueError if unusable."""
     fences = re.findall(r"```(?:json)?[ \t]*\n(.*?)\n?```", text, re.DOTALL)
@@ -95,8 +128,13 @@ def parse(text: str, original: dict) -> dict:
         raise ValueError("not a JSON object")
     if data.get("skip") is True:
         return dict(SKIP)
+    if original.get("type") == "choice":  # new choices for the question as it stands
+        data = {"explanation": original.get("explanation", ""), **data, "type": "choice",
+                "question": original["question"]}
     q = quiz.validate_question(data)
     if q["type"] != original.get("type"):
         raise ValueError(f"a {q['type']} question in place of a {original.get('type')} one")
     q["page"] = original.get("page")
+    if q["type"] == "choice" and original.get("html"):
+        q["html"] = original["html"]  # its question is the card's own text
     return q

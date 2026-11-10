@@ -39,9 +39,9 @@ def card_title(db: Database, card) -> tuple[str, int | None]:
 
 
 class VariantMaker(QObject):
-    """After a calculation card is reviewed, has Claude write its next version with new numbers
-    (variants.py, in a fresh bookless session) and keeps it on the card for review to show. Failures are silent: the card
-    shows its last version again."""
+    """After a calculation or multiple-choice card is reviewed, has Claude write its next version, with
+    new numbers or new choices (variants.py, in a fresh bookless session), and keeps it on the card for
+    review to show. Failures are silent: the card shows its last version again."""
 
     def __init__(self, db: Database, worker: ChatWorker, parent=None):
         super().__init__(parent)

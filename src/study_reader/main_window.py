@@ -393,11 +393,11 @@ class MainWindow(QMainWindow):
         self.rewards_action.toggled.connect(self._set_rewards)
         review_menu.addAction("Daily goal…").triggered.connect(self._set_daily_goal)
         review_menu.addSeparator()
-        self.variants_action = review_menu.addAction("New numbers for problems after each review")
+        self.variants_action = review_menu.addAction("New numbers and new choices after each review")
         self.variants_action.setToolTip(
             "After you review a numeric or written-answer card, Claude writes a fresh version of the problem "
-            "for next time. Off: cards always show their own question. Single cards can be turned off in "
-            "the card browser.")
+            "for next time, and for a multiple-choice card a new set of choices. Off: cards always show "
+            "their own question. Single cards can be turned off in the card browser.")
         self.variants_action.setCheckable(True)
         self.variants_action.setChecked(variants.enabled(self.db))
         self.variants_action.toggled.connect(self._set_variants)
