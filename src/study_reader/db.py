@@ -150,6 +150,42 @@ CREATE TABLE IF NOT EXISTS reviews (
     duration INTEGER NOT NULL DEFAULT 0, -- ms spent on the card (0 if unknown)
     was_new INTEGER NOT NULL DEFAULT 0 -- the card was new (never reviewed, or forgotten) before this review
 );
+-- Make with Claude (deck_maker.py): the one draft being worked on (a deck Claude is making, or
+-- existing cards it is improving), the requests it was sent in, and the cards it proposed.
+CREATE TABLE IF NOT EXISTS deck_drafts (
+    id INTEGER PRIMARY KEY,
+    mode TEXT NOT NULL,             -- 'new' (a deck from a description) | 'improve' (existing cards)
+    request TEXT NOT NULL DEFAULT '{}', -- JSON {description, notes, files}: what the learner asked for
+    deck TEXT NOT NULL DEFAULT '',  -- full name of the deck the new cards go into
+    model TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS draft_batches (
+    id INTEGER PRIMARY KEY,
+    draft_id INTEGER NOT NULL REFERENCES deck_drafts(id) ON DELETE CASCADE,
+    session_id TEXT,                -- Claude's session, resumed by follow-ups
+    status TEXT NOT NULL,           -- 'pending' (Claude is working) | 'done' | 'error'
+    error TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT ''   -- what Claude said to the learner in its last reply
+);
+CREATE TABLE IF NOT EXISTS draft_items (
+    id INTEGER PRIMARY KEY,
+    draft_id INTEGER NOT NULL REFERENCES deck_drafts(id) ON DELETE CASCADE,
+    batch_id INTEGER REFERENCES draft_batches(id) ON DELETE SET NULL,
+    number INTEGER NOT NULL,        -- shown as #n and how Claude refers to it; never reused in a draft
+    card_id INTEGER REFERENCES cards(id) ON DELETE CASCADE, -- the existing card it rewrites; NULL: a new card
+    status TEXT NOT NULL,           -- 'pending' | 'proposed' | 'kept' (no change) | 'error' | 'removed'
+    proposal TEXT NOT NULL DEFAULT '', -- JSON [{kind, fields, tags}]: the card, or a split's several
+    reason TEXT NOT NULL DEFAULT '',   -- Claude's note on it, or the error
+    checked INTEGER NOT NULL DEFAULT 1 -- the learner wants it (unticked ones aren't added or applied)
+);
+-- Cards Make with Claude rewrote: what they were, so the rewrite can be undone.
+CREATE TABLE IF NOT EXISTS card_rewrites (
+    id INTEGER PRIMARY KEY,
+    card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+    original TEXT NOT NULL,         -- JSON {note_id, kind, fields, ord, data, added}: added, the cards a split made
+    created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 -- Phone sync (phone_sync.py): events applied from the phone app, by their ids, and the batch
 -- files they came in (the snapshot acknowledges those, so the phone can delete them).
@@ -167,6 +203,8 @@ CREATE INDEX IF NOT EXISTS reviews_card ON reviews (card_id);
 CREATE INDEX IF NOT EXISTS reviews_time ON reviews (reviewed_at);
 CREATE UNIQUE INDEX IF NOT EXISTS card_notes_anki ON card_notes (anki_id) WHERE anki_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS cards_anki ON cards (anki_id) WHERE anki_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS draft_items_draft ON draft_items (draft_id, number);
+CREATE INDEX IF NOT EXISTS card_rewrites_card ON card_rewrites (card_id);
 """
 
 
@@ -799,6 +837,30 @@ class Database:
             if gone:
                 self.conn.execute(f"DELETE FROM cards WHERE id IN ({','.join('?' * len(gone))})", gone)
 
+    def move_card_to_note(self, card_id: int, kind: str, fields: dict, now: float | None = None) -> int:
+        """Give one card new content in a card_notes row of its own, as the first card the fields
+        make (the card keeps its deck, schedule and history, and its tags); the old row goes if no
+        other card is left on it. Returns the new row's id."""
+        cardmodel.check(kind, fields)
+        card = self.card(card_id)
+        old = self.card_note(card["note_id"])
+        now = time.time() if now is None else now
+        with self.conn:
+            note_id = self._insert_note(kind, fields, old["tags"] if old else "", now,
+                                        created_at=old["created_at"] if old else None)
+            self.move_card(card_id, note_id, cardmodel.card_ords(kind, fields)[0], now)
+        return note_id
+
+    def move_card(self, card_id: int, note_id: int, ord: int, now: float | None = None) -> None:
+        """Put a card on another card_notes row as its card `ord` (keeping its schedule and
+        history); its old row goes if no other card is left on it."""
+        card, note = self.card(card_id), self.card_note(note_id)
+        data = cardmodel.dumps(cardmodel.card_data(note["kind"], json.loads(note["fields"]), ord))
+        with self.conn:
+            self.conn.execute("UPDATE cards SET note_id=?, ord=?, data=?, variant='', updated_at=? WHERE id=?",
+                              (note_id, ord, data, time.time() if now is None else now, card_id))
+            self._drop_orphan_notes([card["note_id"]])
+
     def _drop_orphan_notes(self, note_ids) -> None:
         """Delete those of these notes that no card is left on."""
         for chunk in _chunks(list(note_ids)):
@@ -995,6 +1057,84 @@ class Database:
             out += [r[0] for r in self.conn.execute(
                 f"SELECT DISTINCT note_id FROM cards WHERE id IN ({','.join('?' * len(chunk))})", chunk)]
         return list(dict.fromkeys(out))
+
+    # -- Make with Claude --------------------------------------------------------
+    def draft(self) -> sqlite3.Row | None:
+        """The draft being worked on, if any (there is at most one)."""
+        return self.conn.execute("SELECT * FROM deck_drafts ORDER BY id DESC LIMIT 1").fetchone()
+
+    def add_draft(self, mode: str, request: dict, deck: str, model: str) -> int:
+        """A new draft, in place of any other."""
+        with self.conn:
+            self.conn.execute("DELETE FROM deck_drafts")
+            return self.conn.execute(
+                "INSERT INTO deck_drafts (mode, request, deck, model, created_at) VALUES (?,?,?,?,?)",
+                (mode, json.dumps(request, ensure_ascii=False), deck, model, time.time()),
+            ).lastrowid
+
+    def update_draft(self, draft_id: int, **fields) -> None:
+        self._update("deck_drafts", draft_id, fields)
+
+    def delete_draft(self, draft_id: int) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM deck_drafts WHERE id=?", (draft_id,))
+
+    def add_draft_batch(self, draft_id: int) -> int:
+        with self.conn:
+            return self.conn.execute("INSERT INTO draft_batches (draft_id, status) VALUES (?, 'pending')",
+                                     (draft_id,)).lastrowid
+
+    def draft_batch(self, batch_id: int) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM draft_batches WHERE id=?", (batch_id,)).fetchone()
+
+    def draft_batches(self, draft_id: int) -> list[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM draft_batches WHERE draft_id=? ORDER BY id", (draft_id,)).fetchall()
+
+    def update_draft_batch(self, batch_id: int, **fields) -> None:
+        self._update("draft_batches", batch_id, fields)
+
+    def add_draft_item(self, draft_id: int, batch_id: int | None, card_id: int | None = None, status: str = "pending",
+                       proposal: str = "", reason: str = "") -> int:
+        """A card in the draft, numbered after the draft's others."""
+        with self.conn:
+            number = self.conn.execute("SELECT COALESCE(MAX(number), 0) + 1 FROM draft_items WHERE draft_id=?",
+                                       (draft_id,)).fetchone()[0]
+            return self.conn.execute(
+                "INSERT INTO draft_items (draft_id, batch_id, number, card_id, status, proposal, reason) "
+                "VALUES (?,?,?,?,?,?,?)", (draft_id, batch_id, number, card_id, status, proposal, reason),
+            ).lastrowid
+
+    def draft_item(self, item_id: int) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM draft_items WHERE id=?", (item_id,)).fetchone()
+
+    def draft_items(self, draft_id: int, batch_id: int | None = None) -> list[sqlite3.Row]:
+        """The draft's cards (or one batch's), in order, without those Claude removed."""
+        if batch_id is None:
+            return self.conn.execute("SELECT * FROM draft_items WHERE draft_id=? AND status!='removed' ORDER BY number",
+                                     (draft_id,)).fetchall()
+        return self.conn.execute("SELECT * FROM draft_items WHERE draft_id=? AND batch_id=? AND status!='removed' "
+                                 "ORDER BY number", (draft_id, batch_id)).fetchall()
+
+    def update_draft_item(self, item_id: int, **fields) -> None:
+        self._update("draft_items", item_id, fields)
+
+    def set_draft_items_checked(self, draft_id: int, checked: bool) -> None:
+        with self.conn:
+            self.conn.execute("UPDATE draft_items SET checked=? WHERE draft_id=?", (int(checked), draft_id))
+
+    def add_card_rewrite(self, card_id: int, original: dict) -> int:
+        with self.conn:
+            return self.conn.execute("INSERT INTO card_rewrites (card_id, original, created_at) VALUES (?,?,?)",
+                                     (card_id, json.dumps(original, ensure_ascii=False), time.time())).lastrowid
+
+    def card_rewrite(self, card_id: int) -> sqlite3.Row | None:
+        """The card's last rewrite by Claude, if any (to undo it)."""
+        return self.conn.execute("SELECT * FROM card_rewrites WHERE card_id=? ORDER BY id DESC LIMIT 1",
+                                 (card_id,)).fetchone()
+
+    def delete_card_rewrite(self, rewrite_id: int) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM card_rewrites WHERE id=?", (rewrite_id,))
 
     # -- settings ------------------------------------------------------------
     def get_setting(self, key: str, default: str = "") -> str:

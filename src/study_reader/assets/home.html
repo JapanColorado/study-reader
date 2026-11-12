@@ -81,6 +81,7 @@ new QWebChannel(qt.webChannelTransport, channel => { bridge = channel.objects.ho
 const ICON = {
   play: `<svg viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></svg>`,
   folder: `<svg viewBox="0 0 24 24"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>`,
+  sparkles: `<svg viewBox="0 0 24 24"><path d="M9.94 15.5A2 2 0 0 0 8.5 14.06l-6.14-1.58a.5.5 0 0 1 0-.96L8.5 9.94A2 2 0 0 0 9.94 8.5l1.58-6.14a.5.5 0 0 1 .96 0L14.06 8.5A2 2 0 0 0 15.5 9.94l6.14 1.58a.5.5 0 0 1 0 .96L15.5 14.06a2 2 0 0 0-1.44 1.44l-1.58 6.14a.5.5 0 0 1-.96 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/></svg>`,
   globe: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>`,
 };
 const OPEN = new Set();  // decks expanded
@@ -90,6 +91,7 @@ function show(d) {
   DATA = d;
   const root = document.getElementById("root");
   let html = `<header><div><h1>${esc(d.greeting)}</h1><div class="date">${esc(d.date)}</div></div><span class="grow"></span>`
+    + `<button class="btn" data-act="make" title="Describe a deck and Claude writes its cards">${ICON.sparkles}Make a deck with Claude…</button>`
     + `<button class="btn" data-act="web">${ICON.globe}Open web page…</button>`
     + `<button class="btn" data-act="file">${ICON.folder}Open PDF or EPUB…</button></header>`;
   html += `<div class="grid">`;
@@ -184,7 +186,7 @@ document.addEventListener("click", ev => {
   else if (act === "deck-start") bridge.reviewDeck(+t.dataset.deck, true);
   else if (act === "twist") { const k = t.dataset.key; OPEN.has(k) ? OPEN.delete(k) : OPEN.add(k); show(DATA); }
   else if (act === "go") bridge.go(t.dataset.page);
-  else if (act === "file" || act === "web") bridge.add(act);
+  else if (act === "file" || act === "web" || act === "make") bridge.add(act);
 });
 
 document.addEventListener("keydown", ev => {

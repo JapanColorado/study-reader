@@ -50,7 +50,7 @@ class _Bridge(QObject):
 
     @Slot(str)
     def add(self, what: str) -> None:
-        (self.view.webRequested if what == "web" else self.view.browseRequested).emit()
+        {"web": self.view.webRequested, "make": self.view.makeRequested}.get(what, self.view.browseRequested).emit()
 
 
 class HomeView(QWidget):
@@ -61,6 +61,7 @@ class HomeView(QWidget):
     pageRequested = Signal(str)  # a navigation rail page
     browseRequested = Signal()  # open a file
     webRequested = Signal()  # open a web page
+    makeRequested = Signal()  # Make a deck with Claude
 
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)

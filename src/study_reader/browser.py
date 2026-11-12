@@ -1,7 +1,7 @@
 """The card browser: every review card in a searchable, sortable table (Anki-style search, see
 search.py), a sidebar of decks, tags, books and saved searches, an editor and preview for the
 current card, and actions on the selection (move, tag, suspend, flag, reschedule, delete, find
-and replace)."""
+and replace, improve with Claude)."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from PySide6.QtCore import (
     QAbstractTableModel, QEvent, QItemSelection, QItemSelectionModel, QModelIndex, Qt, QTimer, QUrl, Signal,
 )
 from PySide6.QtGui import QAction, QColor, QFontMetrics, QKeySequence
+from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
@@ -21,7 +22,7 @@ from PySide6.QtWidgets import (
     QSplitter, QTableView, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import cardmodel, quiz, search, srs
+from . import cardmodel, deck_maker, quiz, search, srs
 from .card_editor import AddDialog, CardEditor, DeckBox
 from .db import Database, media_url
 from .notes import LocalPage
@@ -382,11 +383,16 @@ def _quote(s: str) -> str:
 
 
 class CardView(QWebEngineView):
-    """cardview.html: read-only card sides (the browser's preview)."""
+    """cardview.html: read-only card sides (the browser's preview, Make with Claude's draft). bridge:
+    an object the page may call (as `view`), for the draft's checkboxes."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, bridge=None):
         super().__init__(parent)
         self.setPage(LocalPage(self))
+        if bridge is not None:
+            self.channel = QWebChannel(self.page())
+            self.channel.registerObject("view", bridge)
+            self.page().setWebChannel(self.channel)
         self._ready = False
         self._pending: list[str] = []
         self.loadFinished.connect(self._on_loaded)
@@ -424,10 +430,11 @@ class CardBrowser(QMainWindow):
     statsRequested = Signal(int)  # deck id (0 = all)
     migrateRequested = Signal()
 
-    def __init__(self, db: Database, parent=None, embedded: bool = False):
+    def __init__(self, db: Database, parent=None, embedded: bool = False, maker=None):
         super().__init__(parent)
         self.db = db
         self.embedded = embedded
+        self.maker = maker  # deck_maker_dialog.DeckMaker, for Make with Claude
         self.setWindowTitle("Browse cards — Study Reader")
         if embedded:
             self.setWindowFlags(Qt.WindowType.Widget)
@@ -721,6 +728,17 @@ class CardBrowser(QMainWindow):
             act(cards, "Remove tags…", self.remove_tags, "Ctrl+Alt+Shift+A"),
             act(cards, "Toggle mark", self.toggle_mark, "Ctrl+K"),
         ]
+        claude = bar.addMenu("C&laude")
+        act(claude, "Make a deck with Claude…", lambda: self.make_deck(""), "Ctrl+Shift+M")
+        self.improve_action = act(claude, "Improve with Claude…", self.improve, "Ctrl+Shift+K")
+        self.selection_actions.append(self.improve_action)
+        act(claude, "Claude's draft…", self.show_draft)
+        claude.addSeparator()
+        self.undo_rewrite_action = act(claude, "Undo Claude's rewrite of this card", self.undo_rewrite)
+        self.undo_rewrite_action.setEnabled(False)
+        for a in claude.actions():
+            a.setVisible(self.maker is not None)
+        claude.menuAction().setVisible(self.maker is not None)
         go = bar.addMenu("&Go")
         act(go, "Previous card", lambda: self._step(-1), "Ctrl+P")
         act(go, "Next card", lambda: self._step(1), "Ctrl+N")
@@ -771,7 +789,10 @@ class CardBrowser(QMainWindow):
             flag.addAction(a)
         menu.addSeparator()
         for a in self.selection_actions[12:]:
-            menu.addAction(a)
+            if a.isVisible():
+                menu.addAction(a)
+        if self.undo_rewrite_action.isEnabled() and self.undo_rewrite_action.isVisible():
+            menu.addAction(self.undo_rewrite_action)
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
     # -- searching -----------------------------------------------------------------------
@@ -885,6 +906,7 @@ class CardBrowser(QMainWindow):
                 del self._drafts[card["note_id"]]
         self._show_card_line(card)
         self.preview.js("showPreview", json.loads(card["data"]) if card else None, "both")
+        self.undo_rewrite_action.setEnabled(card is not None and self.db.card_rewrite(card["id"]) is not None)
 
     def _show_card_line(self, card) -> None:
         if card is None:
@@ -1130,6 +1152,12 @@ class CardBrowser(QMainWindow):
         menu.addAction(icon("cards"), "Review this deck").triggered.connect(lambda: self.reviewDeckRequested.emit(deck_id))
         menu.addAction(icon("message-plus"), "Add cards here…").triggered.connect(lambda: self.add_cards_to(deck["name"]))
         menu.addAction(icon("chart"), "Statistics").triggered.connect(lambda: self.statsRequested.emit(deck_id))
+        if self.maker is not None:
+            menu.addSeparator()
+            menu.addAction(icon("sparkles"), "Make cards here with Claude…").triggered.connect(
+                lambda: self.make_deck(deck["name"]))
+            menu.addAction("Improve this deck's cards with Claude…").triggered.connect(
+                lambda: self.improve(search.card_ids(self.db, f'deck:"{_quote(deck["name"])}"')))
         menu.addSeparator()
         menu.addAction("Rename or move…").triggered.connect(lambda: self.rename_deck(deck_id))
         menu.addAction(icon("trash", "muted"), "Delete…").triggered.connect(lambda: self.delete_deck(deck_id))
@@ -1176,6 +1204,38 @@ class CardBrowser(QMainWindow):
                 == QMessageBox.StandardButton.Yes:
             self.db.rename_tag(tag, "")
             self._changed(refresh_sidebar=True)
+
+    # -- Make with Claude ------------------------------------------------------------------
+    def make_deck(self, parent_deck: str) -> None:
+        if self.maker is not None:
+            self.maker.make_deck(self, parent_deck)
+
+    def improve(self, card_ids=None) -> None:
+        card_ids = self.selected_ids() if card_ids is None else card_ids
+        if self.maker is not None and card_ids:
+            self.save_note()
+            self.maker.improve(card_ids, self)
+
+    def show_draft(self) -> None:
+        if self.maker is None:
+            return
+        if self.maker.draft() is None:
+            QMessageBox.information(self, "Claude's draft", "There is no draft from Claude waiting. Make a deck with "
+                                    "Claude (Ctrl+Shift+M), or select cards and improve them (Ctrl+Shift+K).")
+            return
+        self.maker.show_draft(self)
+
+    def undo_rewrite(self) -> None:
+        self.save_note()
+        if self.maker is not None and self._card_id is not None and self.maker.undo_rewrite(self._card_id):
+            self._changed()
+
+    def cards_rewritten(self) -> None:
+        """Make with Claude added or rewrote cards: re-read them, and the editor's card."""
+        self.model.invalidate()
+        self.sidebar.refresh()
+        if self.isVisible():
+            self.search()
 
     def closeEvent(self, event) -> None:
         self.save_note()

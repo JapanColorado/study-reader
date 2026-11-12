@@ -22,6 +22,7 @@ from .calculator import CalculatorPanel
 from .chat_panel import MODELS, ChatPanel
 from .chat_service import ChatWorker
 from .db import Database, data_dir
+from .deck_maker_dialog import DeckMaker
 from .document import Document, file_hash
 from .find_view import BookFind
 from .home_view import HomeView
@@ -187,6 +188,14 @@ class MainWindow(QMainWindow):
         self.review.sourceRequested.connect(self._book_page)
         self.review.chatRequested.connect(self._review_chat)
         self.review.editRequested.connect(lambda card_id: self.show_browser().show_card(card_id))
+        # Make with Claude: decks Claude writes from a description, and existing cards it improves.
+        self.deck_maker = DeckMaker(self.db, self.worker, self)
+        self.deck_maker.cardsChanged.connect(self._on_made_cards)
+        self.deck_maker.aboutToChange.connect(lambda: self.browser is not None and self.browser.save_note())
+        self.deck_maker.showCards.connect(lambda query: self.show_browser().set_search(query))
+        self.home.makeRequested.connect(lambda: self.make_deck())
+        self.review.make_link = True
+        self.review.makeRequested.connect(self._make_deck_under)
         theme().changed.connect(self._on_theme_changed)
         self._on_theme_changed()
 
@@ -897,13 +906,26 @@ class MainWindow(QMainWindow):
     def _ensure_browser(self) -> None:
         if self.browser is None:
             from .browser import CardBrowser
-            self.browser = CardBrowser(self.db, embedded=True)
+            self.browser = CardBrowser(self.db, embedded=True, maker=self.deck_maker)
             self.browser.cardsChanged.connect(self._on_cards_changed)
             self.browser.bookRequested.connect(self._book_page)
             self.browser.reviewDeckRequested.connect(self._review_deck)
             self.browser.statsRequested.connect(lambda deck: self.show_stats(deck or None))
             self.browser.migrateRequested.connect(self.migrate_from_anki)
             self.cards_page.set_widget(self.browser)
+
+    def make_deck(self, parent_deck: str = "") -> None:
+        """Make a deck with Claude (under parent_deck, if given)."""
+        self.deck_maker.make_deck(self, parent_deck)
+
+    def _make_deck_under(self, deck_id: int) -> None:
+        deck = self.db.deck(deck_id) if deck_id else None
+        self.make_deck(deck["name"] if deck else "")
+
+    def _on_made_cards(self) -> None:
+        if self.browser is not None:
+            self.browser.cards_rewritten()
+        self._on_cards_changed()
 
     def _ensure_stats(self) -> None:
         if self.stats_window is None:

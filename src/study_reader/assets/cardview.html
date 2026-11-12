@@ -8,6 +8,7 @@
 <script src="markdown-it.min.js"></script>
 <script src="markdown.js"></script>
 <script src="quiz.js"></script>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 <style>
   /* Fallbacks; the app sets these from theme.py. */
   :root { --surface:#fbfaf8; --raised:#ffffff; --fg:#1f1e1c; --muted:#6b6862; --faint:#a19d95; --border:#dedad2;
@@ -25,12 +26,39 @@
   .side .q .choice { cursor:default; }
   .side .q .choice:hover { border-color:var(--border); background:var(--raised); }
   .side .q .choice.right { border-color:var(--success); }
+  /* Make with Claude: the draft's cards */
+  .note-from { border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:8px; padding:8px 12px;
+               margin-bottom:12px; background:var(--raised); font-size:13px; }
+  .note-from .who { font-size:11px; font-weight:650; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .pair { border:1px solid var(--border); border-radius:12px; margin-bottom:14px; background:var(--surface); }
+  .pair.off { opacity:0.55; }
+  .pair .head { display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--border); font-size:12.5px; }
+  .pair .head label { display:flex; align-items:center; gap:6px; cursor:pointer; font-weight:650; }
+  .pair .head input { width:15px; height:15px; accent-color:var(--accent); cursor:pointer; margin:0; }
+  .pair .head .num { font-weight:650; color:var(--muted); }
+  .pair .head .kind { color:var(--muted); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pair .head .status { font-weight:650; font-size:11.5px; padding:1px 7px; border-radius:9px; background:var(--hover); color:var(--muted); }
+  .pair .head .status.proposed { background:var(--accent-soft); color:var(--accent); }
+  .pair .head .status.error { color:var(--error); }
+  .pair .part + .part { margin-top:10px; padding-top:8px; border-top:1px dashed var(--border); }
+  .pair .part > .label { font-size:11px; font-weight:650; color:var(--muted); margin-bottom:4px; }
+  .pair .reason { padding:6px 12px 0; font-size:12.5px; color:var(--muted); font-style:italic; }
+  .pair .one { padding:10px 12px; }
+  .pair .cols { display:grid; grid-template-columns:1fr 1fr; gap:10px; padding:10px 12px; }
+  @media (max-width: 760px) { .pair .cols { grid-template-columns:1fr; } }
+  .pair .col h3 { margin:0 0 6px; font-size:11.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .pair .more { font-size:12px; color:var(--muted); margin-top:-4px; }
+  .spinner { display:inline-block; width:11px; height:11px; border:2px solid var(--border); border-top-color:var(--accent);
+             border-radius:50%; animation:spin .8s linear infinite; vertical-align:-1px; margin-right:6px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
 </style>
 </head>
 <body>
 <div id="root"><div class="empty">No card selected.</div></div>
 <script>
-// Read-only card rendering for the card browser's preview.
+// Read-only card rendering for the card browser's preview, and Make with Claude's draft.
+let bridge = null;
+if (typeof qt !== "undefined") new QWebChannel(qt.webChannelTransport, channel => { bridge = channel.objects.view || null; });
 
 function setTheme(colors, dark) {
   const root = document.documentElement;
@@ -70,7 +98,7 @@ function sides(q, which = "both") {
 }
 
 function afterRender(root) {
-  for (const el of root.querySelectorAll("button, textarea, math-field")) el.setAttribute("disabled", "");
+  for (const el of root.querySelectorAll(".side button, .side textarea, .side math-field, .side input")) el.setAttribute("disabled", "");
 }
 
 // From the app: a card's question (null for none), and which sides to show.
@@ -81,6 +109,68 @@ function showPreview(q, which) {
   catch (e) { root.innerHTML = `<div class="empty">Can't show this card: ${esc(String(e))}</div>`; }
   afterRender(root);
 }
+
+const STATUS_LABELS = { pending: "Waiting for Claude…", proposed: "Proposed", kept: "Keep as is", error: "Error" };
+const TYPE_LABELS = { flashcard: "Flashcard", reversed: "Flashcard (both ways)", cloze: "Cloze", occlusion: "Image occlusion",
+                      choice: "Multiple choice", truefalse: "True/false", numeric: "Numeric", written: "Written answer" };
+
+// One proposed card (its questions: a cloze's deletions, a reversed card's two sides), as sides.
+function cardSides(card) {
+  let html = "";
+  try { html = sides(card.questions[0]); } catch (e) { html = esc(String(e)); }
+  if (card.questions.length > 1) html += `<div class="more">Makes ${card.questions.length} cards`
+    + `${card.kind === "cloze" ? " (one per deletion)" : card.kind === "reversed" ? " (one each way)" : ""}.</div>`;
+  return html;
+}
+
+// From the app: Make with Claude's draft, {note, items: [{id, number, status, checked, reason,
+// now (an existing card's question, else null), kind (its type), cards: [{kind, questions}]}]}.
+function showDraft(draft) {
+  const root = document.getElementById("root");
+  let html = draft.note ? `<div class="note-from"><div class="who">Claude</div>${renderMarkdown(draft.note)}</div>` : "";
+  if (!draft.items.length) {
+    root.innerHTML = html + `<div class="empty">${draft.busy ? `<span class="spinner"></span>Claude is writing the cards…` : "No cards in the draft."}</div>`;
+    return;
+  }
+  html += draft.items.map(c => {
+    const pending = c.status === "pending";
+    const status = pending ? `<span class="spinner"></span>${STATUS_LABELS.pending}` : STATUS_LABELS[c.status] || c.status;
+    const tickable = c.status === "proposed";
+    const off = tickable && !c.checked;
+    const kinds = c.cards.length ? c.cards.map(k => TYPE_LABELS[k.kind] || k.kind).join(" + ")
+      : c.kind ? TYPE_LABELS[c.kind] || c.kind : "";
+    const what = c.now ? (c.cards.length ? `${TYPE_LABELS[c.kind] || c.kind} → ${kinds}` : TYPE_LABELS[c.kind] || c.kind) : kinds;
+    let out = `<div class="pair${off ? " off" : ""}" data-id="${c.id}"><div class="head">`
+      + (tickable ? `<label><input type="checkbox" data-tick ${c.checked ? "checked" : ""}><span class="num">#${c.number}</span></label>`
+                  : `<span class="num">#${c.number}</span>`)
+      + `<span class="kind" title="${esc(what)}">${esc(what)}</span><span class="status ${c.status}">${status}</span></div>`;
+    if (c.reason) out += `<div class="reason">${esc(c.reason)}</div>`;
+    const split = c.cards.length > 1;
+    const proposed = c.cards.map((card, k) => split
+      ? `<div class="part"><div class="label">Card ${k + 1} of ${c.cards.length}${c.now ? (k ? " · new" : " · keeps the history") : ""}</div>${cardSides(card)}</div>`
+      : cardSides(card)).join("");
+    if (c.now) {
+      let before = "";
+      try { before = backHtml(c.now); } catch (e) { before = esc(String(e)); }
+      const after = proposed || `<div class="empty" style="margin:20px 0">${pending ? "Waiting for Claude…" : c.status === "error" ? "No proposal." : "No change."}</div>`;
+      out += `<div class="cols"><div class="col"><h3>Now</h3><div class="side">${before}</div></div>`
+        + `<div class="col"><h3>${split ? `Proposed: split into ${c.cards.length}` : "Proposed"}</h3>${after}</div></div>`;
+    }
+    else if (proposed) out += `<div class="one">${proposed}</div>`;
+    return out + `</div>`;
+  }).join("");
+  if (draft.busy) html += `<div class="empty" style="margin:10px 0 20px"><span class="spinner"></span>Claude is working…</div>`;
+  root.innerHTML = html;
+  afterRender(root);
+}
+
+document.addEventListener("change", ev => {
+  const box = ev.target.closest("[data-tick]");
+  if (box && bridge) {
+    box.closest(".pair").classList.toggle("off", !box.checked);
+    bridge.tick(+box.closest(".pair").dataset.id, box.checked);
+  }
+});
 
 document.addEventListener("click", ev => {
   const a = ev.target.closest("a[href]");

@@ -128,6 +128,8 @@ class _Bridge(QObject):
     def open(self, what: str) -> None:
         if what == "calc":
             self.panel.calculatorRequested.emit()
+        elif what == "make":
+            self.panel.makeRequested.emit(self.panel.deck_id or 0)
 
 
 class ReviewPanel(QWidget):
@@ -140,6 +142,7 @@ class ReviewPanel(QWidget):
     countsChanged = Signal()  # a card was reviewed, suspended or deleted
     editRequested = Signal(int)  # card id, to open in the browser
     calculatorRequested = Signal()  # the Calculator button: show or hide the calculator beside it
+    makeRequested = Signal(int)  # Make a deck with Claude, under the deck picked (0: none)
     cardShown = Signal(object)  # the book id (None if it has none) of the card on display, each time it is drawn
 
     def __init__(self, db: Database, variants: VariantMaker | None = None, parent=None):
@@ -162,6 +165,7 @@ class ReviewPanel(QWidget):
         self._summary: dict | None = None  # how the last session went, for the overview
         # Whether the calculator beside the panel is open; None draws no Calculator button (set_calculator).
         self.calculator: bool | None = None
+        self.make_link = False  # draw the Make a deck with Claude link (the desktop's; never the phone's)
 
         self.view = QWebEngineView()
         self.view.setPage(LocalPage(self.view))
@@ -260,6 +264,7 @@ class ReviewPanel(QWidget):
             "game": gamify.status(self.db, now) if gamify.enabled(self.db) else None,
             "quick": {"cards": gamify.QUICK_CARDS, "minutes": gamify.QUICK_SECONDS // 60},
             "calc": self.calculator,
+            "make": self.make_link,
             **self._decks_overview(now, c if self.book_id is None and self.deck_id is None else None),
             **self._books_overview(now),
         }

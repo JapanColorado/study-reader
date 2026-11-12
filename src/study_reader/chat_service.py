@@ -15,6 +15,7 @@ from . import claude_client as cc
 from .document import Document
 
 PARTIAL_CONTEXT_CHARS = 200_000
+MAKING_AT_ONCE = 3  # Make with Claude requests running at the same time
 
 
 @dataclass
@@ -77,13 +78,16 @@ class ChatService:
     done(chat_id, session_id, text, message_uuid), failed(chat_id, message),
     for quiz grading graded(answer_id, text), gradeFailed(answer_id, message),
     titled(chat_id, title) when a chat's auto-title is ready, varied(card_id, text) and
-    variantFailed(card_id, message) for a card's next version (variants.py)."""
+    variantFailed(card_id, message) for a card's next version (variants.py), and for Make with Claude
+    (deck_maker.py) made(batch_id, session_id, text) and makeFailed(batch_id, message)."""
 
     def __init__(self, emit: Callable[..., None], sessions_dir: str | Path):
         self.emit = emit
         self.sessions_dir = Path(sessions_dir)
         self._locks: dict[int, asyncio.Lock] = {}
         self._base: dict[int, tuple[str | None, str]] = {}
+        self._making: asyncio.Semaphore | None = None  # made on the worker's loop
+        self._making_tasks: set[asyncio.Task] = set()
 
     def forget_base(self, book_id: int) -> None:
         """Drop the cached base session, e.g. after the book's file was replaced."""
@@ -170,6 +174,36 @@ class ChatService:
         if title:
             self.emit("titled", chat_id, title)
 
+    async def make(self, batch_id: int, blocks: list[dict], fresh_blocks: list[dict] | None, session_id: str | None,
+                   model: str) -> None:
+        """A Make with Claude request (deck_maker.py) in a bookless session: blocks resume the
+        batch's session; with none (its first request), or if it is gone, fresh_blocks start a
+        new one. Attached files are read here, off the GUI thread."""
+        from . import deck_maker
+
+        if self._making is None:
+            self._making = asyncio.Semaphore(MAKING_AT_ONCE)
+        task = asyncio.current_task()
+        self._making_tasks.add(task)
+        cwd = self.sessions_dir / "decks"
+        try:
+            async with self._making:
+                resume = session_id if session_id and cc.session_exists(session_id, cwd) else None
+                content = blocks if resume else (fresh_blocks or blocks)
+                content = await asyncio.to_thread(deck_maker.expand_files, content)
+                res = await cc.run_turn(content, cwd=cwd, model=model, resume=resume,
+                                        system_prompt=deck_maker.SYSTEM_PROMPT)
+            self.emit("made", batch_id, res.session_id, res.text)
+        except Exception as e:
+            self.emit("makeFailed", batch_id, str(e) or type(e).__name__)
+        finally:
+            self._making_tasks.discard(task)
+
+    def stop_making(self) -> None:
+        """Cancel every Make with Claude request, running or waiting its turn; they report nothing."""
+        for task in self._making_tasks:
+            task.cancel()
+
     async def _turn(self, job: Job, chat_session_id: str | None, on_delta) -> cc.TurnResult:
         if job.book is None:
             blocks = cc.build_blocks(job.question, job.snippets, job.context)
@@ -212,6 +246,8 @@ class ChatWorker(QObject):
     varied = Signal(int, str)
     variantFailed = Signal(int, str)
     titled = Signal(int, str)
+    made = Signal(int, str, str)
+    makeFailed = Signal(int, str)
 
     def __init__(self, sessions_dir: str | Path, parent: QObject | None = None):
         super().__init__(parent)
@@ -237,6 +273,13 @@ class ChatWorker(QObject):
 
     def submit_title(self, chat_id: int, question: str, passage: str, reply: str) -> None:
         asyncio.run_coroutine_threadsafe(self.service.title(chat_id, question, passage, reply), self.loop)
+
+    def submit_make(self, batch_id: int, blocks: list[dict], fresh_blocks: list[dict] | None,
+                    session_id: str | None, model: str) -> None:
+        asyncio.run_coroutine_threadsafe(self.service.make(batch_id, blocks, fresh_blocks, session_id, model), self.loop)
+
+    def stop_making(self) -> None:
+        self.loop.call_soon_threadsafe(self.service.stop_making)
 
     def shutdown(self) -> None:
         self.loop.call_soon_threadsafe(self.loop.stop)

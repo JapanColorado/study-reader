@@ -58,6 +58,8 @@
   .tabs a:hover { color:var(--fg); }
   .tabs a.on { color:var(--accent); border-bottom-color:var(--accent); }
   .tabs .grow { flex:1; }
+  .tabs a.make { font-weight:500; border-bottom-color:transparent; }
+  .tabs a.make:hover { color:var(--accent); }
   .decks { margin:0 -8px; }
   .deck { display:flex; align-items:center; gap:6px; padding:4px 8px; border-radius:7px; cursor:pointer; font-size:13.5px; }
   .deck:hover { background:var(--hover); }
@@ -225,12 +227,14 @@ function booksHtml(o) {
 // What to review: decks or books.
 function pickerHtml(o) {
   const hasDecks = !!(o.decks && o.decks.length), hasBooks = !!(o.books && o.books.length);
-  if (!hasDecks && !hasBooks) return "";
+  // The desktop's Make a deck with Claude link comes with o.make, which the phone app never sends.
+  const make = o.make ? `<span class="grow"></span><a href="#" class="make" data-act="make" title="Describe a deck and Claude writes its cards">+ Make a deck with Claude</a>` : "";
+  if (!hasDecks && !hasBooks) return make ? `<section class="panel"><div class="tabs">${make}</div></section>` : "";
   let tab = PICK || (o.book !== null && hasBooks ? "books" : hasDecks ? "decks" : "books");
   if (tab === "decks" && !hasDecks) tab = "books";
   if (tab === "books" && !hasBooks) tab = "decks";
   const link = (name, label) => `<a href="#" data-act="pick" data-tab="${name}" class="${tab === name ? "on" : ""}">${label}</a>`;
-  return `<section class="panel"><div class="tabs">${hasDecks ? link("decks", "Decks") : ""}${hasBooks ? link("books", "Books") : ""}</div>`
+  return `<section class="panel"><div class="tabs">${hasDecks ? link("decks", "Decks") : ""}${hasBooks ? link("books", "Books") : ""}${make}</div>`
     + (tab === "decks" ? decksHtml(o) : booksHtml(o)) + `</section>`;
 }
 
@@ -503,6 +507,7 @@ document.addEventListener("click", ev => {
   else if (act === "book") bridge.chooseBook(+target.dataset.book);
   else if (act === "section") bridge.chooseSection(+target.dataset.book, target.dataset.tag);
   else if (act === "calc") bridge.open("calc");
+  else if (act === "make") bridge.open("make");
   else if (act === "open") bridge.open(target.dataset.what);
   else if (!CARD) return;
   else if (act === "rate") { FLAGS_OPEN = false; bridge.rate(CARD.id, +target.dataset.k); }
