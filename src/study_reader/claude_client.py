@@ -168,6 +168,7 @@ class Snippet:
     page: int  # 0-based
     text: str = ""
     image_path: str = ""
+    last_page: int | None = None  # where a passage selected across pages ends
 
 
 @dataclass
@@ -199,8 +200,10 @@ def build_blocks(question: str, snippets: list[Snippet], extra_context: str = ""
             blocks.append({"type": "text", "text": f"Screenshot from page {s.page + 1}:"})
             blocks.append(image_block(s.image_path))
         else:
+            last = s.page if s.last_page is None else s.last_page
+            where = f"page {s.page + 1}" if last <= s.page else f"pages {s.page + 1}–{last + 1}"
             blocks.append(
-                {"type": "text", "text": f"Selected passage from page {s.page + 1}:\n<passage>\n{s.text}\n</passage>"}
+                {"type": "text", "text": f"Selected passage from {where}:\n<passage>\n{s.text}\n</passage>"}
             )
     blocks.append({"type": "text", "text": question})
     return blocks

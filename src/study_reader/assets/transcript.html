@@ -324,7 +324,8 @@ function quizInputError(msg, qi, i, error) {
 }
 
 function snippetHtml(s) {
-  const loc = `<span class="loc">p. ${s.page + 1} · jump to source</span>`;
+  const pages = s.last_page > s.page ? `pp. ${s.page + 1}–${s.last_page + 1}` : `p. ${s.page + 1}`;
+  const loc = `<span class="loc">${pages} · jump to source</span>`;
   const body = s.kind === "image" ? `<img src="${esc(s.image_url)}">` : `<span class="quote">${esc(s.text)}</span>`;
   return `<a class="snip" href="jump://snippet/${s.id}">${loc}${body}</a>`;
 }

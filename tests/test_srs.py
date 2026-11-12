@@ -656,3 +656,13 @@ def test_browser_sidebar_orders_and_filters_tags(chat_panel):
     assert labels(tags) == ["A"] and labels(tags.child(0)) == ["Ch 10"] and tags.child(0).child(1).isExpanded()
     bar.filter_tags("")
     assert labels(tags) == ["A", "apple", "zebra"] and not tags.child(0).isExpanded()
+
+
+def test_a_passage_across_pages_gives_its_cards_all_its_pages(tmp_path):
+    db = Database(tmp_path / "t.db")
+    book_id = db.upsert_book("h", "/a.pdf", "A", 10)["id"]
+    chat = db.create_chat(book_id, "Quiz")
+    rects = [[1, 2, 3, 4], [1, 2, 3, 4, 4], [1, 2, 3, 4, 5]]
+    db.add_message(chat, "user", "Quiz me on this passage", [{"kind": "text", "page": 3, "text": "x", "rects": rects}])
+    reply = db.add_message(chat, "assistant", "...")
+    assert srs._asked_pages(db, reply) == (3, 5)

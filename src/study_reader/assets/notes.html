@@ -78,7 +78,7 @@ function setTheme(colors) {
 
 function noteHtml(n) {
   const editing = EDITING && EDITING.id === n.id;
-  const head = `<div class="head"><a class="loc" href="#" data-act="jump" title="Jump to the passage">p. ${n.page + 1}</a>`
+  const head = `<div class="head"><a class="loc" href="#" data-act="jump" title="Jump to the passage">${n.last_page > n.page ? `pp. ${n.page + 1}–${n.last_page + 1}` : `p. ${n.page + 1}`}</a>`
     + (editing ? "" : `<a class="act" href="#" data-act="edit">Edit</a>`)
     + `<a class="act" href="#" data-act="remove" title="Delete this note and its highlight">Delete</a></div>`;
   const quote = `<div class="quote" data-act="jump" title="Jump to the passage">${esc(n.text)}</div>`;

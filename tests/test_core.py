@@ -5,7 +5,7 @@ import pytest
 
 from study_reader import chat_service as cs
 from study_reader import claude_client as cc
-from study_reader.db import Database
+from study_reader.db import Database, last_page, passage_pages
 from study_reader.document import Document, Word, file_hash, line_rects, nearest_word, select_range, words_text
 from study_reader.theme import darken_page
 
@@ -227,7 +227,7 @@ def test_reader_follows_links_and_goes_back(footnote_pdf, monkeypatch):
     assert view._link_at(rect.topLeft() + QPointF(300 * view.zoom, 200 * view.zoom)) is None
     start = view.verticalScrollBar().value()
     view.follow_link(link)
-    assert view.current_page() == 2 and view._flash[0] == 2 and view._back_bar.isVisible()
+    assert view.current_page() == 2 and list(view._flash) == [2] and view._back_bar.isVisible()
     assert view.go_back() and view.verticalScrollBar().value() == start
     assert not view._back_bar.isVisible() and not view.go_back()
 
@@ -254,6 +254,46 @@ def test_asking_highlights_and_shows_chats(pdf_path, tmp_path, monkeypatch):
     win.chat._remove_pending(win.chat.pending_snippets()[0])
     assert not win.reader._marks
 
+
+
+def test_passage_pages():
+    rects = [[1, 2, 3, 4], [5, 6, 7, 8, 4], [9, 9, 9, 9, 5]]
+    assert passage_pages(3, rects) == {3: [[1, 2, 3, 4]], 4: [[5, 6, 7, 8]], 5: [[9, 9, 9, 9]]}
+    assert last_page(3, rects) == 5 and last_page(3, [[1, 2, 3, 4]]) == 3 and last_page(3, []) == 3
+
+
+def test_quiz_on_a_selection_across_pages_marks_every_page(pdf_path, tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    from PySide6.QtWidgets import QApplication
+    from study_reader.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "t.db")
+    win = MainWindow(db)
+    win.show()
+    win.open_book(pdf_path)
+    sent = []
+    win.chat.worker.submit = sent.append
+
+    last = win.doc.words(0)[-1]
+    win.reader._selection = select_range(win.doc, (0, last.x0 + 1, last.y0 + 1), (2, 45, 45))
+    win.quiz()
+    (mark,) = win.reader._marks[0]
+    assert [win.reader._marks[p] for p in (1, 2)] == [[mark], [mark]]  # one mark, on all three pages
+    assert sorted(mark["pages"]) == [0, 1, 2] and all(len(r) == 4 for rs in mark["pages"].values() for r in rs)
+    assert win.chat._quiz["label"].startswith("pp. 1–3 · ")
+
+    win.chat.send()
+    (snippet,) = db.messages(win.chat.chat_id)[0]["snippets"]
+    assert snippet["page"] == 0 and snippet["last_page"] == 2
+    assert sent[0].snippets[0].last_page == 2
+    assert "Selected passage from pages 1–3:" in cc.build_blocks("q", sent[0].snippets)[1]["text"]
+    win.reader.set_highlights(db.book_snippets(win.book_id))
+    assert all(win.reader._marks.get(p) for p in (0, 1, 2))
+
+    win.reader.flash(snippet["page"], snippet["rects"])  # jumping to it lights every page
+    assert sorted(win.reader._flash) == [0, 1, 2]
 
 def test_sidebars_stay_collapsed_when_book_is_reopened(pdf_path, tmp_path, monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")

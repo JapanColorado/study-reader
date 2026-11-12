@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 from . import claude_client as cc
 from . import gamify, quiz, srs
 from .chat_service import BookRef, ChatWorker, Job
-from .db import Database, data_dir
+from .db import Database, data_dir, last_page
 from .theme import icon, theme
 from .transcript_view import TranscriptView
 
@@ -319,7 +319,7 @@ class ChatPanel(QWidget):
         last = page if last is None else last
         if snippet:
             what = " ".join(snippet["text"].split()) if snippet["kind"] == "text" else "Screenshot"
-            label = f"p. {page + 1} · {what}"
+            label = f"{page_tag(snippet)} · {what}"
         else:
             name, pages = title.removeprefix("Quiz: "), quiz.pages_label(page, last)
             label = pages if name == pages else f"{name} · {pages}"
@@ -542,7 +542,8 @@ class ChatPanel(QWidget):
             book=self._book_ref(),
             chat_session_id=session_id,
             question=question,
-            snippets=[cc.Snippet(s["kind"], s["page"], s.get("text", ""), s.get("image_path", "")) for s in snippets],
+            snippets=[cc.Snippet(s["kind"], s["page"], s.get("text", ""), s.get("image_path", ""),
+                                 last_page(s["page"], s.get("rects", []))) for s in snippets],
             history=[(m["role"], m["text"]) for m in prior if m["role"] != "error"],
             page=page,
             model=chat["model"] or None,
@@ -864,7 +865,7 @@ class ChatPanel(QWidget):
         for snippet in self._pending:
             is_text = snippet["kind"] == "text"
             self.chips.addWidget(self._chip(
-                "text" if is_text else "image", f"p. {snippet['page'] + 1}",
+                "text" if is_text else "image", page_tag(snippet),
                 " ".join(snippet["text"].split())[:80] if is_text else "Screenshot",
                 lambda s=snippet: self._remove_pending(s), "Remove",
             ))
@@ -899,6 +900,12 @@ class ChatPanel(QWidget):
         self._pending = [s for s in self._pending if s is not snippet]
         self._refresh_chips()
         self.highlightsChanged.emit()
+
+
+def page_tag(snippet: dict) -> str:
+    """Where a snippet is: "p. 12", or "pp. 12–13" for a passage selected across pages."""
+    first, last = snippet["page"], last_page(snippet["page"], snippet.get("rects", []))
+    return f"p. {first + 1}" if last == first else f"pp. {first + 1}–{last + 1}"
 
 
 def _stored(snippet: dict) -> dict:

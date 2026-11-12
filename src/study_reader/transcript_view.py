@@ -140,7 +140,7 @@ class TranscriptView(QWebEngineView):
         for m in messages:
             snippets = [
                 {
-                    "id": s["id"], "kind": s["kind"], "page": s["page"], "text": s["text"],
+                    "id": s["id"], "kind": s["kind"], "page": s["page"], "last_page": s["last_page"], "text": s["text"],
                     "image_url": QUrl.fromLocalFile(s["image_path"]).toString() if s["image_path"] else "",
                 }
                 for s in m.get("snippets", [])

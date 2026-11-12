@@ -170,7 +170,8 @@ class NotesPanel(QWidget):
         self.title.setText(f"Notes · {len(notes)}" if notes else "Notes")
         self.export_btn.setEnabled(bool(notes))
         self._js("render", {
-            "notes": [{"id": n["id"], "page": n["page"], "text": n["text"], "body": n["body"]} for n in self.shown],
+            "notes": [{"id": n["id"], "page": n["page"], "last_page": n["last_page"], "text": n["text"], "body": n["body"]}
+                      for n in self.shown],
             "empty": NO_MATCH if notes else EMPTY,
         })
 

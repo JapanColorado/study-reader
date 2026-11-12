@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from fsrs import Card, Rating, Scheduler, State
 
 from . import cardmodel, quiz
-from .db import Database
+from .db import Database, last_page
 
 VERDICT_RATINGS = {"correct": 3, "partial": 2, "incorrect": 1}
 NEW_PER_DAY_SETTING = "srs_new_per_day"
@@ -162,14 +162,19 @@ def _asked_pages(db: Database, message_id: int) -> tuple[int | None, int | None]
     """The first and last pages the quiz was asked about: the passage's, or the part of the
     book a quiz request covers; (None, None) if unknown."""
     row = db.conn.execute(
-        "SELECT * FROM (SELECT q.id, s.id AS s, s.page AS first, s.page AS last FROM messages q "
+        "SELECT * FROM (SELECT q.id, s.id AS s, s.page AS first, s.page AS last, s.rects FROM messages q "
         "JOIN messages r ON r.chat_id=q.chat_id AND r.id=? JOIN snippets s ON s.message_id=q.id "
         "WHERE q.role='user' AND q.id<r.id "
-        "UNION ALL SELECT q.id, 0, q.page_from, q.page_to FROM messages q JOIN messages r ON r.chat_id=q.chat_id AND r.id=? "
+        "UNION ALL SELECT q.id, 0, q.page_from, q.page_to, NULL FROM messages q "
+        "JOIN messages r ON r.chat_id=q.chat_id AND r.id=? "
         "WHERE q.role='user' AND q.id<r.id AND q.page_from IS NOT NULL) ORDER BY id DESC, s LIMIT 1",
         (message_id, message_id),
     ).fetchone()
-    return (row["first"], row["last"]) if row else (None, None)
+    if row is None:
+        return None, None
+    if row["rects"] is not None:  # a passage, perhaps selected across pages
+        return row["first"], last_page(row["first"], json.loads(row["rects"]))
+    return row["first"], row["last"]
 
 
 # -- sections ------------------------------------------------------------------------------

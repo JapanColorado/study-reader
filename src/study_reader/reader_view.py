@@ -13,6 +13,7 @@ from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QKeySequence, QPainter, QPen
 from PySide6.QtWidgets import QAbstractScrollArea, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QPushButton, QToolTip
 
+from .db import passage_pages
 from .document import Document, Link, Rect, Word, line_rects, select_range, words_text
 from .theme import darken_page, theme
 
@@ -78,9 +79,9 @@ class ReaderView(QAbstractScrollArea):
         self._dragging = False
         self._selection: dict[int, list[Word]] = {}
         self._region: tuple[int, tuple[float, float, float, float]] | None = None
-        self._flash: tuple[int, list] | None = None
+        self._flash: dict[int, list] | None = None  # page -> rects
         self._page = 0
-        self._marks: dict[int, list[dict]] = {}  # page -> dict(kind, rects, snippets, notes)
+        self._marks: dict[int, list[dict]] = {}  # page -> dict(kind, rects, pages, snippets, notes)
         self._hover: list[dict] = []
         self._press: QPointF | None = None
         self._hover_link: Link | None = None
@@ -270,20 +271,23 @@ class ReaderView(QAbstractScrollArea):
     # -- highlights ----------------------------------------------------------------
     def set_highlights(self, snippets: list[dict], notes: list[dict] = ()) -> None:
         """snippets: db rows (page, kind, rects, chat_id, ...); notes: db rows (page, rects, body, ...).
-        Identical passages share one mark."""
+        Identical passages share one mark, which is on every page the passage covers (its rects
+        by page in "pages")."""
         groups: dict[tuple, dict] = {}
 
         def group(row: dict, kind: str) -> dict:
             key = (row["page"], tuple(map(tuple, row["rects"])))
-            return groups.setdefault(key, {"kind": kind, "rects": row["rects"], "snippets": [], "notes": []})
+            return groups.setdefault(key, {"kind": kind, "rects": row["rects"], "snippets": [], "notes": [],
+                                           "pages": passage_pages(row["page"], row["rects"])})
 
         for sn in snippets:
             group(sn, sn["kind"])["snippets"].append(sn)
         for note in notes:
             group(note, "text")["notes"].append(note)
         self._marks = {}
-        for (page, _), mark in groups.items():
-            self._marks.setdefault(page, []).append(mark)
+        for mark in groups.values():
+            for page in mark["pages"]:
+                self._marks.setdefault(page, []).append(mark)
         self._hover = []
         self.viewport().update()
 
@@ -297,7 +301,7 @@ class ReaderView(QAbstractScrollArea):
             return []
         return [
             m for m in self._marks.get(page, [])
-            if any(r[0] - 1 <= x <= r[2] + 1 and r[1] - 1 <= y <= r[3] + 1 for r in m["rects"])
+            if any(r[0] - 1 <= x <= r[2] + 1 and r[1] - 1 <= y <= r[3] + 1 for r in m["pages"][page])
         ]
 
     # -- links -----------------------------------------------------------------------
@@ -497,10 +501,11 @@ class ReaderView(QAbstractScrollArea):
         self.set_zoom(self.zoom / 1.15)
 
     def flash(self, page: int, rects: list) -> None:
-        """Scroll to a snippet's source and highlight it briefly."""
+        """Scroll to a snippet's source (page and rects as saved) and highlight it briefly."""
         self._user_moved()
-        self.go_to(page, min((r[1] for r in rects), default=0.0) or 0.001)
-        self._flash = (page, rects)
+        by_page = passage_pages(page, rects)
+        self.go_to(page, min((r[1] for r in by_page.get(page, [])), default=0.0) or 0.001)
+        self._flash = by_page
         self.viewport().update()
         QTimer.singleShot(1800, self._end_flash)
 
@@ -576,8 +581,8 @@ class ReaderView(QAbstractScrollArea):
                 p.fillRect(vr, SELECT_COLOR)
                 p.setPen(QPen(SELECT_COLOR.darker(150), 1))
                 p.drawRect(vr)
-            if self._flash and self._flash[0] == i:
-                for r in self._flash[1]:
+            if self._flash:
+                for r in self._flash.get(i, ()):
                     p.fillRect(self._to_view(i, rect, r), FLASH_COLOR)
 
     def _paint_marks(self, p: QPainter, page: int, rect: QRectF) -> None:
@@ -594,7 +599,7 @@ class ReaderView(QAbstractScrollArea):
                 p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
                 p.setPen(QPen(FRAME_COLOR[hover], 3 if hover else 2))
                 p.setBrush(Qt.BrushStyle.NoBrush)
-                for r in m["rects"]:
+                for r in m["pages"][page]:
                     p.drawRoundedRect(self._to_view(page, rect, r).adjusted(-4, -4, 4, 4), 4, 4)
             else:
                 p.setCompositionMode(
@@ -605,7 +610,7 @@ class ReaderView(QAbstractScrollArea):
                     normal, hovered = NOTE_DARK if dark else NOTE_LIGHT
                 else:
                     normal, hovered = MARK_DARK if dark else MARK_LIGHT
-                for r in m["rects"]:
+                for r in m["pages"][page]:
                     p.fillRect(self._to_view(page, rect, r).adjusted(-1, 0, 1, 0), hovered if hover else normal)
         p.restore()
 
@@ -808,11 +813,13 @@ class ReaderView(QAbstractScrollArea):
             png = self.doc.render(page, CAPTURE_SCALE, clip=r).tobytes("png")
             snippet = {"kind": "image", "page": page, "text": "", "rects": [list(r)], "png": png}
         elif self._selection:
+            # A selection running onto later pages starts on its first; see passage_pages.
             page = min(self._selection)
-            snippet = {
-                "kind": "text", "page": page, "text": self.selected_text(),
-                "rects": [list(r) for r in line_rects(self._selection[page])], "png": None,
-            }
+            rects = [
+                [*r] if p == page else [*r, p]
+                for p in sorted(self._selection) for r in line_rects(self._selection[p])
+            ]
+            snippet = {"kind": "text", "page": page, "text": self.selected_text(), "rects": rects, "png": None}
         else:
             return None
         self.clear_selection()

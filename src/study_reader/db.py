@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS snippets (
     page INTEGER NOT NULL,
     text TEXT NOT NULL DEFAULT '',
     image_path TEXT NOT NULL DEFAULT '',
-    rects TEXT NOT NULL DEFAULT '[]' -- JSON [[x0,y0,x1,y1],...] in page points
+    rects TEXT NOT NULL DEFAULT '[]' -- JSON [[x0,y0,x1,y1],...] in page points; see passage_pages
 );
 CREATE TABLE IF NOT EXISTS calculations (
     id INTEGER PRIMARY KEY,
@@ -236,6 +236,28 @@ def _fsrs_columns(fsrs_json: str) -> tuple[float | None, float | None, float | N
     d = json.loads(fsrs_json)
     last = d.get("last_review")
     return d.get("stability"), d.get("difficulty"), datetime.fromisoformat(last).timestamp() if last else None
+
+
+def passage_pages(page: int, rects: list) -> dict[int, list[list[float]]]:
+    """A snippet's or note's rects by page, in page order. A passage selected across pages
+    starts on `page`; its rects on later pages carry their page as a fifth number
+    ([x0, y0, x1, y1, page]), and the rest (all of them, for one on a single page) are on `page`."""
+    out: dict[int, list[list[float]]] = {}
+    for r in rects:
+        out.setdefault(int(r[4]) if len(r) > 4 else page, []).append(list(r[:4]))
+    return dict(sorted(out.items()))
+
+
+def last_page(page: int, rects: list) -> int:
+    """The page a snippet or note ends on."""
+    return max([page, *(int(r[4]) for r in rects if len(r) > 4)])
+
+
+def _passage(row) -> dict:
+    """A snippet or note row, its rects decoded, with the page it ends on as `last_page`."""
+    d = {**dict(row), "rects": json.loads(row["rects"])}
+    d["last_page"] = last_page(d["page"], d["rects"])
+    return d
 
 
 def data_dir() -> Path:
@@ -540,7 +562,7 @@ class Database:
         for m in self.conn.execute("SELECT * FROM messages WHERE chat_id=? ORDER BY id", (chat_id,)):
             d = dict(m)
             d["snippets"] = [
-                {**dict(s), "rects": json.loads(s["rects"])}
+                _passage(s)
                 for s in self.conn.execute("SELECT * FROM snippets WHERE message_id=? ORDER BY id", (m["id"],))
             ]
             out.append(d)
@@ -551,7 +573,7 @@ class Database:
 
     def snippet(self, snippet_id: int) -> dict | None:
         s = self.conn.execute("SELECT * FROM snippets WHERE id=?", (snippet_id,)).fetchone()
-        return {**dict(s), "rects": json.loads(s["rects"])} if s else None
+        return _passage(s) if s else None
 
     def book_snippets(self, book_id: int) -> list[dict]:
         """Every snippet asked about in any of the book's chats, with its chat id."""
@@ -560,7 +582,7 @@ class Database:
             "JOIN chats c ON c.id=m.chat_id WHERE c.book_id=? ORDER BY s.id",
             (book_id,),
         )
-        return [{**dict(s), "rects": json.loads(s["rects"])} for s in rows]
+        return [_passage(s) for s in rows]
 
     # -- quizzes -------------------------------------------------------------
     def save_quiz_answer(
@@ -612,13 +634,14 @@ class Database:
 
     def note(self, note_id: int) -> dict | None:
         n = self.conn.execute("SELECT * FROM notes WHERE id=?", (note_id,)).fetchone()
-        return {**dict(n), "rects": json.loads(n["rects"])} if n else None
+        return _passage(n) if n else None
 
     def notes(self, book_id: int) -> list[dict]:
         """The book's notes in reading order."""
         rows = self.conn.execute("SELECT * FROM notes WHERE book_id=? ORDER BY page, id", (book_id,))
-        out = [{**dict(n), "rects": json.loads(n["rects"])} for n in rows]
-        out.sort(key=lambda n: (n["page"], min((r[1] for r in n["rects"]), default=0.0), n["id"]))
+        out = [_passage(n) for n in rows]
+        out.sort(key=lambda n: (n["page"], min((r[1] for r in passage_pages(n["page"], n["rects"]).get(n["page"], [])),
+                                               default=0.0), n["id"]))
         return out
 
     def update_note(self, note_id: int, body: str) -> None:
