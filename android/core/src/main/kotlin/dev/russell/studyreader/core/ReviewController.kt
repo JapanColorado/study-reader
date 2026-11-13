@@ -15,8 +15,7 @@ import kotlin.math.min
 
 /**
  * The phone's review panel: the desktop's ReviewPanel (review.py), driving the same review.html.
- * The page calls the bridge methods (start, stop, check, rate, act, chooseDeck, chooseBook,
- * chooseSection, refresh, open); this answers with JavaScript to run (showOverview, showCard,
+ * The page calls the bridge methods (start, stop, check, rate, act, choose, refresh, open); this answers with JavaScript to run (showOverview, showCard,
  * celebrate, inputError) through [js]. Every change for the desktop is
  * queued with SyncStore.record.
  *
@@ -44,9 +43,8 @@ class ReviewController(
     val srs = Srs(db)
     val gamify = Gamify(srs) { SyncStore.record(db, it) }
 
-    var deckId: Long? = null
-    var pickedBook: Long? = null
-    var section: String? = null
+    /** What to review: any of these decks, books and sections of books; none for every card. */
+    var picks: List<Srs.Pick> = emptyList()
     var cardId: Long? = null
     private var shownAt = 0.0
     private var question: JsonObject? = null
@@ -66,31 +64,55 @@ class ReviewController(
     private fun call(function: String, vararg args: JsonElement) = js("$function(${args.joinToString(", ")})")
 
     // -- scope ----------------------------------------------------------------------------
-    fun chooseDeck(id: Long?) { deckId = id; pickedBook = null; section = null; stop() }
-    fun chooseBook(id: Long?) { deckId = null; pickedBook = id; section = null; stop() }
-    fun chooseSection(bookId: Long?, tag: String?) { deckId = null; pickedBook = bookId; section = tag; stop() }
+    /** Review the cards in any of picks, as the page sends them: JSON [{deck} or {book, section}]. */
+    fun choose(picksJson: String) {
+        val list = try { Json.parseToJsonElement(picksJson) as? JsonArray } catch (_: Exception) { null }
+        choose(list.orEmpty().mapNotNull { e ->
+            val o = e as? JsonObject ?: return@mapNotNull null
+            fun long(k: String) = (o[k] as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull()?.toLong()?.takeIf { it != 0L }
+            val deck = long("deck")
+            val book = long("book")
+            when {
+                deck != null -> Srs.Pick(deck = deck)
+                book != null -> Srs.Pick(book = book, section = (o["section"] as? JsonPrimitive)?.contentOrNull?.ifEmpty { null })
+                else -> null
+            }
+        })
+    }
+
+    fun choose(picks: List<Srs.Pick>) { this.picks = picks.distinct(); stop() }
+
+    /** pick, or (a section whose cards are gone or retagged) its book, or null if it is gone. */
+    private fun stillThere(p: Srs.Pick): Srs.Pick? = when {
+        p.deck != null -> p.takeIf { db.one("SELECT id FROM decks WHERE id=?", p.deck) != null }
+        db.one("SELECT id FROM books WHERE id=?", p.book) == null -> null
+        p.section != null && srs.countCards(p.book, tag = p.section) == 0 -> Srs.Pick(book = p.book)
+        else -> p
+    }
+
+    private fun pickJson(p: Srs.Pick) = buildJsonObject {
+        if (p.deck != null) put("deck", p.deck) else { put("book", p.book); put("section", p.section) }
+    }
 
     fun refresh() {
         val id = cardId
         if (id != null && srs.card(id) != null) showCard() else { cardId = null; showOverview() }
     }
 
-    private fun counts(t: Double) = srs.counts(pickedBook, t, deckId, section)
+    private fun counts(t: Double) = srs.counts(null, t, picks = picks)
 
     fun showOverview() {
         val t = now()
         srs.unbury(t)
-        if (deckId != null && db.one("SELECT id FROM decks WHERE id=?", deckId) == null) deckId = null
-        if (pickedBook != null && db.one("SELECT id FROM books WHERE id=?", pickedBook) == null) { pickedBook = null; section = null }
-        if (section != null && srs.countCards(pickedBook, tag = section) == 0) section = null
+        picks = picks.mapNotNull(::stillThere).distinct()
         val c = counts(t)
-        val upcoming = srs.nextDue(pickedBook, t, deckId, section)
+        val upcoming = srs.nextDue(null, t, picks = picks)
         val o = buildJsonObject {
             c.forEach { (k, v) -> put(k, v) }
             put("all", true)
             put("title", scopeTitle())
-            put("section", section)
-            put("ready", srs.nextCard(pickedBook, t, deck = deckId, tag = section) != null)
+            put("picks", JsonArray(picks.map(::pickJson)))
+            put("ready", srs.nextCard(null, t, picks = picks) != null)
             put("next", if (upcoming != null) "in ${Srs.formatInterval(upcoming - t)}" else "")
             put("reviewed", summary?.get("reviewed") ?: JsonPrimitive(0))
             put("summary", summary ?: JsonNull)
@@ -100,20 +122,23 @@ class ReviewController(
             put("links", JsonArray(emptyList()))
             put("status", status)
             put("empty", emptyMessage)
-            decksOverview(t, if (pickedBook == null && deckId == null) c else null).forEach { (k, v) -> put(k, v) }
+            decksOverview(t, if (picks.isEmpty()) c else null).forEach { (k, v) -> put(k, v) }
             booksOverview(t).forEach { (k, v) -> put(k, v) }
         }
         call("showOverview", o)
     }
 
     private fun scopeTitle(): String {
-        val sec = section?.split("::")?.drop(1)?.joinToString(" › ") { it.replace("_", " ") } ?: ""
-        if (pickedBook != null) {
-            val book = db.one("SELECT title FROM books WHERE id=?", pickedBook)?.str("title") ?: ""
-            return listOf(book, sec).filter { it.isNotEmpty() }.joinToString(" › ")
-        }
-        val deck = deckId?.let { db.one("SELECT name FROM decks WHERE id=?", it) }
-        return deck?.str("name")?.replace("::", " › ") ?: ""
+        var names = picks.map(::pickTitle)
+        if (names.size > 3) names = names.take(2) + "${names.size - 2} more"
+        return if (names.size < 2) names.firstOrNull() ?: "" else names.dropLast(1).joinToString(", ") + " and " + names.last()
+    }
+
+    private fun pickTitle(p: Srs.Pick): String {
+        if (p.deck != null) return db.one("SELECT name FROM decks WHERE id=?", p.deck)?.str("name")?.replace("::", " › ") ?: ""
+        val sec = p.section?.split("::")?.drop(1)?.joinToString(" › ") { it.replace("_", " ") } ?: ""
+        val book = db.one("SELECT title FROM books WHERE id=?", p.book)?.str("title") ?: ""
+        return listOf(book, sec).filter { it.isNotEmpty() }.joinToString(" › ")
     }
 
     private fun sectionsJson(list: List<Srs.Section>, left: Int) = buildJsonArray {
@@ -144,7 +169,6 @@ class ReviewController(
                     })
                 }
             },
-            "book" to JsonPrimitive(pickedBook),
         )
     }
 
@@ -170,7 +194,6 @@ class ReviewController(
                     })
                 }
             },
-            "deck" to JsonPrimitive(deckId),
             "all_due" to JsonPrimitive(e["due"]), "all_new" to JsonPrimitive(e["new"]),
         )
     }
@@ -195,13 +218,13 @@ class ReviewController(
         if (s != null && s.over(mono())) { finish(false); return }
         val t = now()
         srs.unbury(t)
-        val card = srs.nextCard(pickedBook, t, just, deckId, section, skipped)
+        val card = srs.nextCard(null, t, just, exclude = skipped, picks = picks)
         cardId = card?.long("id")
         answer = null
         shownAt = mono()
         shownData = ""
         // Only skipped cards left (if any): not caught up while they are still to review.
-        if (card == null) finish(skipped.isEmpty() || srs.nextCard(pickedBook, t, deck = deckId, tag = section) == null)
+        if (card == null) finish(skipped.isEmpty() || srs.nextCard(null, t, picks = picks) == null)
         else showCard()
     }
 
@@ -229,7 +252,7 @@ class ReviewController(
         val a = answer
         val c = counts(t)
         // The session's progress leaves out cards skipped in it, which won't come back in it.
-        val left = if (skipped.isEmpty()) c["due"]!! + c["new"]!! else srs.leftToReview(pickedBook, t, deckId, section, skipped)
+        val left = if (skipped.isEmpty()) c["due"]!! + c["new"]!! else srs.leftToReview(null, t, exclude = skipped, picks = picks)
         val book = card.longOrNull("book_id")?.let { db.one("SELECT title FROM books WHERE id=?", it) }
         val deck = db.one("SELECT name FROM decks WHERE id=?", card.long("deck_id"))
         val q = question!!

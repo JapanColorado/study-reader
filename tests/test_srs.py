@@ -400,18 +400,42 @@ def test_reviewing_one_book_or_section(chat_panel):
     assert [s["name"] for s in o["books"][0]["sections"]] == ["Part I", "Chapter 1: Rinsing mostly"]
     review.choose_book(other)
     assert shown[-1][1][0]["total"] == 1 and shown[-1][1][0]["title"] == "B"
-    review.choose_section(book_id, "A::Part_I")
+    review.choose_book(book_id, "A::Part_I")
     o = shown[-1][1][0]
-    assert o["total"] == 4 and o["book"] == book_id and o["title"] == "A › Part I"
-    review.choose_section(book_id, "A::Part_I::Chapter_1:_Rinsing_mostly")
+    assert o["total"] == 4 and o["picks"] == [{"book": book_id, "section": "A::Part_I"}] and o["title"] == "A › Part I"
+    review.choose_book(book_id, "A::Part_I::Chapter_1:_Rinsing_mostly")
     o = shown[-1][1][0]
     assert o["total"] == 1 and o["title"] == "A › Part I › Chapter 1: Rinsing mostly"
     review.start()
     assert review.card_id == db.card_for(reply, 0, 0)["id"]
     review.choose_book(book_id)
-    assert review.section is None and shown[-1][1][0]["total"] == 4
+    assert review.picks == [{"book": book_id, "section": None}] and shown[-1][1][0]["total"] == 4
     review.choose_deck(None)
-    assert shown[-1][1][0]["total"] == 5 and review.book_id is None
+    assert shown[-1][1][0]["total"] == 5 and review.picks == []
+
+    # Several at once (Ctrl+click): the cards in any of them, each counted once.
+    review.choose([{"book": other}, {"book": book_id, "section": "A::Part_I::Chapter_1:_Rinsing_mostly"},
+                   {"book": other, "section": None}])
+    o = shown[-1][1][0]
+    assert o["picks"] == [{"book": other, "section": None},
+                          {"book": book_id, "section": "A::Part_I::Chapter_1:_Rinsing_mostly"}]
+    assert o["total"] == 2 and o["title"] == "B and A › Part I › Chapter 1: Rinsing mostly"
+    review.choose([{"book": book_id, "section": "A::Part_I"}, {"book": book_id, "section": None}])
+    assert shown[-1][1][0]["total"] == 4  # a section and its book overlap
+    deck = db.ensure_deck("Loose")
+    db.add_card_note("flashcard", {"front": "x", "back": "y"}, deck)
+    review.choose([{"deck": deck}, {"book": other, "section": None}])
+    o = shown[-1][1][0]
+    assert o["total"] == 2 and o["title"] == "Loose and B" and review.picked_deck() == deck
+    review.start()
+    seen = set()
+    while review.card_id is not None:
+        seen.add(db.card(review.card_id)["deck_id"])
+        review.rate(review.card_id, 3)
+    assert seen == {deck, db.book(other)["deck_id"]}
+    # A section whose cards are gone falls back to its book; a book that is gone is dropped.
+    review.choose([{"book": book_id, "section": "A::Nowhere"}, {"book": 999, "section": None}])
+    assert shown[-1][1][0]["picks"] == [{"book": book_id, "section": None}]
 
 
 def test_main_window_review_of_the_open_book(pdf_path, tmp_path, monkeypatch):
@@ -441,8 +465,8 @@ def test_main_window_review_of_the_open_book(pdf_path, tmp_path, monkeypatch):
 
     # F8 (the toolbar's Review): the Review page narrowed to the open book, which stays open behind it.
     QTest.keyClick(win, Qt.Key.Key_F8)
-    assert win.page() == "review" and win.book_id == book_id and win.review.book_id == book_id
-    assert win.review.deck_id is None and win.review.section is None
+    assert win.page() == "review" and win.book_id == book_id
+    assert win.review.picks == [{"book": book_id, "section": None}]
     assert db.card(win.review.card_id)["book_id"] == book_id
     assert not win.toolbar.isVisible() and not win.right.isVisible() and win.nav.book.isVisible()
     assert not win.review_action.isEnabled()  # only while reading
@@ -457,7 +481,8 @@ def test_main_window_review_of_the_open_book(pdf_path, tmp_path, monkeypatch):
     win.show_page("review")
     win.review.choose_deck(None)
     win.library.reviewBookRequested.emit(book_id)  # the Library's Review button does the same
-    assert win.page() == "review" and win.review.book_id == book_id and win.review.card_id is not None
+    assert win.page() == "review" and win.review.picks == [{"book": book_id, "section": None}]
+    assert win.review.card_id is not None
     win.close()
 
 

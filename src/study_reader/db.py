@@ -983,8 +983,20 @@ class Database:
             "SELECT * FROM cards WHERE message_id=? AND quiz=? ORDER BY question", (message_id, quiz)
         ).fetchall()
 
-    def _scope(self, book_id: int | None, deck_id: int | None, tag: str | None = None) -> tuple[str, tuple]:
+    def _scope(self, book_id: int | None, deck_id: int | None, tag: str | None = None,
+               picks=()) -> tuple[str, tuple]:
+        """SQL condition (ending in AND) and its arguments for a book, deck (with its subdecks) or tag,
+        and within any of picks (several of them, review's multiselect: {"deck": id} or
+        {"book": id, "section": tag or None}); none for every card."""
         sql, args = "", ()
+        if picks:
+            parts = []
+            for p in picks:
+                part, part_args = (self._scope(None, p["deck"]) if p.get("deck") is not None
+                                   else self._scope(p["book"], None, p.get("section")))
+                parts.append(f"({part.removesuffix(' AND ')})")
+                args += part_args
+            sql = f"({' OR '.join(parts)}) AND "
         if book_id is not None:
             sql, args = "book_id=? AND ", (book_id,)
         if deck_id is not None:
@@ -996,16 +1008,16 @@ class Database:
         return sql, args
 
     def cards(self, book_id: int | None = None, where: str = "1", args: tuple = (), order: str = "id",
-              limit: int = -1, deck_id: int | None = None, tag: str | None = None) -> list[sqlite3.Row]:
-        """Cards of a book, deck or tag (or of every one), filtered by a SQL condition."""
-        scope, scope_args = self._scope(book_id, deck_id, tag)
+              limit: int = -1, deck_id: int | None = None, tag: str | None = None, picks=()) -> list[sqlite3.Row]:
+        """Cards of a book, deck or tag (or of every one; or of any of picks), filtered by a SQL condition."""
+        scope, scope_args = self._scope(book_id, deck_id, tag, picks)
         return self.conn.execute(
             f"SELECT * FROM cards WHERE {scope}({where}) ORDER BY {order} LIMIT ?", scope_args + args + (limit,),
         ).fetchall()
 
     def count_cards(self, book_id: int | None = None, where: str = "1", args: tuple = (),
-                    deck_id: int | None = None, tag: str | None = None) -> int:
-        scope, scope_args = self._scope(book_id, deck_id, tag)
+                    deck_id: int | None = None, tag: str | None = None, picks=()) -> int:
+        scope, scope_args = self._scope(book_id, deck_id, tag, picks)
         return self.conn.execute(f"SELECT COUNT(*) FROM cards WHERE {scope}({where})", scope_args + args).fetchone()[0]
 
     def record_review(

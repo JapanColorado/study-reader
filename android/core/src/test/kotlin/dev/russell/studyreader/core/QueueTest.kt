@@ -79,6 +79,33 @@ class QueueTest {
     }
 
     @Test
+    fun picksReviewAnyOfSeveral() {
+        // One pick narrows as the scope it names does; several review the cards in any of them, once each.
+        val picks = mutableListOf<Srs.Pick>()
+        for (e in cases["scopes"]!!.jsonArray) {
+            val sc = e.jsonObject
+            val book = long(sc, "book"); val deck = long(sc, "deck"); val tag = (sc["tag"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content
+            if ((book == null) == (deck == null)) continue
+            val pick = if (deck != null) Srs.Pick(deck = deck) else Srs.Pick(book = book, section = tag)
+            assertEquals("scope $sc", srs.counts(book, now, deck, tag), srs.counts(null, now, picks = listOf(pick, pick)))
+            picks += pick
+        }
+        assertTrue(picks.size >= 2)
+        val ids = picks.flatMap { p -> srs.cards(p.book, deckId = p.deck, tag = p.section).map { it.long("id") } }.toSet()
+        assertEquals(ids.size, srs.counts(null, now, picks = picks)["total"])
+
+        val calls = mutableListOf<String>()
+        val c = ReviewController(db, { calls += it }, now = { now })
+        val (a, b) = picks.take(2)
+        fun json(p: Srs.Pick) = if (p.deck != null) "{\"deck\": ${p.deck}}" else "{\"book\": ${p.book}, \"section\": ${p.section?.let { "\"$it\"" } ?: "null"}}"
+        c.choose("[${json(a)}, ${json(b)}, ${json(a)}, {\"deck\": 0}]")
+        assertEquals(listOf(a, b), c.picks)
+        assertTrue(calls.last(), calls.last().startsWith("showOverview(") && calls.last().contains("\"picks\":[{"))
+        c.choose("[]")
+        assertEquals(emptyList<Srs.Pick>(), c.picks)
+    }
+
+    @Test
     fun deckCountsMatch() {
         val got = srs.deckCounts(now)
         for ((id, want) in cases["deck_counts"]!!.jsonObject) {

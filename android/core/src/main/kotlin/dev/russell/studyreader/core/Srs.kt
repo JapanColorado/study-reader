@@ -108,9 +108,29 @@ class Srs(val db: Sql, val zone: ZoneId = ZoneId.systemDefault(), val fuzz: Bool
     // -- scope ------------------------------------------------------------------------------
     private fun like(s: String) = s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
-    /** SQL condition (ending in AND) and its arguments for a book, deck (with its subdecks) or tag. */
-    fun scope(bookId: Long?, deckId: Long?, tag: String? = null): Pair<String, List<Any?>> {
+    /** One of several things to review together (review.py's ReviewPanel.picks): a deck (with its
+     *  subdecks), a book, or a section (tag) of a book. */
+    data class Pick(val deck: Long? = null, val book: Long? = null, val section: String? = null)
+
+    /** SQL condition (ending in AND) and its arguments for a book, deck (with its subdecks) or tag, and
+     *  within any of picks (none: every card). */
+    fun scope(bookId: Long?, deckId: Long?, tag: String? = null, picks: List<Pick> = emptyList()): Pair<String, List<Any?>> {
         val sql = StringBuilder("id NOT IN (SELECT card_id FROM buried) AND ")
+        val args = mutableListOf<Any?>()
+        if (picks.isNotEmpty()) {
+            sql.append(picks.joinToString(" OR ", "(", ") AND ") { p ->
+                val (s, a) = if (p.deck != null) narrow(null, p.deck) else narrow(p.book, null, p.section)
+                args.addAll(a)
+                "(${s.removeSuffix(" AND ")})"
+            })
+        }
+        val (s, a) = narrow(bookId, deckId, tag)
+        sql.append(s); args.addAll(a)
+        return sql.toString() to args
+    }
+
+    private fun narrow(bookId: Long?, deckId: Long?, tag: String? = null): Pair<String, List<Any?>> {
+        val sql = StringBuilder()
         val args = mutableListOf<Any?>()
         if (bookId != null) { sql.append("book_id=? AND "); args += bookId }
         if (deckId != null) {
@@ -126,14 +146,14 @@ class Srs(val db: Sql, val zone: ZoneId = ZoneId.systemDefault(), val fuzz: Bool
     }
 
     fun cards(bookId: Long? = null, where: String = "1", args: List<Any?> = emptyList(), order: String = "id",
-              limit: Int = -1, deckId: Long? = null, tag: String? = null): List<Row> {
-        val (s, a) = scope(bookId, deckId, tag)
+              limit: Int = -1, deckId: Long? = null, tag: String? = null, picks: List<Pick> = emptyList()): List<Row> {
+        val (s, a) = scope(bookId, deckId, tag, picks)
         return db.query("SELECT * FROM cards WHERE $s($where) ORDER BY $order LIMIT ?", *(a + args + limit).toTypedArray())
     }
 
     fun countCards(bookId: Long? = null, where: String = "1", args: List<Any?> = emptyList(),
-                   deckId: Long? = null, tag: String? = null): Int {
-        val (s, a) = scope(bookId, deckId, tag)
+                   deckId: Long? = null, tag: String? = null, picks: List<Pick> = emptyList()): Int {
+        val (s, a) = scope(bookId, deckId, tag, picks)
         return db.long("SELECT COUNT(*) FROM cards WHERE $s($where)", *(a + args).toTypedArray()).toInt()
     }
 
@@ -148,25 +168,26 @@ class Srs(val db: Sql, val zone: ZoneId = ZoneId.systemDefault(), val fuzz: Bool
     fun newLeftToday(now: Double): Int = max(newPerDay() - newCardsReviewedSince(dayStart(now)), 0)
 
     // -- counts -----------------------------------------------------------------------------
-    fun counts(bookId: Long?, now: Double, deck: Long? = null, tag: String? = null): Map<String, Int> {
-        val new = countCards(bookId, NEW, deckId = deck, tag = tag)
+    fun counts(bookId: Long?, now: Double, deck: Long? = null, tag: String? = null,
+               picks: List<Pick> = emptyList()): Map<String, Int> {
+        val new = countCards(bookId, NEW, deckId = deck, tag = tag, picks = picks)
         return mapOf(
-            "due" to countCards(bookId, DUE, listOf(nextDay(now), now), deck, tag),
+            "due" to countCards(bookId, DUE, listOf(nextDay(now), now), deck, tag, picks),
             "new" to min(new, newLeftToday(now)),
             "new_total" to new,
-            "total" to countCards(bookId, deckId = deck, tag = tag),
-            "suspended" to countCards(bookId, "suspended=1", deckId = deck, tag = tag),
+            "total" to countCards(bookId, deckId = deck, tag = tag, picks = picks),
+            "suspended" to countCards(bookId, "suspended=1", deckId = deck, tag = tag, picks = picks),
         )
     }
 
     /** How many cards are left to review today (due, and new ones today's allowance allows),
      *  leaving out exclude (cards skipped this session). */
     fun leftToReview(bookId: Long?, now: Double, deck: Long? = null, tag: String? = null,
-                     exclude: List<Long> = emptyList()): Int {
+                     exclude: List<Long> = emptyList(), picks: List<Pick> = emptyList()): Int {
         val (dueWhere, dueArgs) = notIn(DUE, listOf(nextDay(now), now), exclude)
         val (newWhere, newArgs) = notIn(NEW, emptyList(), exclude)
-        return countCards(bookId, dueWhere, dueArgs, deck, tag) +
-            min(countCards(bookId, newWhere, newArgs, deck, tag), newLeftToday(now))
+        return countCards(bookId, dueWhere, dueArgs, deck, tag, picks) +
+            min(countCards(bookId, newWhere, newArgs, deck, tag, picks), newLeftToday(now))
     }
 
     /** where, also leaving out the cards with the ids in exclude. */
@@ -253,14 +274,14 @@ class Srs(val db: Sql, val zone: ZoneId = ZoneId.systemDefault(), val fuzz: Bool
     /** skip: cards not to show again yet (the one just answered), unless nothing else is left;
      *  exclude: cards never to show (skipped this session). */
     fun nextCard(bookId: Long?, now: Double, skip: List<Long> = emptyList(), deck: Long? = null, tag: String? = null,
-                 exclude: List<Long> = emptyList()): Row? {
+                 exclude: List<Long> = emptyList(), picks: List<Pick> = emptyList()): Row? {
         val tiers = mutableListOf(Triple(DUE, listOf<Any?>(nextDay(now), now), "due, id"))
         if (newLeftToday(now) > 0) tiers += Triple(NEW, emptyList(), "created_at, id")
         tiers += Triple("suspended=0 AND stage IN (1,3) AND due<=?", listOf(now + LEARN_AHEAD), "due, id")
         var fallback: Row? = null
         for ((tierWhere, tierArgs, order) in tiers) {
             val (where, args) = notIn(tierWhere, tierArgs, exclude)
-            for (card in cards(bookId, where, args, order, skip.size + 1, deck, tag)) {
+            for (card in cards(bookId, where, args, order, skip.size + 1, deck, tag, picks)) {
                 if (card.long("id") !in skip) return card
                 if (fallback == null) fallback = card
             }
@@ -268,8 +289,8 @@ class Srs(val db: Sql, val zone: ZoneId = ZoneId.systemDefault(), val fuzz: Bool
         return fallback
     }
 
-    fun nextDue(bookId: Long?, now: Double, deck: Long? = null, tag: String? = null): Double? =
-        cards(bookId, "suspended=0 AND stage>0 AND due>?", listOf(now), "due", 1, deck, tag).firstOrNull()?.double("due")
+    fun nextDue(bookId: Long?, now: Double, deck: Long? = null, tag: String? = null, picks: List<Pick> = emptyList()): Double? =
+        cards(bookId, "suspended=0 AND stage>0 AND due>?", listOf(now), "due", 1, deck, tag, picks).firstOrNull()?.double("due")
 
     // -- cards ------------------------------------------------------------------------------
     fun isNew(card: Row) = card.long("reps") == 0L

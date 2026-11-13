@@ -60,7 +60,8 @@
   .tabs .grow { flex:1; }
   .tabs a.make { font-weight:500; border-bottom-color:transparent; }
   .tabs a.make:hover { color:var(--accent); }
-  .decks { margin:0 -8px; }
+  .decks { margin:0 -8px; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; }
+  .decks .pick-hint { padding:6px 8px 0; font-size:11.5px; color:var(--faint); }
   .deck { display:flex; align-items:center; gap:6px; padding:4px 8px; border-radius:7px; cursor:pointer; font-size:13.5px; }
   .deck:hover { background:var(--hover); }
   .deck.sel { background:var(--accent-soft); }
@@ -176,8 +177,48 @@ function setCalc(on) {
 let LAST = null;  // the overview last shown, to redraw when the picker's tab changes
 let PICK = null;  // the picker's tab on the Review page: "decks" or "books" (null: by what is picked)
 
+// What to review (o.picks, several at once): decks {deck}, books {book, section: null} and
+// sections of books {book, section: tag}; none for every card. A click picks one row; Ctrl+click
+// (a long press on the phone) adds or removes one, Shift+click picks the rows from the last one clicked.
+const pickKey = p => p.deck ? `d${p.deck}` : p.section ? `s${p.book}|${p.section}` : `b${p.book}`;
+const picked = (o, p) => (o.picks || []).some(q => pickKey(q) === pickKey(p));
+let ANCHOR = null;  // the key of the row last clicked (not Shift+clicked), where a Shift+click's range starts
+
+// The pick a row in the picker stands for; null for All.
+function rowPick(row) {
+  const d = row.dataset;
+  if (d.act === "deck") return +d.deck ? { deck: +d.deck } : null;
+  if (d.act === "book") return { book: +d.book, section: null };
+  if (d.act === "section") return { book: +d.book, section: d.tag };
+  return null;
+}
+
+function choose(picks) {
+  const seen = new Set();
+  bridge.choose(JSON.stringify(picks.filter(p => !seen.has(pickKey(p)) && seen.add(pickKey(p)))));
+}
+
+// A click on a row of the picker (how: {toggle, range} from the keys held or a long press).
+function pickRow(row, how) {
+  const p = rowPick(row), current = (LAST && LAST.picks) || [];
+  if (!p) { ANCHOR = null; choose([]); return; }
+  const key = pickKey(p);
+  if (how.range && ANCHOR) {
+    const rows = [...document.querySelectorAll(".decks .deck[data-act]")].map(rowPick).filter(Boolean);
+    const keys = rows.map(pickKey), a = keys.indexOf(ANCHOR), b = keys.indexOf(key);
+    if (a >= 0 && b >= 0) {
+      const range = rows.slice(Math.min(a, b), Math.max(a, b) + 1);
+      choose(how.toggle ? [...current, ...range] : range);
+      return;
+    }
+  }
+  ANCHOR = key;
+  if (how.toggle) choose(current.some(q => pickKey(q) === key) ? current.filter(q => pickKey(q) !== key) : [...current, p]);
+  else choose([p]);
+}
+
 // Every card, whatever its deck or book: the first row of both the Decks and the Books tab.
-const allRow = o => `<div class="deck all${o.deck === null && o.book === null ? " sel" : ""}" data-act="deck" data-deck="0"`
+const allRow = o => `<div class="deck all${(o.picks || []).length ? "" : " sel"}" data-act="deck" data-deck="0"`
   + ` title="Every card, in every deck and book"><span class="tw"></span><span class="name">All</span>`
   + `${num(o.all_due, "due")}${num(o.all_new, "new")}</div>`;
 
@@ -187,23 +228,23 @@ function decksHtml(o) {
   for (const d of o.decks) (byParent[d.parent ?? 0] ||= []).push(d);
   const row = (d, depth) => {
     const kids = byParent[d.id] || [];
-    let html = `<div class="deck${o.deck === d.id ? " sel" : ""}" data-act="deck" data-deck="${d.id}" title="${esc(d.path)}"`
+    let html = `<div class="deck${picked(o, { deck: d.id }) ? " sel" : ""}" data-act="deck" data-deck="${d.id}" title="${esc(d.path)}"`
       + ` style="padding-left:${8 + depth * 16}px">${twist(`d${d.id}`, kids.length)}`
       + `<span class="name">${esc(d.name)}</span>${num(d.due, "due")}${num(d.new, "new")}</div>`;
     if (OPEN.has(`d${d.id}`)) for (const k of kids) html += row(k, depth + 1);
     return html;
   };
   return `<div class="decks"><div class="deck-head"><span class="tw"></span><span class="name">Deck</span><span class="n">Due</span><span class="n">New</span></div>`
-    + allRow(o) + (byParent[0] || []).map(d => row(d, 0)).join("") + `</div>`;
+    + allRow(o) + (byParent[0] || []).map(d => row(d, 0)).join("") + pickHint + `</div>`;
 }
 
 // A book's sections (srs.sections) as rows under it; clicking one reviews just that section.
-function sectionRows(sections, bookId, selected, depth) {
+function sectionRows(sections, bookId, o, depth) {
   const byParent = {};
   for (const s of sections) (byParent[s.parent ?? ""] ||= []).push(s);
   const row = (s, depth) => {
     const kids = byParent[s.tag] || [];
-    let html = `<div class="deck${selected === s.tag ? " sel" : ""}" data-act="section" data-book="${bookId}" data-tag="${esc(s.tag)}"`
+    let html = `<div class="deck${picked(o, { book: bookId, section: s.tag }) ? " sel" : ""}" data-act="section" data-book="${bookId}" data-tag="${esc(s.tag)}"`
       + ` title="${esc(s.tag.split("::").slice(1).join(" › ").replace(/_/g, " "))}" style="padding-left:${8 + depth * 16}px">`
       + `${twist(`s${s.tag}`, kids.length)}<span class="name">${esc(s.name)}</span>${num(s.due, "due")}${num(s.new, "new")}</div>`;
     if (OPEN.has(`s${s.tag}`)) for (const k of kids) html += row(k, depth + 1);
@@ -217,12 +258,15 @@ function booksHtml(o) {
   return `<div class="decks"><div class="deck-head"><span class="tw"></span><span class="name">Book</span><span class="n">Due</span><span class="n">New</span></div>`
     + allRow(o) + o.books.map(b => {
       const key = `b${b.id}`;
-      let html = `<div class="deck${o.book === b.id && !o.section ? " sel" : ""}" data-act="book" data-book="${b.id}" title="${esc(b.title)}">`
+      let html = `<div class="deck${picked(o, { book: b.id, section: null }) ? " sel" : ""}" data-act="book" data-book="${b.id}" title="${esc(b.title)}">`
         + `${twist(key, b.sections.length)}<span class="name">${esc(b.title)}</span>${num(b.due, "due")}${num(b.new, "new")}</div>`;
-      if (OPEN.has(key)) html += sectionRows(b.sections, b.id, o.book === b.id ? o.section : null, 1);
+      if (OPEN.has(key)) html += sectionRows(b.sections, b.id, o, 1);
       return html;
-    }).join("") + `</div>`;
+    }).join("") + pickHint + `</div>`;
 }
+
+const pickHint = `<div class="pick-hint">${MOBILE ? "Long-press to pick more than one"
+  : "Ctrl+click to pick more than one · Shift+click for a range"}</div>`;
 
 // What to review: decks or books.
 function pickerHtml(o) {
@@ -230,7 +274,8 @@ function pickerHtml(o) {
   // The desktop's Make a deck with Claude link comes with o.make, which the phone app never sends.
   const make = o.make ? `<span class="grow"></span><a href="#" class="make" data-act="make" title="Describe a deck and Claude writes its cards">+ Make a deck with Claude</a>` : "";
   if (!hasDecks && !hasBooks) return make ? `<section class="panel"><div class="tabs">${make}</div></section>` : "";
-  let tab = PICK || (o.book !== null && hasBooks ? "books" : hasDecks ? "decks" : "books");
+  const first = (o.picks || [])[0];
+  let tab = PICK || (first && !first.deck && hasBooks ? "books" : hasDecks ? "decks" : "books");
   if (tab === "decks" && !hasDecks) tab = "books";
   if (tab === "books" && !hasBooks) tab = "decks";
   const link = (name, label) => `<a href="#" data-act="pick" data-tab="${name}" class="${tab === name ? "on" : ""}">${label}</a>`;
@@ -489,6 +534,32 @@ function inputError(cardId, error) {
   if (el) el.textContent = error;
 }
 
+// On the phone a long press on a row of the picker adds it to what is picked, or takes it out.
+let LONG_PRESS = 0;  // when the last long press picked a row
+if (MOBILE) {
+  let timer = null, x = 0, y = 0;
+  const cancel = () => { clearTimeout(timer); timer = null; };
+  document.addEventListener("touchstart", ev => {
+    cancel();
+    const row = ev.target.closest(".decks .deck[data-act]");
+    if (!row || ev.touches.length !== 1 || ev.target.closest("[data-act=twist]") || !rowPick(row)) return;
+    x = ev.touches[0].clientX; y = ev.touches[0].clientY;
+    timer = setTimeout(() => {
+      timer = null;
+      LONG_PRESS = Date.now();
+      if (navigator.vibrate) navigator.vibrate(15);
+      pickRow(row, { toggle: true });
+    }, 450);
+  }, { passive: true });
+  document.addEventListener("touchmove", ev => {
+    const t = ev.touches[0];
+    if (timer && Math.hypot(t.clientX - x, t.clientY - y) > 10) cancel();
+  }, { passive: true });
+  document.addEventListener("touchend", cancel);
+  document.addEventListener("touchcancel", cancel);
+  document.addEventListener("contextmenu", ev => { if (ev.target.closest(".decks")) ev.preventDefault(); });
+}
+
 document.addEventListener("click", ev => {
   const target = ev.target.closest("[data-act]");
   if (!target || target.disabled || !bridge) return;
@@ -503,9 +574,11 @@ document.addEventListener("click", ev => {
     bridge.refresh();
   }
   else if (act === "pick") { PICK = target.dataset.tab; if (LAST) showOverview(LAST); }
-  else if (act === "deck") bridge.chooseDeck(+target.dataset.deck);
-  else if (act === "book") bridge.chooseBook(+target.dataset.book);
-  else if (act === "section") bridge.chooseSection(+target.dataset.book, target.dataset.tag);
+  else if (act === "deck" || act === "book" || act === "section") {
+    if (MOBILE && Date.now() - LONG_PRESS < 800) return;  // the click that ends a long press
+    if (!target.classList.contains("deck")) { ANCHOR = null; choose([]); }  // the heading's "Every deck and book"
+    else pickRow(target, { toggle: ev.ctrlKey || ev.metaKey, range: ev.shiftKey });
+  }
   else if (act === "calc") bridge.open("calc");
   else if (act === "make") bridge.open("make");
   else if (act === "open") bridge.open(target.dataset.what);

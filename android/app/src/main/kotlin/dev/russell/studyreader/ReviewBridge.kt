@@ -15,10 +15,7 @@ class ReviewBridge(private val store: Store, private val controller: () -> Revie
     @JavascriptInterface fun check(cardId: Double, response: String) = run { check(cardId.toLong(), response) }
     @JavascriptInterface fun rate(cardId: Double, rating: Double) = run { rate(cardId.toLong(), rating.toInt()) }
     @JavascriptInterface fun act(cardId: Double, action: String) = run { act(cardId.toLong(), action) }
-    @JavascriptInterface fun chooseDeck(deckId: Double) = run { chooseDeck(deckId.toLong().takeIf { it != 0L }) }
-    @JavascriptInterface fun chooseBook(bookId: Double) = run { chooseBook(bookId.toLong().takeIf { it != 0L }) }
-    @JavascriptInterface fun chooseSection(bookId: Double, tag: String) =
-        run { chooseSection(bookId.toLong().takeIf { it != 0L }, tag.ifEmpty { null }) }
+    @JavascriptInterface fun choose(json: String) = run { choose(json) }
     @JavascriptInterface fun refresh() = run { refresh() }
     @JavascriptInterface fun open(what: String) = run { open(what) }
 }

@@ -491,27 +491,27 @@ def new_left_today(db: Database, now: float) -> int:
 
 
 def counts(db: Database, book_id: int | None, now: float | None = None, deck: int | None = None,
-           tag: str | None = None) -> dict:
-    """What there is to review in a book, deck or tag (a section; or everywhere, with none): due
-    cards, new cards that can be introduced today, and the total."""
+           tag: str | None = None, picks=()) -> dict:
+    """What there is to review in a book, deck or tag (a section; or everywhere, with none), or in
+    any of picks (Database._scope): due cards, new cards that can be introduced today, and the total."""
     now = time.time() if now is None else now
-    new = db.count_cards(book_id, NEW, deck_id=deck, tag=tag)
+    new = db.count_cards(book_id, NEW, deck_id=deck, tag=tag, picks=picks)
     return {
-        "due": db.count_cards(book_id, DUE, (next_day(now), now), deck_id=deck, tag=tag),
+        "due": db.count_cards(book_id, DUE, (next_day(now), now), deck_id=deck, tag=tag, picks=picks),
         "new": min(new, new_left_today(db, now)),
         "new_total": new,
-        "total": db.count_cards(book_id, deck_id=deck, tag=tag),
-        "suspended": db.count_cards(book_id, "suspended=1", deck_id=deck, tag=tag),
+        "total": db.count_cards(book_id, deck_id=deck, tag=tag, picks=picks),
+        "suspended": db.count_cards(book_id, "suspended=1", deck_id=deck, tag=tag, picks=picks),
     }
 
 
 def left_to_review(db: Database, book_id: int | None, now: float | None = None, deck: int | None = None,
-                   tag: str | None = None, exclude=()) -> int:
+                   tag: str | None = None, exclude=(), picks=()) -> int:
     """How many cards are left to review today (due, and new ones today's allowance allows),
     leaving out exclude (cards skipped this session)."""
     now = time.time() if now is None else now
-    due = db.count_cards(book_id, *_not_in(DUE, (next_day(now), now), exclude), deck_id=deck, tag=tag)
-    new = db.count_cards(book_id, *_not_in(NEW, (), exclude), deck_id=deck, tag=tag)
+    due = db.count_cards(book_id, *_not_in(DUE, (next_day(now), now), exclude), deck_id=deck, tag=tag, picks=picks)
+    new = db.count_cards(book_id, *_not_in(NEW, (), exclude), deck_id=deck, tag=tag, picks=picks)
     return due + min(new, new_left_today(db, now))
 
 
@@ -548,7 +548,7 @@ def deck_counts(db: Database, now: float | None = None) -> dict[int, dict]:
 
 
 def next_card(db: Database, book_id: int | None, now: float | None = None, skip=(), deck: int | None = None,
-              tag: str | None = None, exclude=()):
+              tag: str | None = None, exclude=(), picks=()):
     """The card to review next: due learning and review cards first (most overdue first),
     then new ones while today's allowance lasts, then learning cards due within LEARN_AHEAD.
     skip: ids of cards not to show again yet (the one just answered), unless nothing else is left.
@@ -561,7 +561,8 @@ def next_card(db: Database, book_id: int | None, now: float | None = None, skip=
     fallback = None
     for where, args, order in tiers:
         where, args = _not_in(where, args, exclude)
-        for card in db.cards(book_id, where, args, order=order, limit=len(skip) + 1, deck_id=deck, tag=tag):
+        for card in db.cards(book_id, where, args, order=order, limit=len(skip) + 1, deck_id=deck, tag=tag,
+                             picks=picks):
             if card["id"] not in skip:
                 return card
             fallback = fallback or card
@@ -569,10 +570,11 @@ def next_card(db: Database, book_id: int | None, now: float | None = None, skip=
 
 
 def next_due(db: Database, book_id: int | None, now: float | None = None, deck: int | None = None,
-             tag: str | None = None) -> float | None:
+             tag: str | None = None, picks=()) -> float | None:
     """When the next card that isn't due yet will be."""
     now = time.time() if now is None else now
-    row = db.cards(book_id, "suspended=0 AND stage>0 AND due>?", (now,), order="due", limit=1, deck_id=deck, tag=tag)
+    row = db.cards(book_id, "suspended=0 AND stage>0 AND due>?", (now,), order="due", limit=1, deck_id=deck,
+                   tag=tag, picks=picks)
     return row[0]["due"] if row else None
 
 
