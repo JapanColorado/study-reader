@@ -105,8 +105,10 @@ class TranscriptView(QWebEngineView):
     quizReviewToggled = Signal(int, int)  # message id, quiz: put its cards in or out of review
     quizReviseRequested = Signal(int, int)  # message id, quiz: ask Claude to revise it
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, listen: bool = True):
+        """listen: offer Listen on replies (read aloud's controls are under the reader)."""
         super().__init__(parent)
+        self.listen = listen
         page = _Page(self)
         page.jump.connect(self.jumpRequested)
         page.page.connect(self.pageRequested)
@@ -147,10 +149,10 @@ class TranscriptView(QWebEngineView):
             ]
             out.append({
                 "id": m["id"], "role": m["role"], "text": m["text"], "snippets": snippets,
-                "quizzes": m.get("quizzes", []),
+                "quizzes": m.get("quizzes", []), "stopped": bool(m.get("stopped")),
             })
         data = {"messages": out, "streaming": streaming, "placeholder": placeholder, "editing": editing,
-                "dark": theme().dark, "colors": theme().colors}
+                "dark": theme().dark, "colors": theme().colors, "listen": self.listen}
         self._run(f"render({json.dumps(data)})")
 
     def update_quiz(self, message_id: int, index: int, quiz: dict) -> None:

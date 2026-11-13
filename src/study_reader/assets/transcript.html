@@ -29,6 +29,7 @@
   .msg.user { background:var(--user); border-radius:12px 12px 4px 12px; padding:10px 14px; margin-left:10%; }
   .msg.error { color:var(--error); border:1px solid var(--error); border-radius:10px; padding:8px 12px; font-size:13px; }
   .msg.assistant { padding:0 2px; }
+  .msg .stopped { color:var(--muted); font-size:12px; font-style:italic; margin-top:6px; }
   .msg p { margin:0.5em 0; }
   .msg > :first-child, .body > :first-child { margin-top:0; }
   .msg > :last-child, .body > :last-child { margin-bottom:0; }
@@ -195,6 +196,7 @@ window.addEventListener("resize", () => {
 // the message's `quizzes`; answers go back through the web channel and come back graded.
 // Questions are drawn by quiz.js. Each quiz's questions are also review cards (srs.py).
 const QUIZ_LANG = /^quiz\b/;
+let LISTEN = true;  // offer Listen on replies (not where read aloud's controls aren't shown)
 let MSG_QUIZZES = {};  // message id -> its quizzes, for the current render
 let CURRENT_MSG = null;  // message being rendered, which its quiz fences resolve against
 const QUIZ_DRAFTS = {};  // "msg:quiz:question" -> typed answer not yet submitted, kept across renders
@@ -340,9 +342,9 @@ function actionsHtml(m, isLast, idle) {
   if (m.role === "user")
     return `<div class="actions user"><a href="edit://message/${m.id}" title="Edit this message and ask again">${EDIT_ICON}Edit</a></div>`;
   // A quiz on a reply that isn't itself a quiz.
-  let quiz = m.role === "assistant" && !(m.quizzes || []).length
+  let quiz = m.role === "assistant" && !(m.quizzes || []).length && m.text.trim()
     ? `<a href="quiz://message/${m.id}" title="Draft a quiz request on this reply, to add instructions and send; the questions join your review deck">${QUIZ_ICON}Quiz me</a>` : "";
-  if (m.role === "assistant")
+  if (m.role === "assistant" && LISTEN && m.text.trim())
     quiz += `<a href="speak://message/${m.id}" title="Read this reply aloud">${SPEAK_ICON}Listen</a>`;
   if (isLast) {
     const label = m.role === "error" ? "Retry" : "Regenerate";
@@ -356,7 +358,8 @@ function messageHtml(m, editing = false) {
     return `<div class="msg user${editing ? " editing" : ""}">${(m.snippets || []).map(snippetHtml).join("")}<div class="body">${renderMarkdown(m.text)}</div></div>`;
   if (m.role === "error") return `<div class="msg error">${esc(m.text)}</div>`;
   CURRENT_MSG = m.id;
-  try { return `<div class="msg assistant" data-id="${m.id}">${renderMarkdown(m.text)}</div>`; }
+  const stopped = m.stopped ? `<div class="stopped">Stopped${m.text.trim() ? "" : " before any reply arrived"}</div>` : "";
+  try { return `<div class="msg assistant" data-id="${m.id}">${renderMarkdown(m.text)}${stopped}</div>`; }
   finally { CURRENT_MSG = null; }
 }
 
@@ -368,6 +371,7 @@ function render(data) {
   THEME = { dark: !!data.dark, colors: data.colors || {} };
   VIZ = [];
   LIVE = false;
+  LISTEN = data.listen !== false;
   MSG_QUIZZES = Object.fromEntries(data.messages.map(m => [m.id, m.quizzes || []]));
   for (const [k, v] of Object.entries(data.colors || {})) root.style.setProperty(`--${k.replace(/_/g, "-")}`, v);
   const log = document.getElementById("log");

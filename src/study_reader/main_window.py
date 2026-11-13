@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 
 from . import gamify, quiz, srs, variants
 from .calculator import CalculatorPanel
-from .chat_panel import MODELS, ChatPanel
+from .chat_panel import MODELS, ChatHub, ChatPanel, drop_throwaway_chats
 from .chat_service import ChatWorker
 from .db import Database, data_dir
 from .deck_maker_dialog import DeckMaker
@@ -97,12 +97,23 @@ class MainWindow(QMainWindow):
         self.review_calc = CalculatorPanel(self.db, shared=True, closable=True)
         self.review_calc.closeRequested.connect(lambda: self.review_calc_action.trigger())
         self.review.cardShown.connect(self._review_card_book)
+        # Its chats (F10 there), about the card under review: those of its book, or of cards with
+        # no book. They take turns with the calculator beside the cards, like the reader's panels.
+        drop_throwaway_chats(self.db, self.worker)  # left by a run that crashed
+        self.chat_hub = ChatHub()  # the reader's and the Review page's chat panels share replies on the way
+        self.review_chat = ChatPanel(self.db, self.worker, self.variants, hub=self.chat_hub, review=True)
+        # A long book's nearby pages, sent instead of all of it, are the card's.
+        self.review_chat.current_page = lambda: (self.review_chat.card or {}).get("page") or 0
+        self.review.cardChanged.connect(self._review_chat_card)
+        self.review_right = QStackedWidget()
+        self.review_right.addWidget(self.review_chat)
+        self.review_right.addWidget(self.review_calc)
         self.review_page = QSplitter()
         self.review_page.setChildrenCollapsible(False)
         self.review_page.addWidget(self.review)
-        self.review_page.addWidget(self.review_calc)
+        self.review_page.addWidget(self.review_right)
         self.review_page.setStretchFactor(0, 1)
-        self.review_page.setSizes([1000, 420])
+        self.review_page.setSizes([1000, 460])
         self.cards_page = _Page()  # holds the browser once made
         self.stats_page = _Page()  # holds the statistics once made
         self.center = QStackedWidget()
@@ -113,7 +124,7 @@ class MainWindow(QMainWindow):
         }
         for w in self.pages.values():
             self.center.addWidget(w)
-        self.chat = ChatPanel(self.db, self.worker, self.variants)
+        self.chat = ChatPanel(self.db, self.worker, self.variants, hub=self.chat_hub)
         self.chat.current_page = self.reader.current_page
         self.calc = CalculatorPanel(self.db)
         self.notes = NotesPanel(self.db)
@@ -131,11 +142,14 @@ class MainWindow(QMainWindow):
         split.setSizes([240, 800, 460])
 
         self._build_actions()
-        self.review_calc.setVisible(self.review_calc_action.isChecked())
-        # The Review page's Calculator button, lit while its calculator is open.
+        # The Review page's Calculator and Chat buttons, lit while theirs is open.
         self.review.set_calculator(self.review_calc_action.isChecked())
+        self.review.set_chat_panel(self.review_chat_action.isChecked())
         self.review_calc_action.toggled.connect(self.review.set_calculator)
+        self.review_chat_action.toggled.connect(self.review.set_chat_panel)
         self.review.calculatorRequested.connect(self.review_calc_action.trigger)
+        self.review.chatPanelRequested.connect(self.review_chat_action.trigger)
+        self._sync_review_right()
         self.nav = NavRail(self._build_settings_menu())
         self.nav.pageRequested.connect(self.show_page)
         central = QWidget()
@@ -187,6 +201,11 @@ class MainWindow(QMainWindow):
         self.review.countsChanged.connect(self._on_cards_changed)
         self.review.sourceRequested.connect(self._book_page)
         self.review.chatRequested.connect(self._review_chat)
+        self.review_chat.cardsChanged.connect(self._on_cards_changed)
+        self.review_chat.highlightsChanged.connect(self._refresh_highlights)
+        self.review_chat.pageRequested.connect(
+            lambda page: self.review_chat.book_id is not None and self._book_page(self.review_chat.book_id, page))
+        self.review_chat.jumpRequested.connect(self._review_chat_jump)
         self.review.editRequested.connect(lambda card_id: self.show_browser().show_card(card_id))
         # Make with Claude: decks Claude writes from a description, and existing cards it improves.
         self.deck_maker = DeckMaker(self.db, self.worker, self)
@@ -340,9 +359,16 @@ class MainWindow(QMainWindow):
         bar.addAction(self.notes_action)
         self.calc_action = action("Calculator", "F11", lambda on: self._toggle_right("calc", on), "calculator", checkable=True)
         bar.addAction(self.calc_action)
-        # The Review page's calculator; F11 is this or the book's, whichever screen is up.
-        self.review_calc_action = action("Calculator", "F11", self._toggle_review_calc, "calculator", checkable=True)
-        self.review_calc_action.setChecked(self.db.get_setting("review_calc") == "1")
+        # The Review page's chat panel and calculator; F10 and F11 are these or the book's, whichever screen is up.
+        self.review_chat_action = action("Chat", "F10", lambda on: self._toggle_review_panel("chat", on), "message",
+                                         checkable=True)
+        self.review_calc_action = action("Calculator", "F11", lambda on: self._toggle_review_panel("calc", on),
+                                         "calculator", checkable=True)
+        shown = self.db.get_setting("review_panel", None)
+        if shown is None:  # from before the chat panel: just the calculator's
+            shown = "calc" if self.db.get_setting("review_calc") == "1" else ""
+        self.review_chat_action.setChecked(shown == "chat")
+        self.review_calc_action.setChecked(shown == "calc")
         # The right-hand slot's panels, by the names books.right_panel stores; one at most is shown.
         self.right_panels = {
             "chat": (self.chat_action, self.chat),
@@ -452,14 +478,40 @@ class MainWindow(QMainWindow):
         if on and name == "calc" and self.right.isVisible():
             self.calc.focus_input()
 
-    def _toggle_review_calc(self, on: bool) -> None:
-        """F11 on the Review page: the calculator beside the cards (remembered)."""
-        self.db.set_setting("review_calc", "1" if on else "0")
-        self.review_calc.setVisible(on)
+    def _toggle_review_panel(self, name: str, on: bool) -> None:
+        """F10 / F11 on the Review page: the chat panel or the calculator beside the cards, one at a
+        time (remembered)."""
+        other = self.review_calc_action if name == "chat" else self.review_chat_action
         if on:
+            other.setChecked(False)
+        self.db.set_setting("review_panel", name if on else "")
+        self._sync_review_right()
+        if not on:
+            self.review.focus()
+        elif name == "calc":
             self.review_calc.focus_input()
         else:
-            self.review.focus()
+            self.review_chat.input.setFocus()
+
+    def _sync_review_right(self) -> None:
+        chat, calc = self.review_chat_action.isChecked(), self.review_calc_action.isChecked()
+        if chat or calc:
+            self.review_right.setCurrentWidget(self.review_chat if chat else self.review_calc)
+        self.review_right.setVisible(chat or calc)
+        if chat:
+            self._review_chat_card()
+
+    def _review_chat_card(self) -> None:
+        """A card was drawn on the Review page (or the overview): the chat panel follows it while open."""
+        if self.review_chat_action.isChecked():
+            self.review_chat.set_card(self.review.chat_card())
+
+    def _review_chat_jump(self, page: int, rects: list) -> None:
+        """A passage in one of the Review page's chats: shown in its book."""
+        book_id = self.review_chat.book_id
+        if book_id is not None and (book_id == self.book_id or self._open_book_id(book_id)):
+            self.show_page("book")
+            self.reader.flash(page, rects)
 
     def _review_card_book(self, book_id: int | None) -> None:
         """A card came up on the Review page: its book's calculator history (or the shared one)."""
@@ -515,6 +567,7 @@ class MainWindow(QMainWindow):
         self.nav.set_current(name)
         self._set_book_ui(name == "book")
         self.review_calc_action.setEnabled(name == "review")
+        self.review_chat_action.setEnabled(name == "review")
         # The browser's own Ctrl+Shift+O (Open in book) wins while it is on screen.
         self.web_action.setEnabled(name != "cards")
         if name == "book":
@@ -886,11 +939,11 @@ class MainWindow(QMainWindow):
             if c else "Review (F8)"
         )
 
-    def _review_chat(self, book_id: int, chat_id: int) -> None:
-        if book_id != self.book_id and not self._open_book_id(book_id):
-            return
-        self.show_page("book")
-        self._show_chat(lambda: self.chat.open_chat(chat_id))
+    def _review_chat(self, chat_id: int) -> None:
+        """A card's Open chat: the quiz chat it came from, in the chat panel beside it."""
+        if not self.review_chat_action.isChecked():
+            self.review_chat_action.trigger()
+        self.review_chat.show_chat(chat_id)
 
     def _open_book_id(self, book_id: int) -> bool:
         book = self.db.book(book_id)
@@ -1119,6 +1172,8 @@ class MainWindow(QMainWindow):
         if self.browser is not None:
             self.browser.save_note()
         self.phone_sync.sync()  # what was reviewed here, for the phone
+        for panel in (self.chat, self.review_chat):
+            panel.close_throwaway()
         self.worker.shutdown()
         super().closeEvent(event)
 

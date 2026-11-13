@@ -30,7 +30,9 @@ class BookRef:
 @dataclass
 class Job:
     chat_id: int
-    book: BookRef | None  # None: not about a book (a review card from none), asked in a fresh session
+    # None: not about a book (a chat about a review card from none, or a card's next version):
+    # a session of its own with no book in it.
+    book: BookRef | None
     chat_session_id: str | None
     question: str
     snippets: list[cc.Snippet] = field(default_factory=list)
@@ -93,8 +95,9 @@ class ChatService:
         """Drop the cached base session, e.g. after the book's file was replaced."""
         self._base.pop(book_id, None)
 
-    def cwd(self, book_id: int) -> Path:
-        return self.sessions_dir / f"book-{book_id}"
+    def cwd(self, book_id: int | None) -> Path:
+        """Where a book's sessions are (None: bookless ones)."""
+        return self.sessions_dir / (f"book-{book_id}" if book_id is not None else "cards")
 
     async def ensure_base(self, job: Job) -> tuple[str | None, str]:
         """Return (base session id, mode), priming the book session if needed."""
@@ -205,15 +208,16 @@ class ChatService:
             task.cancel()
 
     async def _turn(self, job: Job, chat_session_id: str | None, on_delta) -> cc.TurnResult:
-        if job.book is None:
-            blocks = cc.build_blocks(job.question, job.snippets, job.context)
-            return await cc.run_turn(blocks, cwd=self.sessions_dir / "cards", model=job.model, on_delta=on_delta)
-        cwd = self.cwd(job.book.id)
+        cwd = self.cwd(job.book.id if job.book else None)
         extra: list[str] = []
         resume_at = None
         if cc.session_exists(chat_session_id, cwd):
             resume, resume_at = chat_session_id, job.resume_at
             fork = bool(resume_at) or job.detached
+        elif job.book is None:  # nothing to fork from: a new session, with the chat so far replayed
+            resume, fork = None, False
+            if job.history:
+                extra.append(_replay(job.history))
         else:
             base, mode = await self.ensure_base(job)
             resume, fork = base, bool(base)
@@ -252,6 +256,7 @@ class ChatWorker(QObject):
     def __init__(self, sessions_dir: str | Path, parent: QObject | None = None):
         super().__init__(parent)
         self.service = ChatService(self._emit, sessions_dir)
+        self._asks: dict = {}  # chat id -> the concurrent future of its reply on the way
         self.loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self.loop.run_forever, daemon=True, name="claude-worker")
         self._thread.start()
@@ -260,7 +265,31 @@ class ChatWorker(QObject):
         getattr(self, name).emit(*args)
 
     def submit(self, job: Job) -> None:
-        asyncio.run_coroutine_threadsafe(self.service.ask(job), self.loop)
+        future = asyncio.run_coroutine_threadsafe(self.service.ask(job), self.loop)
+        self._asks[job.chat_id] = future
+        future.add_done_callback(lambda f, c=job.chat_id: self._asks.get(c) is f and self._asks.pop(c, None))
+
+    def stop(self, chat_id: int) -> None:
+        """Stop the reply on its way to a chat; it reports nothing more (no done or failed)."""
+        future = self._asks.pop(chat_id, None)
+        if future is not None:
+            future.cancel()
+
+    def forget_sessions(self, book_id: int | None, session_ids: list[str], wait: bool = True) -> None:
+        """Delete Claude sessions (a throwaway chat's), after any reply still running in them is
+        stopped (wait), or right away."""
+        cwd = self.service.cwd(book_id)
+        if not wait:
+            for sid in session_ids:
+                cc.forget_session(sid, cwd)
+            return
+
+        async def forget() -> None:
+            await asyncio.sleep(0.5)  # let a stopped reply's CLI exit before its session goes
+            for sid in session_ids:
+                await asyncio.to_thread(cc.forget_session, sid, cwd)
+
+        asyncio.run_coroutine_threadsafe(forget(), self.loop)
 
     def forget_base(self, book_id: int) -> None:
         self.loop.call_soon_threadsafe(self.service.forget_base, book_id)

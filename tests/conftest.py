@@ -79,6 +79,7 @@ def chat_panel(tmp_path, monkeypatch):
             super().__init__()
             self.jobs, self.gradings, self.titles = [], [], []
             self.variants = []
+            self.stopped, self.forgotten = [], []
 
         def submit(self, job):
             self.jobs.append(job)
@@ -91,6 +92,12 @@ def chat_panel(tmp_path, monkeypatch):
 
         def submit_title(self, chat_id, question, passage, reply):
             self.titles.append((chat_id, question, passage, reply))
+
+        def stop(self, chat_id):
+            self.stopped.append(chat_id)
+
+        def forget_sessions(self, book_id, session_ids, wait=True):
+            self.forgotten.append((book_id, list(session_ids)))
 
     QApplication.instance() or QApplication([])
     db = Database(tmp_path / "t.db")

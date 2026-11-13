@@ -39,7 +39,8 @@
   .hero .keys { text-align:left; }
   .empty svg { display:block; margin:30px auto 12px; width:36px; height:36px; stroke:var(--faint); fill:none;
                stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
-  .bar { display:flex; align-items:center; gap:4px; font-size:13px; color:var(--muted); margin-bottom:8px; }
+  .bar { display:flex; flex-wrap:wrap; align-items:center; gap:2px 4px; font-size:13px; color:var(--muted); margin-bottom:8px; }
+  .bar a, .bar .count { white-space:nowrap; }
   .bar .grow { flex:1; }
   .bar a { color:var(--muted); text-decoration:none; padding:2px 8px; border-radius:6px; }
   .bar a:hover { color:var(--fg); background:var(--hover); }
@@ -75,10 +76,10 @@
                text-transform:uppercase; letter-spacing:0.04em; }
   .deck-head .name { flex:1; } .deck-head .n { width:44px; text-align:right; }
   .links { display:flex; gap:6px; justify-content:center; }
-  [data-act="calc"] { display:inline-flex; align-items:center; gap:5px; }
-  [data-act="calc"] svg { width:14px; height:14px; flex:none; stroke:currentColor; fill:none; stroke-width:2;
-                          stroke-linecap:round; stroke-linejoin:round; }
-  [data-act="calc"].on { color:var(--accent); }
+  [data-act="calc"], [data-act="chatpanel"] { display:inline-flex; align-items:center; gap:5px; }
+  [data-act="calc"] svg, [data-act="chatpanel"] svg { width:14px; height:14px; flex:none; stroke:currentColor; fill:none;
+                          stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+  [data-act="calc"].on, [data-act="chatpanel"].on { color:var(--accent); }
   .ach-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(170px, 1fr)); gap:4px; margin-top:8px; }
   .ach { display:flex; gap:8px; align-items:center; padding:4px 6px; border-radius:7px; font-size:12.5px; line-height:1.3; }
   .ach .i { font-size:20px; flex:none; }
@@ -173,6 +174,14 @@ function setCalc(on) {
   if (LAST) LAST.calc = on;
   if (CARD) CARD.calc = on;
   document.querySelectorAll('[data-act="calc"]').forEach(el => el.classList.toggle("on", on));
+}
+// The desktop's Chat button (theme.py's "message" icon), and setChatPanel to show it open or closed.
+const CHAT_ICON = `<svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
+const CHAT_TITLE = "Show or hide the chat about this card (F10)";
+function setChatPanel(on) {
+  if (LAST) LAST.chat_panel = on;
+  if (CARD) CARD.chat_panel = on;
+  document.querySelectorAll('[data-act="chatpanel"]').forEach(el => el.classList.toggle("on", on));
 }
 let LAST = null;  // the overview last shown, to redraw when the picker's tab changes
 let PICK = null;  // the picker's tab on the Review page: "decks" or "books" (null: by what is picked)
@@ -309,7 +318,9 @@ function headerHtml(o) {
   const crumbs = o.title ? `<a href="#" data-act="deck" data-deck="0">← Every deck and book</a>` : "Every deck and book";
   // The desktop's Calculator button comes with o.calc (whether it is open), which the app never sends.
   const calc = o.calc == null ? "" : `<a class="btn ghost calc${o.calc ? " on" : ""}" href="#" data-act="calc" title="${CALC_TITLE}">${CALC_ICON}Calculator</a>`;
-  return `<header><div class="head-row"><h1>${o.title ? esc(o.title) : "Review"}</h1>${calc}</div><div class="crumbs">${crumbs}</div></header>`;
+  // Likewise the Chat button with o.chat_panel.
+  const chat = o.chat_panel == null ? "" : `<a class="btn ghost${o.chat_panel ? " on" : ""}" href="#" data-act="chatpanel" title="${CHAT_TITLE}">${CHAT_ICON}Chat</a>`;
+  return `<header><div class="head-row"><h1>${o.title ? esc(o.title) : "Review"}</h1>${chat}${calc}</div><div class="crumbs">${crumbs}</div></header>`;
 }
 
 function showOverview(o) {
@@ -451,10 +462,12 @@ function showCard(c) {
     ["delete", "Delete", "Delete this card and its history"],
   ];
   if (!c.actions && c.calc != null) actions.unshift(["calc", "Calculator", CALC_TITLE]);
+  if (!c.actions && c.chat_panel != null) actions.unshift(["chatpanel", "Chat", CHAT_TITLE]);
+  const ICONS = { calc: [CALC_ICON, c.calc], chatpanel: [CHAT_ICON, c.chat_panel] };
   let html = `<div class="bar"><a href="#" data-act="stop" title="Back to the overview">← Overview</a><span class="grow"></span>`
     + `<span class="count"><span class="due">${c.remaining.due}</span> due · <span class="new">${c.remaining.new}</span> new</span>`
     + actions.map(([act, label, title]) => `<a href="#" data-act="${act}" title="${esc(title)}"`
-      + `${act === "calc" ? ` class="calc${c.calc ? " on" : ""}">${CALC_ICON}` : ">"}${esc(label)}</a>`).join("") + `</div>`;
+      + `${ICONS[act] ? ` class="${act === "calc" ? "calc" : ""}${ICONS[act][1] ? " on" : ""}">${ICONS[act][0]}` : ">"}${esc(label)}</a>`).join("") + `</div>`;
   if (FLAGS_OPEN) html += `<div class="flags">${[1, 2, 3, 4, 5, 6, 7].map(n => `<button data-act="setflag" data-k="${n}"`
     + ` class="${c.flag === n ? "on" : ""}" style="background:${FLAG_COLORS[n]}" title="${FLAG_NAMES[n]}"></button>`).join("")}`
     + `<button class="none" data-act="setflag" data-k="0" title="No flag">✕</button></div>`;
@@ -580,6 +593,7 @@ document.addEventListener("click", ev => {
     else pickRow(target, { toggle: ev.ctrlKey || ev.metaKey, range: ev.shiftKey });
   }
   else if (act === "calc") bridge.open("calc");
+  else if (act === "chatpanel") bridge.open("chat");
   else if (act === "make") bridge.open("make");
   else if (act === "open") bridge.open(target.dataset.what);
   else if (!CARD) return;

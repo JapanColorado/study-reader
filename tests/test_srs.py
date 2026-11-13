@@ -276,7 +276,7 @@ def test_chat_quizzes_feed_the_deck(chat_panel):
     assert panel._quiz_view(quiz.quizzes(db.message(reply)["text"])[0], 0, [], reply)["review"] == "off"
 
     # A quiz on a reply is asked for in the same chat.
-    worker.done.emit(chat, "s1", QUIZ, "u1")
+    db.add_message(chat, "assistant", QUIZ)  # a later reply
     panel.quiz_on_reply(reply)
     panel.send()
     assert worker.jobs[-1].question.startswith("Quiz me on your earlier reply that begins “Here's a quiz.")
@@ -474,11 +474,11 @@ def test_main_window_review_of_the_open_book(pdf_path, tmp_path, monkeypatch):
     assert win.page() == "book" and win.reader.current_page() == db.card(win.review.card_id)["page"]
     assert db.book(book_id)["right_panel"] == "chat"  # the right-hand panel is left as it was
 
-    win._review_chat(book_id, chat)
-    assert win.center.currentWidget() is win.book_view and win.chat.chat_id == chat
-    assert win.toolbar.isVisible() and win.right.isVisible()
-
     win.show_page("review")
+    win._review_chat(chat)  # a card's Open chat: in the chat panel beside the cards
+    assert win.page() == "review" and win.review_chat.isVisible() and win.review_chat.chat_id == chat
+    assert win.review_chat.book_id == book_id and win.chat.chat_id is None
+
     win.review.choose_deck(None)
     win.library.reviewBookRequested.emit(book_id)  # the Library's Review button does the same
     assert win.page() == "review" and win.review.picks == [{"book": book_id, "section": None}]
@@ -558,7 +558,7 @@ def test_calculator_beside_review(pdf_path, tmp_path, monkeypatch):
     app.processEvents()
     QTest.keyClick(win, Qt.Key.Key_F11)
     assert win.review_calc.isVisible() and win.calc_action.isChecked()  # the book's is left alone
-    assert db.get_setting("review_calc") == "1"
+    assert db.get_setting("review_panel") == "calc"
     assert win.review_calc.book_id is None  # before any card: the shared history
 
     win.review.choose_deck(None)
@@ -577,11 +577,11 @@ def test_calculator_beside_review(pdf_path, tmp_path, monkeypatch):
 
     win.show_page("book")
     QTest.keyClick(win, Qt.Key.Key_F11)  # in the book, F11 is the book's calculator
-    assert not win.calc_action.isChecked() and db.get_setting("review_calc") == "1"
+    assert not win.calc_action.isChecked() and db.get_setting("review_panel") == "calc"
     win.show_page("review")
     assert win.review_calc.isVisible()
     win.review_calc.closeRequested.emit()
-    assert not win.review_calc.isVisible() and db.get_setting("review_calc") == "0"
+    assert not win.review_calc.isVisible() and db.get_setting("review_panel") == ""
 
     # The Review page's Calculator button toggles its calculator and shows whether it's open.
     shown = []

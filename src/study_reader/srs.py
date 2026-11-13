@@ -109,8 +109,10 @@ def scheduler(db: Database | None = None) -> Scheduler:
 
 
 # -- cards ---------------------------------------------------------------------------------
-def add_quiz_cards(db: Database, book_id: int, message_id: int, text: str, now: float | None = None) -> list[int]:
-    """Cards for every question of the quizzes in a reply (those it doesn't have yet), tagged
+def add_quiz_cards(db: Database, book_id: int | None, message_id: int, text: str, now: float | None = None,
+                   deck_id: int | None = None) -> list[int]:
+    """Cards for every question of the quizzes in a reply (those it doesn't have yet), in deck_id
+    (else the book's deck), tagged
     with the tags Claude gives and the section of the book they draw on: the one Claude names
     (for exercises at a chapter's end), else that of the page Claude gives, else the section
     holding all the pages the quiz was asked about.
@@ -141,7 +143,8 @@ def add_quiz_cards(db: Database, book_id: int, message_id: int, text: str, now: 
                 db.update_card_note(card["note_id"], fields, [*note["tags"].split(), *tags], kind, now)
                 added.append(card["id"])
                 continue
-            card_id = db.add_card(book_id, message_id, qi, i, q["title"], json.dumps(question), p, now, tags=tags)
+            card_id = db.add_card(book_id, message_id, qi, i, q["title"], json.dumps(question), p, now, tags=tags,
+                                  deck_id=deck_id)
             if card_id is not None:
                 added.append(card_id)
         if old:

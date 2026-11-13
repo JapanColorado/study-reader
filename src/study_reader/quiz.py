@@ -370,3 +370,66 @@ def answers_context(messages: list[dict], answers: dict[int, list[dict]]) -> str
     if not sections:
         return ""
     return "My answers to your quizzes in this chat so far:\n<quiz_answers>\n" + "\n\n".join(sections) + "\n</quiz_answers>"
+
+
+# -- review cards and stopped replies --------------------------------------------------
+def card_context(q: dict, where: str, answer: dict | None) -> str:
+    """The review card on display beside a question asked on the Review page. q: the question as
+    review shows it (cardmodel.card_data, or its new version); where: what it is from (a quiz's
+    title, a deck); answer: what review holds for it once answered or shown, else None, and then
+    Claude is asked not to give it away."""
+    kind = q.get("type", "")
+    label = {"cloze": "cloze deletion", "occlusion": "image occlusion", "truefalse": "true/false",
+             "choice": "multiple-choice"}.get(kind, kind)
+    lines = [f"Card ({label}){f', from {where}' if where else ''}:"]
+    prompt = str(q.get("question") or "")
+    if kind == "occlusion":
+        lines.append(f"An image with labels hidden (shape {q.get('active')} is asked)"
+                     + (f", headed: {prompt}" if prompt.strip() else "") + ".")
+    else:
+        lines.append(prompt)
+    choices = q.get("choices", []) if kind == "choice" else []
+    lines += [f"- {c}" for c in choices]  # unlettered: review shows them in a new order each time
+    if answer is None:
+        lines.append(
+            "\nI haven't answered it yet. Don't give the answer away: help me get there myself (a hint, "
+            "a related idea, a question back) unless I ask you outright for the answer."
+        )
+        return "The review card I'm looking at:\n<review_card>\n" + "\n".join(lines) + "\n</review_card>"
+    if kind == "choice":
+        i = q.get("answer")
+        right = choices[i] if isinstance(i, int) and 0 <= i < len(choices) else "?"
+    elif kind == "truefalse":
+        right = "true" if q.get("answer") else "false"
+    elif kind == "numeric":
+        right = f"{q.get('answer')}{(' ' + q['unit']) if q.get('unit') else ''}"
+    elif kind == "occlusion":
+        right = "(shown on the image)"
+    else:
+        right = str(q.get("answer") or "")
+    lines.append(f"\nAnswer: {right}")
+    for key, name in (("rubric", "Rubric"), ("explanation", "Explanation")):
+        if str(q.get(key) or "").strip():
+            lines.append(f"{name}: {q[key]}")
+    response = answer.get("response") or {}
+    mine = ""
+    if kind == "choice" and isinstance(response.get("choice"), int) and 0 <= response["choice"] < len(choices):
+        mine = f"chose: {choices[response['choice']]}"
+    elif kind in ("truefalse", "numeric") and response:
+        mine = describe_response(q, response)
+    elif str(response.get("text") or "").strip():
+        mine = "wrote:\n<answer>\n" + str(response["text"]) + "\n</answer>"
+    if mine:
+        verdict = f" ({answer['verdict']})" if answer.get("verdict") else ""
+        lines.append(f"\nI {mine}{verdict}")
+    else:
+        lines.append("\nI've seen the answer.")
+    return "The review card I'm looking at:\n<review_card>\n" + "\n".join(lines) + "\n</review_card>"
+
+
+def stopped_context(question: str, reply: str) -> str:
+    """For the question after a reply the user stopped: what they asked and how much of the reply
+    they saw (the session may hold neither)."""
+    seen = (f"I saw only this much of it:\n<stopped_reply>\n{reply}\n</stopped_reply>" if reply.strip()
+            else "I stopped it before any of it arrived.")
+    return f"I stopped your reply to my previous message partway. That message was:\n<message>\n{question}\n</message>\n{seen}"

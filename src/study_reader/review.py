@@ -120,6 +120,8 @@ class _Bridge(QObject):
     def open(self, what: str) -> None:
         if what == "calc":
             self.panel.calculatorRequested.emit()
+        elif what == "chat":
+            self.panel.chatPanelRequested.emit()
         elif what == "make":
             self.panel.makeRequested.emit(self.panel.picked_deck() or 0)
 
@@ -130,12 +132,14 @@ class ReviewPanel(QWidget):
     variants: asks for the next version of each calculation card reviewed."""
 
     sourceRequested = Signal(int, int)  # book id, 0-based page (-1 if unknown)
-    chatRequested = Signal(int, int)  # book id, chat id
+    chatRequested = Signal(int)  # chat id: a card's Open chat
     countsChanged = Signal()  # a card was reviewed, suspended or deleted
     editRequested = Signal(int)  # card id, to open in the browser
     calculatorRequested = Signal()  # the Calculator button: show or hide the calculator beside it
+    chatPanelRequested = Signal()  # the Chat button: show or hide the chat panel beside it
     makeRequested = Signal(int)  # Make a deck with Claude, under the deck picked (0: none, or several)
     cardShown = Signal(object)  # the book id (None if it has none) of the card on display, each time it is drawn
+    cardChanged = Signal()  # a card was drawn (new, or answered), or the overview: see chat_card
 
     def __init__(self, db: Database, variants: VariantMaker | None = None, parent=None):
         super().__init__(parent)
@@ -157,6 +161,7 @@ class ReviewPanel(QWidget):
         self._summary: dict | None = None  # how the last session went, for the overview
         # Whether the calculator beside the panel is open; None draws no Calculator button (set_calculator).
         self.calculator: bool | None = None
+        self.chat_panel: bool | None = None  # the same for the chat panel (set_chat_panel)
         self.make_link = False  # draw the Make a deck with Claude link (the desktop's; never the phone's)
 
         self.view = QWebEngineView()
@@ -202,6 +207,27 @@ class ReviewPanel(QWidget):
         """Draw a Calculator button showing whether the calculator beside the panel is open."""
         self.calculator = on
         self._js("setCalc", on)
+
+    def set_chat_panel(self, on: bool) -> None:
+        """Draw a Chat button showing whether the chat panel beside the panel is open."""
+        self.chat_panel = on
+        self._js("setChatPanel", on)
+
+    def chat_card(self) -> dict | None:
+        """The card on display, for the chat panel beside it (ChatPanel.set_card): its ids, a title,
+        its 0-based page (or None), whether its answer has been shown, and how it is described to
+        Claude; None for the overview."""
+        card = self.db.card(self.card_id) if self.card_id is not None else None
+        if card is None or self._question is None:
+            return None
+        where, number = card_title(self.db, card)
+        title = f"{where}, question {number + 1}" if number is not None else where
+        message = self.db.message(card["message_id"]) if card["message_id"] is not None else None
+        return {
+            "id": card["id"], "book_id": card["book_id"], "chat_id": message["chat_id"] if message else None,
+            "title": title or "Card", "revealed": self._answer is not None, "page": card["page"],
+            "context": quiz.card_context(self._question, title, self._answer),
+        }
 
     def _apply_theme(self) -> None:
         self.view.page().setBackgroundColor(QColor(theme().colors["window"]))
@@ -277,11 +303,13 @@ class ReviewPanel(QWidget):
             "game": gamify.status(self.db, now) if gamify.enabled(self.db) else None,
             "quick": {"cards": gamify.QUICK_CARDS, "minutes": gamify.QUICK_SECONDS // 60},
             "calc": self.calculator,
+            "chat_panel": self.chat_panel,
             "make": self.make_link,
             **self._decks_overview(now, None if self.picks else c),
             **self._books_overview(now),
         }
         self._js("showOverview", overview)
+        self.cardChanged.emit()
 
     def _scope_title(self) -> str:
         """What is being reviewed, for the overview's heading ('' for everything)."""
@@ -401,7 +429,9 @@ class ReviewPanel(QWidget):
             "session": self._session.progress(left) if self._session else None,
             "rewards": gamify.enabled(self.db),
             "calc": self.calculator,
+            "chat_panel": self.chat_panel,
         })
+        self.cardChanged.emit()
 
     def check(self, card_id: int, response: dict) -> None:
         """An answer, or a request to see the answer (a flashcard's back, or a written answer's model
@@ -449,7 +479,7 @@ class ReviewPanel(QWidget):
         elif action == "chat":
             message = self.db.message(card["message_id"]) if card["message_id"] is not None else None
             if message:
-                self.chatRequested.emit(card["book_id"], message["chat_id"])
+                self.chatRequested.emit(message["chat_id"])
         elif action == "edit":
             self.editRequested.emit(card_id)
         elif action == "skip":

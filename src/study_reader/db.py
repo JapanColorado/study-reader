@@ -32,10 +32,12 @@ CREATE TABLE IF NOT EXISTS books (
 );
 CREATE TABLE IF NOT EXISTS chats (
     id INTEGER PRIMARY KEY,
-    book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    book_id INTEGER REFERENCES books(id) ON DELETE CASCADE, -- NULL: the Review page's, about a card with no book
+    card_id INTEGER REFERENCES cards(id) ON DELETE SET NULL, -- started beside this card on the Review page
     title TEXT NOT NULL,
     session_id TEXT,
     model TEXT NOT NULL DEFAULT '', -- '' = the Claude Code default
+    throwaway INTEGER NOT NULL DEFAULT 0, -- 1: not kept (deleted when left, and at startup)
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -48,6 +50,7 @@ CREATE TABLE IF NOT EXISTS messages (
     session_uuid TEXT,              -- and its last entry, to branch from (regenerate / edit)
     page_from INTEGER,              -- quiz requests on part of the book: its first and last
     page_to INTEGER,                -- 0-based pages
+    stopped INTEGER NOT NULL DEFAULT 0, -- assistant replies the user stopped partway (text is what arrived)
     created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS snippets (
@@ -205,6 +208,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS card_notes_anki ON card_notes (anki_id) WHERE 
 CREATE UNIQUE INDEX IF NOT EXISTS cards_anki ON cards (anki_id) WHERE anki_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS draft_items_draft ON draft_items (draft_id, number);
 CREATE INDEX IF NOT EXISTS card_rewrites_card ON card_rewrites (card_id);
+CREATE INDEX IF NOT EXISTS chats_book ON chats (book_id, throwaway);
+CREATE INDEX IF NOT EXISTS chats_card ON chats (card_id);
 """
 
 
@@ -330,6 +335,10 @@ class Database:
         for col in ("page_from", "page_to"):
             if col not in msg_cols:
                 self.conn.execute(f"ALTER TABLE messages ADD COLUMN {col} INTEGER")
+        if "stopped" not in msg_cols:
+            self.conn.execute("ALTER TABLE messages ADD COLUMN stopped INTEGER NOT NULL DEFAULT 0")
+        if "card_id" not in cols:
+            self._migrate_chats()
         calc_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(calculations)")}
         if "latex" not in calc_cols:
             self.conn.execute("ALTER TABLE calculations ADD COLUMN latex TEXT NOT NULL DEFAULT ''")
@@ -421,6 +430,26 @@ class Database:
                 self.conn.execute(f"UPDATE cards SET {', '.join(f'{k}=?' for k in change)} WHERE id=?",
                                   (*change.values(), r["id"]))
 
+    def _migrate_chats(self) -> None:
+        """Chats from before the Review page had its own: book_id becomes optional (cards with no
+        book), and chats gain card_id and throwaway. The table is rebuilt with foreign keys off, or
+        dropping the old one would take every message with it."""
+        self.conn.commit()
+        self.conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            self.conn.execute("DROP TABLE IF EXISTS chats_new")  # left by an earlier attempt that failed
+            new_schema = SCHEMA[SCHEMA.index("CREATE TABLE IF NOT EXISTS chats ("):]
+            new_schema = new_schema[:new_schema.index(");") + 2].replace(
+                "CREATE TABLE IF NOT EXISTS chats (", "CREATE TABLE chats_new (")
+            with self.conn:
+                self.conn.execute(new_schema)
+                self.conn.execute("INSERT INTO chats_new (id, book_id, title, session_id, model, created_at, updated_at) "
+                                  "SELECT id, book_id, title, session_id, model, created_at, updated_at FROM chats")
+                self.conn.execute("DROP TABLE chats")
+                self.conn.execute("ALTER TABLE chats_new RENAME TO chats")
+        finally:
+            self.conn.execute("PRAGMA foreign_keys = ON")
+
     def _migrate_cards_to_notes(self) -> None:
         """Cards from before decks and notes: each becomes a 'quiz' note in its book's deck. The
         table is rebuilt (book_id and the quiz position become optional), so foreign keys are
@@ -501,22 +530,45 @@ class Database:
             self.conn.execute("DELETE FROM books WHERE id=?", (book_id,))
 
     # -- chats ---------------------------------------------------------------
-    def create_chat(self, book_id: int, title: str, model: str = "") -> int:
+    def create_chat(self, book_id: int | None, title: str, model: str = "", card_id: int | None = None,
+                    throwaway: bool = False) -> int:
+        """book_id None: a chat about a review card with no book. card_id: the review card it was
+        started beside. throwaway: not kept (left out of chats(), deleted when left)."""
         now = time.time()
         with self.conn:
             cur = self.conn.execute(
-                "INSERT INTO chats (book_id, title, model, created_at, updated_at) VALUES (?,?,?,?,?)",
-                (book_id, title, model, now, now),
+                "INSERT INTO chats (book_id, card_id, title, model, throwaway, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (book_id, card_id, title, model, int(throwaway), now, now),
             )
         return cur.lastrowid
 
     def chat(self, chat_id: int) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM chats WHERE id=?", (chat_id,)).fetchone()
 
-    def chats(self, book_id: int) -> list[sqlite3.Row]:
+    def chats(self, book_id: int | None) -> list[sqlite3.Row]:
+        """A book's chats (None: those about cards with no book), latest first, throwaway ones left out."""
         return self.conn.execute(
-            "SELECT * FROM chats WHERE book_id=? ORDER BY updated_at DESC", (book_id,)
+            "SELECT * FROM chats WHERE book_id IS ? AND throwaway=0 ORDER BY updated_at DESC", (book_id,)
         ).fetchall()
+
+    def card_chat(self, card_id: int) -> sqlite3.Row | None:
+        """The latest (kept) chat started beside a review card."""
+        return self.conn.execute(
+            "SELECT * FROM chats WHERE card_id=? AND throwaway=0 ORDER BY updated_at DESC LIMIT 1", (card_id,)
+        ).fetchone()
+
+    def throwaway_chats(self) -> list[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM chats WHERE throwaway=1").fetchall()
+
+    def chat_sessions(self, chat_id: int) -> list[str]:
+        """Every Claude session a chat's replies were in (branches fork new ones), and its own."""
+        chat = self.chat(chat_id)
+        ids = [r[0] for r in self.conn.execute(
+            "SELECT DISTINCT session_id FROM messages WHERE chat_id=? AND session_id IS NOT NULL", (chat_id,))]
+        if chat is not None and chat["session_id"]:
+            ids.append(chat["session_id"])
+        return list(dict.fromkeys(ids))
 
     def update_chat(self, chat_id: int, **fields) -> None:
         self._update("chats", chat_id, fields)
@@ -530,16 +582,17 @@ class Database:
     def add_message(
         self, chat_id: int, role: str, text: str, snippets: list[dict] | None = None,
         session_id: str | None = None, session_uuid: str | None = None, pages: tuple[int, int] | None = None,
+        stopped: bool = False,
     ) -> int:
         """snippets: dicts with kind, page, text, image_path, rects. pages: the 0-based first and
-        last pages a quiz request covers."""
+        last pages a quiz request covers. stopped: a reply the user stopped partway."""
         now = time.time()
         first, last = pages or (None, None)
         with self.conn:
             cur = self.conn.execute(
-                "INSERT INTO messages (chat_id, role, text, session_id, session_uuid, page_from, page_to, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (chat_id, role, text, session_id, session_uuid, first, last, now),
+                "INSERT INTO messages (chat_id, role, text, session_id, session_uuid, page_from, page_to, stopped, "
+                "created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (chat_id, role, text, session_id, session_uuid, first, last, int(stopped), now),
             )
             for s in snippets or []:
                 self.conn.execute(
@@ -938,14 +991,16 @@ class Database:
 
     def add_card(
         self, book_id: int, message_id: int | None, quiz: int, question: int, title: str, data: str,
-        page: int | None, now: float, tags=(),
+        page: int | None, now: float, tags=(), deck_id: int | None = None,
     ) -> int | None:
-        """A new card for a quiz question, in the book's deck; None if the question has one already."""
+        """A new card for a quiz question, in deck_id or else the book's deck; None if the question
+        has one already."""
         if message_id is not None and self.card_for(message_id, quiz, question) is not None:
             return None
         kind, fields = cardmodel.card_fields(json.loads(data))
         with self.conn:
-            deck_id = self.book_deck(book_id)
+            if deck_id is None or self.deck(deck_id) is None:
+                deck_id = self.book_deck(book_id)
             note_id = self._insert_note(kind, fields, cardmodel.join_tags(tags), now)
             return self._insert_card(note_id, 0, deck_id, kind, fields, now, book_id=book_id, message_id=message_id,
                                      quiz=quiz, question=question, title=title, page=page)

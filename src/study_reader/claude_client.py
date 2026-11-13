@@ -8,6 +8,7 @@ holds the full text, and every chat forks from it so they all share the same
 from __future__ import annotations
 
 import base64
+import contextlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +20,7 @@ from claude_agent_sdk import (
     ResultMessage,
     StreamEvent,
     TextBlock,
+    delete_session,
     get_session_info,
     query,
 )
@@ -232,6 +234,16 @@ def session_exists(session_id: str | None, cwd: str | Path) -> bool:
         return False
 
 
+def forget_session(session_id: str | None, cwd: str | Path) -> None:
+    """Delete a session's transcript (a throwaway chat's), if it is there."""
+    if not session_id:
+        return
+    try:
+        delete_session(session_id, directory=str(cwd))
+    except Exception:
+        pass
+
+
 def _prefer_subscription_login() -> None:
     """An exported API key would silently take precedence over the claude.ai
     login and bill per token; drop it unless the user opts in."""
@@ -296,19 +308,22 @@ async def run_turn(
     result: ResultMessage | None = None
     last_uuid: str | None = None
     try:
-        async for msg in query(prompt=prompt(), options=_options(cwd, model, resume, fork, resume_at, system_prompt)):
-            if isinstance(msg, StreamEvent):
-                ev = msg.event
-                if ev.get("type") == "content_block_delta" and ev.get("delta", {}).get("type") == "text_delta":
-                    piece = ev["delta"].get("text", "")
-                    streamed.append(piece)
-                    if on_delta and piece:
-                        on_delta(piece)
-            elif isinstance(msg, AssistantMessage):
-                final_text.extend(b.text for b in msg.content if isinstance(b, TextBlock))
-                last_uuid = msg.uuid or last_uuid
-            elif isinstance(msg, ResultMessage):
-                result = msg
+        # aclosing: a stopped reply (the task cancelled) ends the CLI right away, not when collected.
+        stream = query(prompt=prompt(), options=_options(cwd, model, resume, fork, resume_at, system_prompt))
+        async with contextlib.aclosing(stream) as messages:
+            async for msg in messages:
+                if isinstance(msg, StreamEvent):
+                    ev = msg.event
+                    if ev.get("type") == "content_block_delta" and ev.get("delta", {}).get("type") == "text_delta":
+                        piece = ev["delta"].get("text", "")
+                        streamed.append(piece)
+                        if on_delta and piece:
+                            on_delta(piece)
+                elif isinstance(msg, AssistantMessage):
+                    final_text.extend(b.text for b in msg.content if isinstance(b, TextBlock))
+                    last_uuid = msg.uuid or last_uuid
+                elif isinstance(msg, ResultMessage):
+                    result = msg
     except ClaudeError:
         raise
     except Exception as e:  # CLI missing, not logged in, process failure...
