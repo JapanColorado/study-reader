@@ -326,6 +326,21 @@ def test_reviewing_cloze_and_bookless_written_cards(db, chat_panel):
 
 
 # -- the browser ---------------------------------------------------------------------------
+def test_browser_saves_after_a_pause(db, chat_panel):
+    """The save timer firing saves: a single-shot timer is no longer active in its timeout."""
+    from PySide6.QtTest import QTest
+    from study_reader.browser import CardBrowser
+
+    note = db.add_card_note("flashcard", {"front": "Q?", "back": "A"}, db.ensure_deck("Physics"))
+    browser = CardBrowser(db)
+    browser.table.selectRow(0)
+    assert browser.editor.note_id == note
+    browser.editor.fields["back"].setPlainText("changed")
+    QTest.qWait(browser._save_timer.interval() + 200)
+    assert json.loads(db.card_note(note)["fields"])["back"] == "changed"
+    assert browser.editor_status.text().startswith("Saved")
+
+
 def test_browser_search_edit_and_bulk_actions(db, chat_panel, monkeypatch):
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QInputDialog, QMessageBox

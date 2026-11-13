@@ -501,7 +501,7 @@ class CardBrowser(QMainWindow):
         # in yet), by note id: (its updated_at then, editor draft, why not), shown again when
         # the card (or a sibling) is, rather than the stored version.
         self._drafts: dict[int, tuple[float, dict, str]] = {}
-        self._save_timer.timeout.connect(self.save_note)
+        self._save_timer.timeout.connect(self._save_now)
         self.card_line = QLabel()
         self.card_line.setProperty("role", "muted")
         self.card_line.setWordWrap(True)
@@ -936,11 +936,15 @@ class CardBrowser(QMainWindow):
 
     # -- editing -------------------------------------------------------------------------
     def save_note(self) -> None:
-        """Store pending edits to the card in the editor (and its siblings)."""
-        if not self._save_timer.isActive() or self.editor.note_id is None:
-            self._save_timer.stop()
-            return
+        """Store pending edits to the card in the editor (and its siblings), if there are any."""
+        if self._save_timer.isActive():
+            self._save_now()
+
+    def _save_now(self) -> None:
+        # Also the save timer's timeout, by which time a single-shot timer is no longer active.
         self._save_timer.stop()
+        if self.editor.note_id is None:
+            return
         before = {c["ord"] for c in self.db.note_cards(self.editor.note_id)}
         note = self.db.card_note(self.editor.note_id)
         try:
