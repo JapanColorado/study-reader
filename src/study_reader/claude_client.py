@@ -34,7 +34,7 @@ SYSTEM_PROMPT = (
 )
 
 TITLE_PROMPT = (
-    "You name conversations for a list in a study app. Given a reader's first question about "
+    "You name conversations for a list in a study app. Given a reader's first message about "
     "a book (and the passage it is about) plus the start of the reply, write a short title, "
     "3 to 7 words, naming the topic. Plain text in sentence case: no quotes, Markdown, or "
     "final period. Reply with the title only."
@@ -42,7 +42,7 @@ TITLE_PROMPT = (
 TITLE_MODEL = "haiku"
 TITLE_LENGTH = 70
 
-# Sent with every question rather than in SYSTEM_PROMPT: a resumed or forked session
+# Sent with every message rather than in SYSTEM_PROMPT: a resumed or forked session
 # keeps the system prompt it was created with, so edits there never reach books
 # primed (or chats started) before the change.
 READER_INSTRUCTIONS = (
@@ -85,7 +85,7 @@ READER_INSTRUCTIONS = (
     "```quiz Lagrangian mechanics\\n{...}\\n```, holding one JSON object "
     "{\"questions\": [...]}. The reader shows the questions one by one, checks the "
     "answers, keeps score and offers a retake. Each question is an object with:\n"
-    "- \"type\": \"choice\", \"truefalse\", \"numeric\", \"written\" or \"flashcard\";\n"
+    "- \"type\": \"choice\", \"truefalse\", \"calculation\", \"short_answer\" or \"self_check\";\n"
     "- \"question\": Markdown, with $LaTeX$ for math;\n"
     "- \"page\": the book page it draws on (the [[page N]] number), when there is one;\n"
     "- \"section\": only when the page alone would file it under the wrong section, as with "
@@ -97,16 +97,17 @@ READER_INSTRUCTIONS = (
     "user's tags in <existing_tags> when they fit, rather than near-duplicates; don't tag the "
     "book, chapter or section (that is added automatically);\n"
     "- \"answer\", by type: for \"choice\" the 0-based index into \"choices\" (2-5 "
-    "strings); for \"truefalse\" true or false; for \"numeric\" a number or an expression "
+    "strings); for \"truefalse\" true or false; for \"calculation\" a number or an expression "
     "like \"3/8\" or \"sqrt(2)/2\", plus optional \"tolerance\" (absolute; default 1% of the "
-    "answer) and \"unit\" (shown beside the input); for \"written\" a model answer, plus "
-    "\"rubric\" (the key points a full answer must contain); for \"flashcard\" the "
-    "back of the card (Markdown), with \"question\" its front;\n"
-    "- \"varies\", for \"numeric\" and \"written\": true if it poses a calculation or worked "
-    "problem whose given values could be changed to make a fresh version for later review, "
-    "else false.\nYou grade written "
-    "answers in a later turn; the user reveals a flashcard's back and rates their own recall, "
-    "as they do for written answers when they come back in review.\n"
+    "answer) and \"unit\" (shown beside the input); for \"short_answer\" a model answer, plus "
+    "\"rubric\" (the key points a full answer must contain); for \"self_check\" the "
+    "answer the user checks their recall against (Markdown), with \"question\" what they "
+    "try to recall;\n"
+    "- \"varies\", for \"calculation\" and \"short_answer\": true if it poses a calculation or "
+    "worked problem whose given values could be changed to make a fresh version for later "
+    "practice, else false.\nYou grade short answers "
+    "in a later turn; the user reveals a self-check question's answer and rates their own "
+    "recall, as they do for short answers when they come back in practice.\n"
     "Quiz rules: on what the user asked about, with as many questions as it has ideas worth "
     "testing, unless asked for a number: let the amount and density of the material decide, "
     "never a fixed count. Roughly: 1-3 for a sentence, paragraph or short passage, 3-6 for a "
@@ -118,19 +119,19 @@ READER_INSTRUCTIONS = (
     "numbers, names, dates, the setup of a particular example or application) unless they "
     "are the point, and don't ask to recompute the book's worked examples or solved "
     "problems; to practice a method, pose a short fresh case that needs the idea rather "
-    "than arithmetic. Mix types to suit the material: numeric only for a single-number "
+    "than arithmetic. Mix types to suit the material: calculation only for a single-number "
     "answer, choice to tell apart ideas that are easily confused, truefalse for a crisp "
-    "claim people often get wrong, flashcard for a definition, result, step or short "
-    "explanation worth recalling (keep its back short: one idea, or a few key points). Use "
-    "\"written\" only as a last resort, when no other type could fit that specific "
+    "claim people often get wrong, self_check for a definition, result, step or short "
+    "explanation worth recalling (keep its answer short: one idea, or a few key points). Use "
+    "\"short_answer\" only as a last resort, when no other type could fit that specific "
     "question (e.g. a derivation or argument the user must produce in full that no "
-    "number, choice or short flashcard back captures): it is the slowest to review. Make wrong "
+    "number, choice or short self-check answer captures): it is the slowest to practice. Make wrong "
     "choices plausible and vary where the right one sits. It is JSON, so escape quotes and "
     "double every LaTeX backslash (\"$\\\\frac{a}{b}$\"). Put at most one short sentence "
     "before the fence and nothing after it; never give answers outside the JSON. Later "
     "messages may include the user's answers in <quiz_answers>.\n"
-    "Every quiz question also goes into the user's spaced-repetition deck and comes back "
-    "for review on its own, weeks later and outside this chat. So each question must stand "
+    "Every quiz question also goes into the user's practice, where it comes back on its "
+    "own, weeks later and outside this chat. So each question must stand "
     "alone: name the concept, book section or setup it is about instead of saying \"the "
     "passage\", \"above\" or \"this\", and don't rely on other questions.\n"
     "To revise an earlier quiz of this chat (when asked to change, fix, add to or drop "
@@ -138,13 +139,14 @@ READER_INSTRUCTIONS = (
     "adding \"revises\": the earlier quiz's title at the top level of the JSON, and on each "
     "question carried over from it (changed or not) \"revises\": its 1-based number in the "
     "earlier quiz. Questions without it are new; earlier questions left out are dropped. The "
-    "questions carried over keep their review history, so only carry one over when it still "
+    "questions carried over keep their practice history, so only carry one over when it still "
     "tests the same idea.\n"
-    "When the user asks for flashcards (or cards), reply with the same quiz fence, mostly of "
-    "\"flashcard\" questions, as many as the material has ideas worth a card (by the same "
-    "sizing as quizzes) unless asked for a number, each testing one key definition, "
-    "result, step or idea (by the same standard as quizzes: what's worth remembering, not "
-    "incidental detail), with a specific front (not \"Explain X\") and a short back.\n"
+    "When the user asks for flashcards (or cards, or self-check questions), reply with the "
+    "same quiz fence, mostly of \"self_check\" questions, as many as the material has ideas "
+    "worth one (by the same sizing as quizzes) unless asked for a number, each testing one "
+    "key definition, result, step or idea (by the same standard as quizzes: what's worth "
+    "remembering, not incidental detail), with a specific question (not \"Explain X\") and a "
+    "short answer.\n"
     "</reader_instructions>"
 )
 
@@ -164,7 +166,7 @@ def fits_in_context(text: str) -> bool:
 
 @dataclass
 class Snippet:
-    """A piece of the book attached to a question."""
+    """A piece of the book attached to a message."""
 
     kind: str  # "text" | "image"
     page: int  # 0-based
@@ -192,8 +194,8 @@ def image_block(path: Path, media_type: str = "image/png") -> dict:
     return {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}}
 
 
-def build_blocks(question: str, snippets: list[Snippet], extra_context: str = "") -> list[dict]:
-    """Turn a question plus its snippets into Messages-API content blocks."""
+def build_blocks(message: str, snippets: list[Snippet], extra_context: str = "") -> list[dict]:
+    """Turn a message plus its snippets into Messages-API content blocks."""
     blocks: list[dict] = [{"type": "text", "text": READER_INSTRUCTIONS}]
     if extra_context:
         blocks.append({"type": "text", "text": extra_context})
@@ -207,7 +209,7 @@ def build_blocks(question: str, snippets: list[Snippet], extra_context: str = ""
             blocks.append(
                 {"type": "text", "text": f"Selected passage from {where}:\n<passage>\n{s.text}\n</passage>"}
             )
-    blocks.append({"type": "text", "text": question})
+    blocks.append({"type": "text", "text": message})
     return blocks
 
 
@@ -353,13 +355,13 @@ def clean_title(text: str) -> str:
     return line[:TITLE_LENGTH].strip()
 
 
-async def chat_title(question: str, passage: str, reply: str, *, cwd: str | Path) -> str:
+async def chat_title(message: str, passage: str, reply: str, *, cwd: str | Path) -> str:
     """A short title for a chat from its first exchange, written by a small model
     in a fresh session (no book context needed). Empty if nothing usable came back."""
     parts = []
     if passage:
         parts.append(f"<passage>\n{passage[:600]}\n</passage>")
-    parts.append(f"<question>\n{question[:600]}\n</question>")
+    parts.append(f"<message>\n{message[:600]}\n</message>")
     parts.append(f"<reply>\n{reply[:1500]}\n</reply>")
     res = await run_turn(
         [{"type": "text", "text": "\n".join(parts)}], cwd=cwd, model=TITLE_MODEL, system_prompt=TITLE_PROMPT,

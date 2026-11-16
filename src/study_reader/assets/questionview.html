@@ -26,7 +26,7 @@
   .side .q .choice { cursor:default; }
   .side .q .choice:hover { border-color:var(--border); background:var(--raised); }
   .side .q .choice.right { border-color:var(--success); }
-  /* Make with Claude: the draft's cards */
+  /* Make with Claude: the draft's questions */
   .note-from { border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:8px; padding:8px 12px;
                margin-bottom:12px; background:var(--raised); font-size:13px; }
   .note-from .who { font-size:11px; font-weight:650; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
@@ -54,9 +54,9 @@
 </style>
 </head>
 <body>
-<div id="root"><div class="empty">No card selected.</div></div>
+<div id="root"><div class="empty">No question selected.</div></div>
 <script>
-// Read-only card rendering for the card browser's preview, and Make with Claude's draft.
+// Read-only question rendering for the question browser's preview, and Make with Claude's draft.
 let bridge = null;
 if (typeof qt !== "undefined") new QWebChannel(qt.webChannelTransport, channel => { bridge = channel.objects.view || null; });
 
@@ -68,14 +68,15 @@ function setTheme(colors, dark) {
 
 // The answer side of a question, as if it had just been answered right (or revealed).
 function backHtml(q) {
-  if (q.type === "numeric") {
+  q = drawnQuestion(q);
+  if (q.type === "calculation") {
     const unit = q.unit ? ` <span class="unit">${mdq(q, q.unit, true)}</span>` : "";
     let html = `<div class="q-text">${mdq(q, q.question)}</div><div class="expected"><span class="label">Answer</span>${tex(q.answer_latex || String(q.answer))}${unit}</div>`;
     if (q.tolerance !== undefined) html += `<div class="submit-row">± ${esc(String(q.tolerance))}</div>`;
     if (q.explanation) html += `<div class="explain">${mdq(q, q.explanation)}</div>`;
     return `<div class="q answered">${html}</div>`;
   }
-  if (q.type === "written") {
+  if (q.type === "short_answer") {
     let html = `<div class="q-text">${mdq(q, q.question)}</div>`;
     if (q.answer) html += `<div class="model-answer"><span class="label">Model answer</span><div>${mdq(q, q.answer)}</div></div>`;
     if (q.rubric) html += `<div class="model-answer"><span class="label">Rubric</span><div>${mdq(q, q.rubric)}</div></div>`;
@@ -101,35 +102,35 @@ function afterRender(root) {
   for (const el of root.querySelectorAll(".side button, .side textarea, .side math-field, .side input")) el.setAttribute("disabled", "");
 }
 
-// From the app: a card's question (null for none), and which sides to show.
+// From the app: a question's data (null for none), and which sides to show.
 function showPreview(q, which) {
   const root = document.getElementById("root");
-  if (!q) { root.innerHTML = `<div class="empty">No card selected.</div>`; return; }
+  if (!q) { root.innerHTML = `<div class="empty">No question selected.</div>`; return; }
   try { root.innerHTML = sides(q, which); }
-  catch (e) { root.innerHTML = `<div class="empty">Can't show this card: ${esc(String(e))}</div>`; }
+  catch (e) { root.innerHTML = `<div class="empty">Can't show this question: ${esc(String(e))}</div>`; }
   afterRender(root);
 }
 
 const STATUS_LABELS = { pending: "Waiting for Claude…", proposed: "Proposed", kept: "Keep as is", error: "Error" };
-const TYPE_LABELS = { flashcard: "Flashcard", reversed: "Flashcard (both ways)", cloze: "Cloze", occlusion: "Image occlusion",
-                      choice: "Multiple choice", truefalse: "True/false", numeric: "Numeric", written: "Written answer" };
-
-// One proposed card (its questions: a cloze's deletions, a reversed card's two sides), as sides.
-function cardSides(card) {
+// One proposed question group (its questions: a fill-in-the-blank's blanks, a both-ways
+// self-check's two sides), as sides.
+function questionSides(group) {
   let html = "";
-  try { html = sides(card.questions[0]); } catch (e) { html = esc(String(e)); }
-  if (card.questions.length > 1) html += `<div class="more">Makes ${card.questions.length} cards`
-    + `${card.kind === "cloze" ? " (one per deletion)" : card.kind === "reversed" ? " (one each way)" : ""}.</div>`;
+  try { html = sides(group.questions[0]); } catch (e) { html = esc(String(e)); }
+  const kind = kindName(group.kind);
+  if (group.questions.length > 1) html += `<div class="more">Makes ${group.questions.length} questions`
+    + `${kind === "fill_in" ? " (one per blank)" : kind === "both_ways" ? " (one each way)" : ""}.</div>`;
   return html;
 }
 
 // From the app: Make with Claude's draft, {note, items: [{id, number, status, checked, reason,
-// now (an existing card's question, else null), kind (its type), cards: [{kind, questions}]}]}.
+// now (an existing question's data, else null), kind (its type), groups: [{kind, questions}]}]}
+// (groups: the proposed question groups, each with its questions' previews).
 function showDraft(draft) {
   const root = document.getElementById("root");
   let html = draft.note ? `<div class="note-from"><div class="who">Claude</div>${renderMarkdown(draft.note)}</div>` : "";
   if (!draft.items.length) {
-    root.innerHTML = html + `<div class="empty">${draft.busy ? `<span class="spinner"></span>Claude is writing the cards…` : "No cards in the draft."}</div>`;
+    root.innerHTML = html + `<div class="empty">${draft.busy ? `<span class="spinner"></span>Claude is writing the questions…` : "No questions in the draft."}</div>`;
     return;
   }
   html += draft.items.map(c => {
@@ -137,24 +138,24 @@ function showDraft(draft) {
     const status = pending ? `<span class="spinner"></span>${STATUS_LABELS.pending}` : STATUS_LABELS[c.status] || c.status;
     const tickable = c.status === "proposed";
     const off = tickable && !c.checked;
-    const kinds = c.cards.length ? c.cards.map(k => TYPE_LABELS[k.kind] || k.kind).join(" + ")
-      : c.kind ? TYPE_LABELS[c.kind] || c.kind : "";
-    const what = c.now ? (c.cards.length ? `${TYPE_LABELS[c.kind] || c.kind} → ${kinds}` : TYPE_LABELS[c.kind] || c.kind) : kinds;
+    const kinds = c.groups.length ? c.groups.map(k => kindLabel(k.kind)).join(" + ")
+      : c.kind ? kindLabel(c.kind) : "";
+    const what = c.now ? (c.groups.length ? `${kindLabel(c.kind)} → ${kinds}` : kindLabel(c.kind)) : kinds;
     let out = `<div class="pair${off ? " off" : ""}" data-id="${c.id}"><div class="head">`
       + (tickable ? `<label><input type="checkbox" data-tick ${c.checked ? "checked" : ""}><span class="num">#${c.number}</span></label>`
                   : `<span class="num">#${c.number}</span>`)
       + `<span class="kind" title="${esc(what)}">${esc(what)}</span><span class="status ${c.status}">${status}</span></div>`;
     if (c.reason) out += `<div class="reason">${esc(c.reason)}</div>`;
-    const split = c.cards.length > 1;
-    const proposed = c.cards.map((card, k) => split
-      ? `<div class="part"><div class="label">Card ${k + 1} of ${c.cards.length}${c.now ? (k ? " · new" : " · keeps the history") : ""}</div>${cardSides(card)}</div>`
-      : cardSides(card)).join("");
+    const split = c.groups.length > 1;
+    const proposed = c.groups.map((group, k) => split
+      ? `<div class="part"><div class="label">Question ${k + 1} of ${c.groups.length}${c.now ? (k ? " · new" : " · keeps the history") : ""}</div>${questionSides(group)}</div>`
+      : questionSides(group)).join("");
     if (c.now) {
       let before = "";
       try { before = backHtml(c.now); } catch (e) { before = esc(String(e)); }
       const after = proposed || `<div class="empty" style="margin:20px 0">${pending ? "Waiting for Claude…" : c.status === "error" ? "No proposal." : "No change."}</div>`;
       out += `<div class="cols"><div class="col"><h3>Now</h3><div class="side">${before}</div></div>`
-        + `<div class="col"><h3>${split ? `Proposed: split into ${c.cards.length}` : "Proposed"}</h3>${after}</div></div>`;
+        + `<div class="col"><h3>${split ? `Proposed: split into ${c.groups.length}` : "Proposed"}</h3>${after}</div></div>`;
     }
     else if (proposed) out += `<div class="one">${proposed}</div>`;
     return out + `</div>`;

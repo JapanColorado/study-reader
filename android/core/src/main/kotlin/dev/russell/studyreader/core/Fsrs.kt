@@ -290,7 +290,7 @@ class FsrsScheduler(
 
 /**
  * FSRS-6's 21 weights from 21, or from FSRS-5's 19 (extended with w19 = 0 and the old fixed
- * decay w20 = 0.5), as the desktop's srs.fsrs6_parameters. Throws IllegalArgumentException for
+ * decay w20 = 0.5), as the desktop's practice.fsrs6_parameters. Throws IllegalArgumentException for
  * another count or weights out of bounds.
  */
 fun fsrs6Parameters(weights: List<Double>): List<Double> {

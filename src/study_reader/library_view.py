@@ -1,4 +1,4 @@
-"""The Library page: every book and web page, with its cover, reading progress and review cards."""
+"""The Library page: every book and web page, with its cover, reading progress and practice questions."""
 
 from __future__ import annotations
 
@@ -25,8 +25,8 @@ COVER = QSize(60, 82)
 FINISHED_COLLAPSED = "library_finished_collapsed"
 
 
-def review_rect(card: QRectF) -> QRectF:
-    """Where a book's Review button sits on its card."""
+def practice_rect(card: QRectF) -> QRectF:
+    """Where a book's Practice button sits on its card."""
     return QRectF(card.right() - 98, card.top() + 16, 80, 28)
 
 
@@ -35,8 +35,8 @@ def _card_rect(option_rect) -> QRectF:
 
 
 class _BookCard(QStyledItemDelegate):
-    """A book: cover, title, chats, cards and last-opened date, reading progress, and its review
-    counts with a Review button; or a section header."""
+    """A book: cover, title, chats, questions and last-opened date, reading progress, and its practice
+    counts with a Practice button; or a section header."""
 
     def __init__(self, view: LibraryView):
         super().__init__(view.list)
@@ -88,8 +88,8 @@ class _BookCard(QStyledItemDelegate):
             p.drawText(tile, Qt.AlignmentFlag.AlignCenter, b["format"])
 
         x = tile.right() + 18
-        has_review = b["exists"] and b["due"] + b["new"] > 0
-        right = card.right() - (112 if has_review else 18)
+        has_practice = b["exists"] and b["due"] + b["new"] > 0
+        right = card.right() - (112 if has_practice else 18)
         width = right - x
         title = QFont(option.font)
         title.setPointSizeF(title.pointSizeF() * 1.12)
@@ -124,14 +124,14 @@ class _BookCard(QStyledItemDelegate):
             missing = QFontMetrics(meta).elidedText(f"File not found: {b['path']}", Qt.TextElideMode.ElideMiddle, int(width))
             p.drawText(line, Qt.AlignmentFlag.AlignVCenter, missing)
 
-        if has_review:
-            self._paint_review(p, option, card, b, hover)
+        if has_practice:
+            self._paint_practice(p, option, card, b, hover)
         p.restore()
 
-    def _paint_review(self, p: QPainter, option, card: QRectF, b: dict, hover: bool) -> None:
-        """The due and new pills, and the Review button above them."""
+    def _paint_practice(self, p: QPainter, option, card: QRectF, b: dict, hover: bool) -> None:
+        """The due and new pills, and the Practice button above them."""
         c = theme().colors
-        button = review_rect(card)
+        button = practice_rect(card)
         on_button = hover and button.contains(QPointF(self.library.list.viewport().mapFromGlobal(QCursor.pos())))
         p.setPen(QPen(QColor(c["accent"]), 1))
         p.setBrush(QColor(c["accent"] if on_button else c["accent_soft"] if hover else c["raised"]))
@@ -143,7 +143,7 @@ class _BookCard(QStyledItemDelegate):
         f.setWeight(QFont.Weight.DemiBold)
         p.setFont(f)
         p.setPen(QColor(c["accent_fg"] if on_button else c["accent"] if hover else c["fg"]))
-        p.drawText(button, Qt.AlignmentFlag.AlignCenter, "Review")
+        p.drawText(button, Qt.AlignmentFlag.AlignCenter, "Practice")
 
         pill_font = QFont(option.font)
         pill_font.setPointSizeF(pill_font.pointSizeF() * 0.82)
@@ -185,7 +185,7 @@ class LibraryView(QWidget):
     browseRequested = Signal()
     webRequested = Signal()
     refetchRequested = Signal(int)  # a web snapshot to replace with a fresh copy
-    reviewBookRequested = Signal(int)  # review one book's cards
+    practiceBookRequested = Signal(int)  # practice one book's questions
 
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
@@ -272,7 +272,7 @@ class LibraryView(QWidget):
 
     def eventFilter(self, obj, event) -> bool:
         if event.type() == event.Type.MouseMove:
-            self.list.viewport().update()  # the Review button lights up under the pointer
+            self.list.viewport().update()  # the Practice button lights up under the pointer
         return False
 
     # -- covers ----------------------------------------------------------------------------
@@ -322,9 +322,9 @@ class LibraryView(QWidget):
             if expanded:
                 for b in finished:
                     self._add_book(b, counts)
-        cards = sum(c["total"] for c in counts.values())
+        questions = sum(c["total"] for c in counts.values())
         self.count.setText(
-            f"{len(books)} book{'s' * (len(books) != 1)}" + (f" · {cards:,} review cards" if cards else "") if books else ""
+            f"{len(books)} book{'s' * (len(books) != 1)}" + (f" · {questions:,} practice questions" if questions else "") if books else ""
         )
         self.list.setVisible(bool(shown))
         self.empty.setVisible(not shown)
@@ -339,7 +339,7 @@ class LibraryView(QWidget):
         when = f"finished {day(b['finished_at'])}" if b["finished_at"] else f"opened {day(b['opened_at'])}"
         parts = [f"{chats} chat{'s' * (chats != 1)}"]
         if c["total"]:
-            parts.append(f"{c['total']:,} card{'s' * (c['total'] != 1)}")
+            parts.append(f"{c['total']:,} question{'s' * (c['total'] != 1)}")
         item = QListWidgetItem()
         item.setData(Qt.ItemDataRole.UserRole, b["id"])
         ext = os.path.splitext(b["path"])[1].lstrip(".").upper()[:4] or "BOOK"
@@ -349,16 +349,16 @@ class LibraryView(QWidget):
             "last_page": b["last_page"], "page_count": b["page_count"], "progress": dashboard.progress(b),
             "finished": b["finished_at"] is not None,
             "detail": " · ".join(parts + [when]),
-            "due": c["due"], "new": c["new"], "cards": c["total"],
+            "due": c["due"], "new": c["new"], "questions": c["total"],
         })
         item.setToolTip(b["source_url"] or b["path"])
         self.list.addItem(item)
 
-    def _on_review_button(self, item: QListWidgetItem, pos: QPoint) -> bool:
+    def _on_practice_button(self, item: QListWidgetItem, pos: QPoint) -> bool:
         b = item.data(BOOK_ROLE)
         if not b or not b["exists"] or not b["due"] + b["new"]:
             return False
-        return review_rect(_card_rect(self.list.visualItemRect(item))).contains(QPointF(pos))
+        return practice_rect(_card_rect(self.list.visualItemRect(item))).contains(QPointF(pos))
 
     def _activate(self, item: QListWidgetItem) -> None:
         if header := item.data(HEADER_ROLE):
@@ -368,8 +368,8 @@ class LibraryView(QWidget):
         book = self.db.book(item.data(Qt.ItemDataRole.UserRole))
         if not book or not os.path.exists(book["path"]):
             return
-        if self._on_review_button(item, self.list.viewport().mapFromGlobal(QCursor.pos())):
-            self.reviewBookRequested.emit(book["id"])
+        if self._on_practice_button(item, self.list.viewport().mapFromGlobal(QCursor.pos())):
+            self.practiceBookRequested.emit(book["id"])
         else:
             self.openRequested.emit(book["path"])
 
@@ -380,7 +380,7 @@ class LibraryView(QWidget):
         book = self.db.book(item.data(Qt.ItemDataRole.UserRole))
         b = item.data(BOOK_ROLE)
         menu = QMenu(self)
-        review = menu.addAction(icon("cards"), "Review this book's cards") if b["cards"] else None
+        practice = menu.addAction(icon("questions"), "Practice this book's questions") if b["questions"] else None
         finished = book["finished_at"] is not None
         finish = menu.addAction(icon("check-circle"), "Move back to reading" if finished else "Mark as finished")
         refetch = menu.addAction(icon("globe"), "Fetch a fresh copy") if book["source_url"] else None
@@ -395,7 +395,7 @@ class LibraryView(QWidget):
         elif chosen is remove:
             self.db.delete_book(book["id"])
             self.refresh()
-        elif chosen is review:
-            self.reviewBookRequested.emit(book["id"])
+        elif chosen is practice:
+            self.practiceBookRequested.emit(book["id"])
         elif chosen is refetch:
             self.refetchRequested.emit(book["id"])

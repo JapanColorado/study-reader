@@ -1,4 +1,4 @@
-"""The Home page: today's review, the books being read, decks, recent activity and what's coming
+"""The Home page: today's practice, the books being read, decks, recent activity and what's coming
 up (dashboard.home), rendered in home.html."""
 
 from __future__ import annotations
@@ -37,12 +37,12 @@ class _Bridge(QObject):
         self.view.openRequested.emit(book_id)
 
     @Slot(int)
-    def reviewBook(self, book_id: int) -> None:
-        self.view.reviewBookRequested.emit(book_id)
+    def practiceBook(self, book_id: int) -> None:
+        self.view.practiceBookRequested.emit(book_id)
 
     @Slot(int, bool)
-    def reviewDeck(self, deck_id: int, start: bool) -> None:
-        self.view.reviewDeckRequested.emit(deck_id, start)
+    def practiceDeck(self, deck_id: int, start: bool) -> None:
+        self.view.practiceDeckRequested.emit(deck_id, start)
 
     @Slot(str)
     def go(self, page: str) -> None:
@@ -54,10 +54,10 @@ class _Bridge(QObject):
 
 
 class HomeView(QWidget):
-    startRequested = Signal(str)  # review everything: "" or a quick session's limit ("cards" / "time")
+    startRequested = Signal(str)  # practice everything: "" or a quick session's limit ("questions" / "time")
     openRequested = Signal(int)  # book id
-    reviewBookRequested = Signal(int)  # book id
-    reviewDeckRequested = Signal(int, bool)  # deck id, start right away
+    practiceBookRequested = Signal(int)  # book id
+    practiceDeckRequested = Signal(int, bool)  # deck id, start right away
     pageRequested = Signal(str)  # a navigation rail page
     browseRequested = Signal()  # open a file
     webRequested = Signal()  # open a web page
@@ -83,7 +83,7 @@ class HomeView(QWidget):
         layout.addWidget(self.view)
         theme().changed.connect(self._apply_theme)
         self._apply_theme()
-        # Counts change as learning cards fall due and the day rolls over.
+        # Counts change as learning questions fall due and the day rolls over.
         self._timer = QTimer(self, interval=60_000)
         self._timer.timeout.connect(lambda: self.isVisible() and self.refresh())
         self._timer.start()

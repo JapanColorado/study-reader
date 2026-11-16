@@ -20,7 +20,7 @@ ASSETS = Path(__file__).parent / "assets"
 
 class StatsWindow(QWidget):
     """A top-level window, or (window=False) the main window's Stats page; the combo box picks
-    the scope: all decks, one deck (with the decks under it), or one book's cards."""
+    the scope: all decks, one deck (with the decks under it), or one book's questions."""
 
     def __init__(self, db: Database, parent=None, window: bool = True):
         super().__init__(parent, Qt.WindowType.Window if window else Qt.WindowType.Widget)
@@ -87,7 +87,7 @@ class StatsWindow(QWidget):
 
     # -- scope ---------------------------------------------------------------------------
     def _fill_scopes(self) -> None:
-        """All decks, every deck indented under its parent, then the books that have cards.
+        """All decks, every deck indented under its parent, then the books that have questions.
         Item data: ("deck", id) / ("book", id) / None."""
         current = self.scope.currentData()
         self.scope.clear()
@@ -97,7 +97,7 @@ class StatsWindow(QWidget):
             self.scope.addItem("    " * depth + d["name"].rsplit("::", 1)[-1], ("deck", d["id"]))
             self.scope.setItemData(self.scope.count() - 1, d["name"], Qt.ItemDataRole.ToolTipRole)
         books = self.db.conn.execute(
-            "SELECT b.id, b.title FROM books b WHERE EXISTS (SELECT 1 FROM cards c WHERE c.book_id=b.id) "
+            "SELECT b.id, b.title FROM books b WHERE EXISTS (SELECT 1 FROM questions q WHERE q.book_id=b.id) "
             "ORDER BY b.title COLLATE NOCASE"
         ).fetchall()
         for b in books:

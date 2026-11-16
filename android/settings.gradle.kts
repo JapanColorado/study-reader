@@ -21,5 +21,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "StudyReaderReview"
+rootProject.name = "StudyPractice"
 include(":core", ":app")

@@ -1,6 +1,6 @@
-"""The card browser: every review card in a searchable, sortable table (Anki-style search, see
+"""The question browser: every question in a searchable, sortable table (Anki-style search, see
 search.py), a sidebar of decks, tags, books and saved searches, an editor and preview for the
-current card, and actions on the selection (move, tag, suspend, flag, reschedule, delete, find
+current question, and actions on the selection (move, tag, suspend, flag, reschedule, delete, find
 and replace, improve with Claude)."""
 
 from __future__ import annotations
@@ -22,8 +22,8 @@ from PySide6.QtWidgets import (
     QSplitter, QTableView, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import cardmodel, deck_maker, quiz, search, srs
-from .card_editor import AddDialog, CardEditor, DeckBox
+from . import question_model, deck_maker, quiz, search, practice
+from .question_editor import AddDialog, QuestionEditor, DeckBox
 from .db import Database, media_url
 from .notes import LocalPage
 from .theme import icon, theme
@@ -32,10 +32,12 @@ ASSETS = Path(__file__).parent / "assets"
 
 COLUMNS = {
     "question": "Question", "answer": "Answer", "deck": "Deck", "due": "Due", "interval": "Interval",
-    "stability": "Stability", "difficulty": "Difficulty", "retrievability": "Retrievability", "reps": "Reviews",
+    "stability": "Stability", "difficulty": "Difficulty", "retrievability": "Retrievability", "reps": "Attempts",
     "lapses": "Lapses", "type": "Type", "tags": "Tags", "book": "Book", "added": "Created",
-    "modified": "Modified", "reviewed": "Last review",
+    "modified": "Modified", "attempted": "Last attempt",
 }
+# Column ids saved by older versions (in the column, width and sort settings).
+OLD_COLUMNS = {"reviewed": "attempted"}
 DEFAULT_COLUMNS = ["question", "answer", "deck", "due", "interval", "retrievability", "added"]
 COLUMNS_SETTING, SORT_SETTING, WIDTHS_SETTING = "browser_columns", "browser_sort", "browser_widths"
 # Columns that share the table's width (weight, least and most width); the others are as wide
@@ -45,15 +47,15 @@ FLEX_COLUMNS = {"question": (3, 140, None), "answer": (2, 100, None), "deck": (1
 MIN_SECTION = 40
 SAMPLES = {
     "due": ["(2026-12-31)"], "interval": ["11mo", "10.5y"], "stability": ["11mo", "10.5y"], "difficulty": ["100%"],
-    "retrievability": ["100%"], "reps": ["9999"], "lapses": ["999"], "type": list(cardmodel.TYPE_LABELS.values()),
+    "retrievability": ["100%"], "reps": ["9999"], "lapses": ["999"], "type": list(question_model.TYPE_LABELS.values()),
     "added": ["2026-12-31"], "modified": ["2026-12-31"],
-    "reviewed": ["2026-12-31"],
+    "attempted": ["2026-12-31"],
 }
 # Anki's flag colors.
 FLAGS = {1: ("Red", "#ff6b6b"), 2: ("Orange", "#ffa94d"), 3: ("Green", "#51cf66"), 4: ("Blue", "#4dabf7"),
          5: ("Pink", "#f783ac"), 6: ("Turquoise", "#22b8cf"), 7: ("Purple", "#b197fc")}
 SUSPENDED_COLOR, MARKED_COLOR = "#fcc419", "#9775fa"
-ROW_SQL = (f"SELECT c.id, c.note_id, c.stage, c.due, c.last_review, c.stability, c.difficulty, c.reps, c.lapses, "
+ROW_SQL = (f"SELECT c.id, c.group_id, c.stage, c.due, c.last_attempt, c.stability, c.difficulty, c.reps, c.lapses, "
            f"c.suspended, c.flag, c.created_at, MAX(c.updated_at, n.updated_at) AS modified, c.data, c.book_id, c.page, "
            f"n.kind, n.sort_text, n.tags, d.name AS deck, b.title AS book FROM {search.FROM} WHERE c.id IN ")
 CHUNK = 200
@@ -63,13 +65,13 @@ def _date(t: float | None) -> str:
     return time.strftime("%Y-%m-%d", time.localtime(t)) if t else ""
 
 
-def _schedule_text(card, key: str) -> str:
-    """A card's interval, stability or difficulty as the table and Card info show it."""
+def _schedule_text(row, key: str) -> str:
+    """A question's interval, stability or difficulty as the table and Question info show it."""
     if key == "interval":
-        return srs.format_interval(card["due"] - card["last_review"]) if card["stage"] and card["last_review"] else ""
+        return practice.format_interval(row["due"] - row["last_attempt"]) if row["stage"] and row["last_attempt"] else ""
     if key == "stability":
-        return srs.format_interval(card["stability"] * 86400) if card["stability"] else ""
-    return f"{(card['difficulty'] - 1) / 9 * 100:.0f}%" if card["difficulty"] else ""
+        return practice.format_interval(row["stability"] * 86400) if row["stability"] else ""
+    return f"{(row['difficulty'] - 1) / 9 * 100:.0f}%" if row["difficulty"] else ""
 
 
 def _derived(r: dict) -> dict:
@@ -78,8 +80,8 @@ def _derived(r: dict) -> dict:
         data = json.loads(r["data"])
     except ValueError:
         data = {}
-    r["answer"] = cardmodel.answer_text(data)[:200] if data else ""
-    r["type"] = cardmodel.TYPE_LABELS.get(r["kind"], r["kind"])
+    r["answer"] = question_model.answer_text(data)[:200] if data else ""
+    r["type"] = question_model.TYPE_LABELS.get(r["kind"], r["kind"])
     return r
 
 
@@ -98,8 +100,8 @@ def _blend(color: str, base: str, amount: float) -> QColor:
                   round(a.blue() * amount + b.blue() * (1 - amount)))
 
 
-class CardTableModel(QAbstractTableModel):
-    """The cards a search found, in order; rows are read from the database a chunk at a time."""
+class QuestionTableModel(QAbstractTableModel):
+    """The questions a search found, in order; rows are read from the database a chunk at a time."""
 
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
@@ -108,14 +110,14 @@ class CardTableModel(QAbstractTableModel):
         self.columns: list[str] = list(DEFAULT_COLUMNS)
         self._rows: dict[int, dict] = {}
         self._now = time.time()
-        self._decay = srs.decay(db)
+        self._decay = practice.decay(db)
 
     def set_ids(self, ids: list[int]) -> None:
         self.beginResetModel()
         self.ids = ids
         self._rows = {}
         self._now = time.time()
-        self._decay = srs.decay(self.db)
+        self._decay = practice.decay(self.db)
         self.endResetModel()
 
     def set_columns(self, columns: list[str]) -> None:
@@ -123,12 +125,12 @@ class CardTableModel(QAbstractTableModel):
         self.columns = columns
         self.endResetModel()
 
-    def invalidate(self, card_ids=None) -> None:
+    def invalidate(self, question_ids=None) -> None:
         """Re-read some rows (all if None) next time they're drawn."""
-        if card_ids is None:
+        if question_ids is None:
             self._rows = {}
         else:
-            for i in card_ids:
+            for i in question_ids:
                 self._rows.pop(i, None)
         if self.ids:
             self.dataChanged.emit(self.index(0, 0), self.index(len(self.ids) - 1, len(self.columns) - 1))
@@ -147,14 +149,14 @@ class CardTableModel(QAbstractTableModel):
     def row(self, index: int) -> dict | None:
         if not 0 <= index < len(self.ids):
             return None
-        card_id = self.ids[index]
-        if card_id not in self._rows:
+        question_id = self.ids[index]
+        if question_id not in self._rows:
             start = max(index - CHUNK // 4, 0)
-            chunk = [i for i in self.ids[start:start + CHUNK] if i not in self._rows] or [card_id]
+            chunk = [i for i in self.ids[start:start + CHUNK] if i not in self._rows] or [question_id]
             for r in self.db.conn.execute(ROW_SQL + f"({','.join('?' * len(chunk))})", chunk):
                 self._rows[r["id"]] = _derived(dict(r))
-            self._rows.setdefault(card_id, {})
-        return self._rows[card_id] or None
+            self._rows.setdefault(question_id, {})
+        return self._rows[question_id] or None
 
     def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
         r = self.row(index.row()) if index.isValid() else None
@@ -193,7 +195,7 @@ class CardTableModel(QAbstractTableModel):
         if key in ("interval", "stability", "difficulty"):
             return _schedule_text(r, key)
         if key == "retrievability":
-            recall = srs.recall(r["stability"], r["last_review"], self._now, self._decay)
+            recall = practice.recall(r["stability"], r["last_attempt"], self._now, self._decay)
             return f"{recall * 100:.0f}%" if recall is not None else ""
         if key in ("reps", "lapses"):
             return str(r[key])
@@ -205,13 +207,13 @@ class CardTableModel(QAbstractTableModel):
             return _date(r["created_at"])
         if key == "modified":
             return _date(r["modified"])
-        if key == "reviewed":
-            return _date(r["last_review"])
+        if key == "attempted":
+            return _date(r["last_attempt"])
         return ""
 
 
 class Sidebar(QTreeWidget):
-    """Saved searches, flags, decks, books, tags and card types; each item holds a search."""
+    """Saved searches, flags, decks, books, tags and question types; each item holds a search."""
 
     searchChosen = Signal(str, str)  # search, how: "" (replace) | "and" | "or"
     deckMenuRequested = Signal(int, object)  # deck id, global position
@@ -232,7 +234,7 @@ class Sidebar(QTreeWidget):
     def refresh(self) -> None:
         self._remember_expanded()
         self.clear()
-        counts = srs.deck_counts(self.db)
+        counts = practice.deck_counts(self.db)
 
         def section(title: str) -> QTreeWidgetItem:
             item = QTreeWidgetItem([title])
@@ -255,8 +257,8 @@ class Sidebar(QTreeWidget):
 
         today = section("Today")
         for label, q in (("Due", "is:due"), ("New", "is:new"), ("Learning", "is:learn"), ("Added today", "added:1"),
-                         ("Reviewed today", "rated:1"), ("Again today", "rated:1:1"), ("Suspended", "is:suspended"),
-                         ("All cards", "")):
+                         ("Attempted today", "rated:1"), ("Missed today", "rated:1:1"), ("Suspended", "is:suspended"),
+                         ("All questions", "")):
             add(today, label, q, "Today/" + label)
         flags = section("Flags")
         for n, (name, color) in FLAGS.items():
@@ -273,7 +275,7 @@ class Sidebar(QTreeWidget):
             item.setData(0, Qt.ItemDataRole.UserRole + 2, d["id"])
             by_name[d["name"]] = item
         books = [b for b in self.db.conn.execute(
-            "SELECT b.id, b.title, COUNT(c.id) AS n FROM books b JOIN cards c ON c.book_id=b.id GROUP BY b.id ORDER BY b.title")]
+            "SELECT b.id, b.title, COUNT(c.id) AS n FROM books b JOIN questions c ON c.book_id=b.id GROUP BY b.id ORDER BY b.title")]
         if books:
             sec = section("Books")
             for b in books:
@@ -281,8 +283,8 @@ class Sidebar(QTreeWidget):
         tags = self.db.all_tags()
         if tags:
             sec = section("Tags")
-            # Section tags (srs.section_tag) in the order of their books, by their first card's page.
-            pages = {n["tag"].lower(): n["page"] for ns in srs.sections(self.db).values() for n in ns}
+            # Section tags (practice.section_tag) in the order of their books, by their first question's page.
+            pages = {n["tag"].lower(): n["page"] for ns in practice.sections(self.db).values() for n in ns}
             items: dict[str, QTreeWidgetItem] = {}
             for tag in tags:
                 parts = tag.split("::")
@@ -305,8 +307,8 @@ class Sidebar(QTreeWidget):
                     order(k)
             order(sec)
         types = section("Types")
-        for t in cardmodel.TYPES:
-            add(types, cardmodel.TYPE_LABELS[t], f"type:{t}", f"Types/{t}")
+        for t in question_model.TYPES:
+            add(types, question_model.TYPE_LABELS[t], f"type:{t}", f"Types/{t}")
         self._restore_expanded()
         self.filter_tags(self._tag_filter)
 
@@ -382,8 +384,8 @@ def _quote(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
-class CardView(QWebEngineView):
-    """cardview.html: read-only card sides (the browser's preview, Make with Claude's draft). bridge:
+class QuestionView(QWebEngineView):
+    """questionview.html: read-only question sides (the browser's preview, Make with Claude's draft). bridge:
     an object the page may call (as `view`), for the draft's checkboxes."""
 
     def __init__(self, parent=None, bridge=None):
@@ -396,7 +398,7 @@ class CardView(QWebEngineView):
         self._ready = False
         self._pending: list[str] = []
         self.loadFinished.connect(self._on_loaded)
-        self.load(QUrl.fromLocalFile(str(ASSETS / "cardview.html")))
+        self.load(QUrl.fromLocalFile(str(ASSETS / "questionview.html")))
         theme().changed.connect(self._apply_theme)
         self._apply_theme()
 
@@ -419,14 +421,14 @@ class CardView(QWebEngineView):
         self.js("setTheme", theme().colors, theme().dark)
 
 
-class CardBrowser(QMainWindow):
-    """A view over every card: a window of its own, or (embedded) the main window's Cards page.
-    cardsChanged: something was edited, moved, rescheduled or deleted (review counts may have
+class QuestionBrowser(QMainWindow):
+    """A view over every question: a window of its own, or (embedded) the main window's Questions page.
+    questionsChanged: something was edited, moved, rescheduled or deleted (practice counts may have
     changed)."""
 
-    cardsChanged = Signal()
+    questionsChanged = Signal()
     bookRequested = Signal(int, int)  # book id, page (-1 if unknown)
-    reviewDeckRequested = Signal(int)  # deck id
+    practiceDeckRequested = Signal(int)  # deck id
     statsRequested = Signal(int)  # deck id (0 = all)
     migrateRequested = Signal()
 
@@ -435,13 +437,13 @@ class CardBrowser(QMainWindow):
         self.db = db
         self.embedded = embedded
         self.maker = maker  # deck_maker_dialog.DeckMaker, for Make with Claude
-        self.setWindowTitle("Browse cards — Study Reader")
+        self.setWindowTitle("Browse questions — Study Reader")
         if embedded:
             self.setWindowFlags(Qt.WindowType.Widget)
         else:
             self.setWindowFlag(Qt.WindowType.Window)
             self.resize(1440, 880)
-        self._card_id: int | None = None  # the card in the editor
+        self._question_id: int | None = None  # the question in the editor
         self._add_dialog: AddDialog | None = None
 
         self.search_box = QLineEdit(objectName="browserSearch")
@@ -459,8 +461,8 @@ class CardBrowser(QMainWindow):
         self.sidebar.deckMenuRequested.connect(self._deck_menu)
         self.sidebar.tagMenuRequested.connect(self._tag_menu)
 
-        self.model = CardTableModel(db, self)
-        self.table = QTableView(objectName="cardTable")
+        self.model = QuestionTableModel(db, self)
+        self.table = QTableView(objectName="questionTable")
         self.table.setModel(self.model)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -491,31 +493,31 @@ class CardBrowser(QMainWindow):
         self.table.selectionModel().currentRowChanged.connect(self._current_changed)
         self.table.doubleClicked.connect(lambda _: self.editor_focus())
 
-        self.editor = CardEditor(db)
+        self.editor = QuestionEditor(db)
         self.editor.edited.connect(lambda: self._save_timer.start())
         self.editor_status = QLabel()
         self.editor_status.setWordWrap(True)
         self.editor_status.setProperty("role", "muted")
         self._save_timer = QTimer(self, singleShot=True, interval=700)
-        # Edits that couldn't be saved yet (a card switched to a type whose answer isn't filled
-        # in yet), by note id: (its updated_at then, editor draft, why not), shown again when
-        # the card (or a sibling) is, rather than the stored version.
+        # Edits that couldn't be saved yet (a question switched to a type whose answer isn't filled
+        # in yet), by group id: (its updated_at then, editor draft, why not), shown again when
+        # the question (or a sibling) is, rather than the stored version.
         self._drafts: dict[int, tuple[float, dict, str]] = {}
         self._save_timer.timeout.connect(self._save_now)
-        self.card_line = QLabel()
-        self.card_line.setProperty("role", "muted")
-        self.card_line.setWordWrap(True)
+        self.question_line = QLabel()
+        self.question_line.setProperty("role", "muted")
+        self.question_line.setWordWrap(True)
         editor_box = QWidget()
         col = QVBoxLayout(editor_box)
         col.setContentsMargins(10, 8, 10, 6)
-        col.addWidget(self.card_line)
+        col.addWidget(self.question_line)
         col.addWidget(self.editor, 1)
         col.addWidget(self.editor_status)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(editor_box)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        self.preview = CardView()
+        self.preview = QuestionView()
         right = QSplitter(Qt.Orientation.Vertical)
         right.addWidget(scroll)
         right.addWidget(self.preview)
@@ -525,7 +527,7 @@ class CardBrowser(QMainWindow):
         top.setContentsMargins(10, 8, 10, 4)
         top.addWidget(self.search_box, 1)
         for text, icon_name, tip, slot in (
-            ("Add", "message-plus", "Add cards (Ctrl+E)", self.add_cards),
+            ("Add", "message-plus", "Add questions (Ctrl+E)", self.add_questions),
             ("Statistics", "chart", "Statistics", lambda: self.statsRequested.emit(0)),
         ):
             b = QPushButton(text)
@@ -575,16 +577,19 @@ class CardBrowser(QMainWindow):
     # -- settings ------------------------------------------------------------------------
     def _load_settings(self) -> None:
         try:
-            cols = [c for c in json.loads(self.db.get_setting(COLUMNS_SETTING, "[]")) if c in COLUMNS]
+            cols = [c for c in (OLD_COLUMNS.get(c, c) for c in json.loads(self.db.get_setting(COLUMNS_SETTING, "[]")))
+                    if c in COLUMNS]
         except ValueError:
             cols = []
         self.model.set_columns(cols or list(DEFAULT_COLUMNS))
         try:
             widths = json.loads(self.db.get_setting(WIDTHS_SETTING, "{}"))
-            self._widths = {k: int(v) for k, v in widths.items() if k in COLUMNS and int(v) > 0}
+            self._widths = {OLD_COLUMNS.get(k, k): int(v) for k, v in widths.items()
+                            if OLD_COLUMNS.get(k, k) in COLUMNS and int(v) > 0}
         except (ValueError, TypeError, AttributeError):
             self._widths = {}
         sort, _, order = self.db.get_setting(SORT_SETTING, "added:desc").partition(":")
+        sort = OLD_COLUMNS.get(sort, sort)
         self.sort = sort if sort in search.SORTS else "added"
         self.descending = order == "desc"
         self._fit_columns()
@@ -695,7 +700,7 @@ class CardBrowser(QMainWindow):
             return a
 
         file = bar.addMenu("&File")
-        act(file, "Add cards…", self.add_cards, "Ctrl+E")
+        act(file, "Add questions…", self.add_questions, "Ctrl+E")
         act(file, "Migrate from Anki…", self.migrateRequested.emit)
         if not self.embedded:
             file.addSeparator()
@@ -705,28 +710,28 @@ class CardBrowser(QMainWindow):
         act(edit, "Select all", self.table.selectAll, "Ctrl+Alt+A")
         act(edit, "Invert selection", self._invert_selection, "Ctrl+Alt+S")
         act(edit, "Find and replace…", self.find_replace, "Ctrl+Alt+F")
-        cards = bar.addMenu("&Cards")
+        questions = bar.addMenu("&Questions")
         self.selection_actions = [
-            act(cards, "Change deck…", self.change_deck, "Ctrl+D"),
-            act(cards, "Set due date…", self.set_due, "Ctrl+Shift+D"),
-            act(cards, "Forget (make new)…", self.forget, "Ctrl+Alt+N"),
-            act(cards, "Toggle suspend", self.toggle_suspend, "Ctrl+J"),
+            act(questions, "Change deck…", self.change_deck, "Ctrl+D"),
+            act(questions, "Set due date…", self.set_due, "Ctrl+Shift+D"),
+            act(questions, "Forget (make new)…", self.forget, "Ctrl+Alt+N"),
+            act(questions, "Toggle suspend", self.toggle_suspend, "Ctrl+J"),
         ]
-        flag_menu = cards.addMenu("Flag")
+        flag_menu = questions.addMenu("Flag")
         for n, (name, color) in FLAGS.items():
             self.selection_actions.append(act(flag_menu, name, lambda n=n: self.set_flag(n), f"Ctrl+{n}"))
         self.selection_actions.append(act(flag_menu, "No flag", lambda: self.set_flag(0), "Ctrl+0"))
-        cards.addSeparator()
+        questions.addSeparator()
         self.selection_actions += [
-            act(cards, "Info…", self.card_info, "Ctrl+Shift+I"),
-            act(cards, "Open in book", self.open_in_book, "Ctrl+Shift+O"),
-            act(cards, "Delete…", self.delete, "Ctrl+Delete"),
+            act(questions, "Info…", self.question_info, "Ctrl+Shift+I"),
+            act(questions, "Open in book", self.open_in_book, "Ctrl+Shift+O"),
+            act(questions, "Delete…", self.delete, "Ctrl+Delete"),
         ]
-        cards.addSeparator()
+        questions.addSeparator()
         self.selection_actions += [
-            act(cards, "Add tags…", self.add_tags, "Ctrl+Shift+A"),
-            act(cards, "Remove tags…", self.remove_tags, "Ctrl+Alt+Shift+A"),
-            act(cards, "Toggle mark", self.toggle_mark, "Ctrl+K"),
+            act(questions, "Add tags…", self.add_tags, "Ctrl+Shift+A"),
+            act(questions, "Remove tags…", self.remove_tags, "Ctrl+Alt+Shift+A"),
+            act(questions, "Toggle mark", self.toggle_mark, "Ctrl+K"),
         ]
         claude = bar.addMenu("C&laude")
         act(claude, "Make a deck with Claude…", lambda: self.make_deck(""), "Ctrl+Shift+M")
@@ -734,14 +739,14 @@ class CardBrowser(QMainWindow):
         self.selection_actions.append(self.improve_action)
         act(claude, "Claude's draft…", self.show_draft)
         claude.addSeparator()
-        self.undo_rewrite_action = act(claude, "Undo Claude's rewrite of this card", self.undo_rewrite)
+        self.undo_rewrite_action = act(claude, "Undo Claude's rewrite of this question", self.undo_rewrite)
         self.undo_rewrite_action.setEnabled(False)
         for a in claude.actions():
             a.setVisible(self.maker is not None)
         claude.menuAction().setVisible(self.maker is not None)
         go = bar.addMenu("&Go")
-        act(go, "Previous card", lambda: self._step(-1), "Ctrl+P")
-        act(go, "Next card", lambda: self._step(1), "Ctrl+N")
+        act(go, "Previous question", lambda: self._step(-1), "Ctrl+P")
+        act(go, "Next question", lambda: self._step(1), "Ctrl+N")
         act(go, "Sidebar", self.sidebar.setFocus, "Ctrl+Shift+R")
         act(go, "Table", self.table.setFocus, "Ctrl+Shift+T")
         act(go, "Editor", self.editor_focus, "Ctrl+Shift+E")
@@ -766,8 +771,8 @@ class CardBrowser(QMainWindow):
 
     def _set_columns(self, cols: list[str]) -> None:
         self.db.set_setting(COLUMNS_SETTING, json.dumps(cols))
-        self.save_note()
-        selected, current = self.selected_ids(), self._card_id
+        self.save_question()
+        selected, current = self.selected_ids(), self._question_id
         self.model.set_columns(cols)
         self._fit_columns()
         self._select(selected, current)
@@ -803,11 +808,11 @@ class CardBrowser(QMainWindow):
 
     def search(self, keep: bool = True) -> None:
         self._search_timer.stop()
-        self.save_note()
+        self.save_question()
         query = self.search_box.text().strip()
-        selected, current = (self.selected_ids(), self._card_id) if keep else ([], None)
+        selected, current = (self.selected_ids(), self._question_id) if keep else ([], None)
         try:
-            ids = search.card_ids(self.db, query, self.sort, self.descending)
+            ids = search.question_ids(self.db, query, self.sort, self.descending)
         except search.SearchError as e:
             self.status.setText(f"<span style='color:{theme().colors['error']}'>{e}</span>")
             return
@@ -830,7 +835,7 @@ class CardBrowser(QMainWindow):
         if key not in search.SORTS:
             self._show_sort_indicator()
             return
-        self.descending = not self.descending if key == self.sort else key in ("added", "modified", "reviewed", "reps", "lapses")
+        self.descending = not self.descending if key == self.sort else key in ("added", "modified", "attempted", "reps", "lapses")
         self.sort = key
         self.db.set_setting(SORT_SETTING, f"{key}:{'desc' if self.descending else 'asc'}")
         self._show_sort_indicator()
@@ -838,7 +843,7 @@ class CardBrowser(QMainWindow):
 
     def _update_status(self) -> None:
         n, chosen = len(self.model.ids), len(self.table.selectionModel().selectedRows())
-        text = f"{n} card{'s' * (n != 1)} shown"
+        text = f"{n} question{'s' * (n != 1)} shown"
         if chosen:
             text += f", {chosen} selected"
         self.status.setText(text)
@@ -850,18 +855,18 @@ class CardBrowser(QMainWindow):
 
     def _select(self, ids: list[int], current: int | None) -> None:
         sel = self.table.selectionModel()
-        rows = {card_id: i for i, card_id in enumerate(self.model.ids)}
+        rows = {question_id: i for i, question_id in enumerate(self.model.ids)}
         selection = QItemSelection()
         last = len(self.model.columns) - 1
-        chosen = sorted(rows[card_id] for card_id in ids if card_id in rows)
+        chosen = sorted(rows[question_id] for question_id in ids if question_id in rows)
         start = 0
         for i in range(1, len(chosen) + 1):  # one range per run of consecutive rows
             if i == len(chosen) or chosen[i] != chosen[i - 1] + 1:
                 selection.select(self.model.index(chosen[start], 0), self.model.index(chosen[i - 1], last))
                 start = i
         sel.select(selection, QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows)
-        if current not in rows:  # the card that was current is gone: the first selected one is current
-            current = next((card_id for card_id in ids if card_id in rows), None)
+        if current not in rows:  # the question that was current is gone: the first selected one is current
+            current = next((question_id for question_id in ids if question_id in rows), None)
         if current in rows:
             sel.setCurrentIndex(self.model.index(rows[current], 0), QItemSelectionModel.SelectionFlag.NoUpdate)
             self.table.scrollTo(self.model.index(rows[current], 0))
@@ -884,109 +889,109 @@ class CardBrowser(QMainWindow):
             a.setEnabled(has)
 
     def _current_changed(self, current: QModelIndex, previous: QModelIndex) -> None:
-        self.save_note()
+        self.save_question()
         self._show_current()
 
     def _show_current(self) -> None:
         # The current row: on a click Qt moves it before it updates the selection, so the
         # selection can't be trusted here.
         index = self.table.currentIndex()
-        card_id = self.model.ids[index.row()] if index.isValid() and index.row() < len(self.model.ids) else None
-        card = self.db.card(card_id) if card_id is not None else None
-        self._card_id = card["id"] if card else None
-        self.editor.load(card["note_id"] if card else None)
+        question_id = self.model.ids[index.row()] if index.isValid() and index.row() < len(self.model.ids) else None
+        question = self.db.question(question_id) if question_id is not None else None
+        self._question_id = question["id"] if question else None
+        self.editor.load(question["group_id"] if question else None)
         self.editor_status.clear()
-        draft = self._drafts.get(card["note_id"]) if card else None
+        draft = self._drafts.get(question["group_id"]) if question else None
         if draft is not None:
-            note = self.db.card_note(card["note_id"])
-            if note is not None and note["updated_at"] == draft[0]:
+            group = self.db.question_group(question["group_id"])
+            if group is not None and group["updated_at"] == draft[0]:
                 self.editor.restore(draft[1])
                 self._show_not_saved(draft[2])
             else:  # changed since (or gone): the draft is out of date
-                del self._drafts[card["note_id"]]
-        self._show_card_line(card)
-        self.preview.js("showPreview", json.loads(card["data"]) if card else None, "both")
-        self.undo_rewrite_action.setEnabled(card is not None and self.db.card_rewrite(card["id"]) is not None)
+                del self._drafts[question["group_id"]]
+        self._show_question_line(question)
+        self.preview.js("showPreview", json.loads(question["data"]) if question else None, "both")
+        self.undo_rewrite_action.setEnabled(question is not None and self.db.question_rewrite(question["id"]) is not None)
 
-    def _show_card_line(self, card) -> None:
-        if card is None:
-            self.card_line.setText("")
+    def _show_question_line(self, question) -> None:
+        if question is None:
+            self.question_line.setText("")
             return
-        deck = self.db.deck(card["deck_id"])
-        note = self.db.card_note(card["note_id"])
+        deck = self.db.deck(question["deck_id"])
+        group = self.db.question_group(question["group_id"])
         parts = [deck["name"] if deck else ""]
-        if note is not None:
-            parts.append(sibling_text(note["kind"], card["ord"], [c["ord"] for c in self.db.note_cards(note["id"])]))
-        if card["book_id"]:
-            book = self.db.book(card["book_id"])
+        if group is not None:
+            parts.append(sibling_text(group["kind"], question["ord"], [c["ord"] for c in self.db.group_questions(group["id"])]))
+        if question["book_id"]:
+            book = self.db.book(question["book_id"])
             if book:
-                parts.append(f"from “{book['title']}”" + (f", p. {card['page'] + 1}" if card["page"] is not None else ""))
-        self.card_line.setText(" · ".join(p for p in parts if p))
+                parts.append(f"from “{book['title']}”" + (f", p. {question['page'] + 1}" if question["page"] is not None else ""))
+        self.question_line.setText(" · ".join(p for p in parts if p))
 
     def editor_focus(self) -> None:
         self.editor.focus_first()
 
-    def show_card(self, card_id: int) -> None:
-        """Show one card (e.g. Edit in review), bringing the window up if it is one."""
+    def show_question(self, question_id: int) -> None:
+        """Show one question (e.g. Edit in practice), bringing the window up if it is one."""
         if not self.embedded:
             self.show()
             self.raise_()
             self.activateWindow()
-        self.set_search(f"cid:{card_id}")
+        self.set_search(f"cid:{question_id}")
 
     # -- editing -------------------------------------------------------------------------
-    def save_note(self) -> None:
-        """Store pending edits to the card in the editor (and its siblings), if there are any."""
+    def save_question(self) -> None:
+        """Store pending edits to the question in the editor (and its siblings), if there are any."""
         if self._save_timer.isActive():
             self._save_now()
 
     def _save_now(self) -> None:
         # Also the save timer's timeout, by which time a single-shot timer is no longer active.
         self._save_timer.stop()
-        if self.editor.note_id is None:
+        if self.editor.group_id is None:
             return
-        before = {c["ord"] for c in self.db.note_cards(self.editor.note_id)}
-        note = self.db.card_note(self.editor.note_id)
+        before = {c["ord"] for c in self.db.group_questions(self.editor.group_id)}
+        group = self.db.question_group(self.editor.group_id)
         try:
             self.editor.save()
-        except cardmodel.NoteError as e:
-            if note is not None:
-                self._drafts[note["id"]] = (note["updated_at"], self.editor.draft(), str(e))
+        except question_model.QuestionError as e:
+            if group is not None:
+                self._drafts[group["id"]] = (group["updated_at"], self.editor.draft(), str(e))
             self._show_not_saved(str(e))
             return
-        self._drafts.pop(self.editor.note_id, None)
-        cards = self.db.note_cards(self.editor.note_id)
-        self.editor_status.setText(f"Saved{sibling_edit_text(self.editor.kind, len(cards))}.")
-        self.model.invalidate([c["id"] for c in cards])
-        card = self.db.card(self._card_id) if self._card_id is not None else None
-        if card is not None:
-            self.preview.js("showPreview", json.loads(card["data"]), "both")
-        if {c["ord"] for c in cards} != before:  # deletions added or removed: cards come and go
+        self._drafts.pop(self.editor.group_id, None)
+        questions = self.db.group_questions(self.editor.group_id)
+        self.editor_status.setText(f"Saved{sibling_edit_text(self.editor.kind, len(questions))}.")
+        self.model.invalidate([c["id"] for c in questions])
+        question = self.db.question(self._question_id) if self._question_id is not None else None
+        if question is not None:
+            self.preview.js("showPreview", json.loads(question["data"]), "both")
+        if {c["ord"] for c in questions} != before:  # deletions added or removed: questions come and go
             QTimer.singleShot(0, self.search)
-        self.cardsChanged.emit()
+        self.questionsChanged.emit()
 
     def _show_not_saved(self, why: str) -> None:
         self.editor_status.setText(f"<span style='color:{theme().colors['error']}'>Not saved: {why}</span>")
 
-    def add_cards(self) -> None:
+    def add_questions(self) -> None:
         if self._add_dialog is None:
             self._add_dialog = AddDialog(self.db, self)
             self._add_dialog.added.connect(self._on_added)
-        current = self.db.card(self._card_id) if self._card_id is not None else None
+        current = self.db.question(self._question_id) if self._question_id is not None else None
         if current is not None and not self.db.get_setting("add_deck"):
             self._add_dialog.set_deck(self.db.deck(current["deck_id"])["name"])
         self._add_dialog.show()
         self._add_dialog.raise_()
         self._add_dialog.activateWindow()
 
-    def add_cards_to(self, deck_name: str) -> None:
-        self.add_cards()
+    def add_questions_to(self, deck_name: str) -> None:
+        self.add_questions()
         self._add_dialog.set_deck(deck_name)
 
-    def _on_added(self, note_id: int) -> None:
+    def _on_added(self, group_id: int) -> None:
         self.sidebar.refresh()
         self.search()
-        self.cardsChanged.emit()
+        self.questionsChanged.emit()
 
     # -- actions on the selection --------------------------------------------------------
     def _changed(self, refresh_sidebar: bool = False) -> None:
@@ -994,7 +999,7 @@ class CardBrowser(QMainWindow):
         if refresh_sidebar:
             self.sidebar.refresh()
         self.search()
-        self.cardsChanged.emit()
+        self.questionsChanged.emit()
 
     def change_deck(self) -> None:
         ids = self.selected_ids()
@@ -1003,17 +1008,17 @@ class CardBrowser(QMainWindow):
         dialog = QDialog(self)
         dialog.setWindowTitle("Change deck")
         box = DeckBox(self.db)
-        current = self.db.card(ids[0])
+        current = self.db.question(ids[0])
         box.setCurrentText(self.db.deck(current["deck_id"])["name"] if current else "")
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout = QVBoxLayout(dialog)
-        layout.addWidget(QLabel(f"Move {len(ids)} card{'s' * (len(ids) != 1)} to (type a new name to make a deck):"))
+        layout.addWidget(QLabel(f"Move {len(ids)} question{'s' * (len(ids) != 1)} to (type a new name to make a deck):"))
         layout.addWidget(box)
         layout.addWidget(buttons)
         if dialog.exec() and box.deck_name():
-            self.db.update_cards(ids, deck_id=self.db.ensure_deck(box.deck_name()))
+            self.db.update_questions(ids, deck_id=self.db.ensure_deck(box.deck_name()))
             self._changed(refresh_sidebar=True)
 
     def _ask_tags(self, title: str, label: str) -> list[str]:
@@ -1032,64 +1037,64 @@ class CardBrowser(QMainWindow):
         layout.addWidget(edit)
         layout.addWidget(buttons)
         dialog.setMinimumWidth(380)
-        return cardmodel.split_tags(edit.text()) if dialog.exec() else []
+        return question_model.split_tags(edit.text()) if dialog.exec() else []
 
-    def _cards_text(self, ids: list[int]) -> str:
-        """'3 cards', plus the cards that share their text (and so their tags) when there are any."""
-        notes = self.db.note_ids(ids)
+    def _questions_text(self, ids: list[int]) -> str:
+        """'3 questions', plus the questions that share their text (and so their tags) when there are any."""
+        groups = self.db.group_ids(ids)
         siblings = self.db.conn.execute(
-            f"SELECT COUNT(*) FROM cards WHERE note_id IN ({','.join('?' * len(notes))})", notes).fetchone()[0] - len(ids)
-        text = f"{len(ids)} card{'s' * (len(ids) != 1)}"
+            f"SELECT COUNT(*) FROM questions WHERE group_id IN ({','.join('?' * len(groups))})", groups).fetchone()[0] - len(ids)
+        text = f"{len(ids)} question{'s' * (len(ids) != 1)}"
         return text + (f" (and {siblings} more made from the same text)" if siblings > 0 else "")
 
     def add_tags(self) -> None:
         ids = self.selected_ids()
-        tags = self._ask_tags("Add tags", f"Tags to add to {self._cards_text(ids)}:") if ids else []
+        tags = self._ask_tags("Add tags", f"Tags to add to {self._questions_text(ids)}:") if ids else []
         if tags:
-            self.db.add_tags(self.db.note_ids(ids), tags)
+            self.db.add_tags(self.db.group_ids(ids), tags)
             self._changed(refresh_sidebar=True)
-            self.status.setText(f"Added tags to {self._cards_text(ids)}.")
+            self.status.setText(f"Added tags to {self._questions_text(ids)}.")
 
     def remove_tags(self) -> None:
         ids = self.selected_ids()
-        tags = self._ask_tags("Remove tags", f"Tags to remove from {self._cards_text(ids)}:") if ids else []
+        tags = self._ask_tags("Remove tags", f"Tags to remove from {self._questions_text(ids)}:") if ids else []
         if tags:
-            self.db.remove_tags(self.db.note_ids(ids), tags)
+            self.db.remove_tags(self.db.group_ids(ids), tags)
             self._changed(refresh_sidebar=True)
-            self.status.setText(f"Removed tags from {self._cards_text(ids)}.")
+            self.status.setText(f"Removed tags from {self._questions_text(ids)}.")
 
     def toggle_mark(self) -> None:
         ids = self.selected_ids()
         if not ids:
             return
-        notes = self.db.note_ids(ids)
-        marked = not self.db.any_note(notes, "tags NOT LIKE '% marked %'")
-        (self.db.remove_tags if marked else self.db.add_tags)(notes, ["marked"])
+        groups = self.db.group_ids(ids)
+        marked = not self.db.any_group(groups, "tags NOT LIKE '% marked %'")
+        (self.db.remove_tags if marked else self.db.add_tags)(groups, ["marked"])
         self._changed(refresh_sidebar=True)
 
     def toggle_suspend(self) -> None:
         ids = self.selected_ids()
         if not ids:
             return
-        suspended = not self.db.any_card(ids, "suspended=0")
-        self.db.update_cards(ids, suspended=0 if suspended else 1)
+        suspended = not self.db.any_question(ids, "suspended=0")
+        self.db.update_questions(ids, suspended=0 if suspended else 1)
         self._changed()
 
     def set_flag(self, flag: int) -> None:
         ids = self.selected_ids()
         if not ids:
             return
-        if flag and not self.db.any_card(ids, "flag!=?", (flag,)):
+        if flag and not self.db.any_question(ids, "flag!=?", (flag,)):
             flag = 0  # the same flag again takes it off, as in Anki
-        self.db.update_cards(ids, flag=flag)
+        self.db.update_questions(ids, flag=flag)
         self._changed()
 
     def forget(self) -> None:
         ids = self.selected_ids()
         if ids and QMessageBox.question(
-            self, "Forget", f"Make {len(ids)} card{'s' * (len(ids) != 1)} new again? Their review history is kept.",
+            self, "Forget", f"Make {len(ids)} question{'s' * (len(ids) != 1)} new again? Their past attempts are kept.",
         ) == QMessageBox.StandardButton.Yes:
-            srs.forget(self.db, ids)
+            practice.forget(self.db, ids)
             self._changed()
 
     def set_due(self) -> None:
@@ -1099,7 +1104,7 @@ class CardBrowser(QMainWindow):
         text, ok = QInputDialog.getText(
             self, "Set due date",
             "Due in how many days? 0 = today, 1 = tomorrow, 3-7 = spread over 3 to 7 days.\n"
-            "New cards stay in the new queue.", text=self.db.get_setting("browser_due_days", "0"))
+            "New questions stay in the new queue.", text=self.db.get_setting("browser_due_days", "0"))
         if not ok:
             return
         m = re.fullmatch(r"\s*(\d+)\s*(?:-\s*(\d+))?\s*!?\s*", text)
@@ -1108,42 +1113,42 @@ class CardBrowser(QMainWindow):
             return
         self.db.set_setting("browser_due_days", text.strip())
         first, last = int(m.group(1)), int(m.group(2)) if m.group(2) else None
-        moved = srs.set_due(self.db, ids, first, last)
-        self.status.setText(f"Rescheduled {moved} card{'s' * (moved != 1)}.")
+        moved = practice.set_due(self.db, ids, first, last)
+        self.status.setText(f"Rescheduled {moved} question{'s' * (moved != 1)}.")
         self._changed()
 
     def delete(self) -> None:
         ids = self.selected_ids()
         if ids and QMessageBox.question(
-            self, "Delete cards", f"Delete {len(ids)} card{'s' * (len(ids) != 1)} and their review history? "
-            "This can't be undone (Suspend keeps a card out of review instead).",
+            self, "Delete questions", f"Delete {len(ids)} question{'s' * (len(ids) != 1)} and their past attempts? "
+            "This can't be undone (Suspend keeps a question out of practice instead).",
         ) == QMessageBox.StandardButton.Yes:
-            self.save_note()
-            self.db.delete_cards(ids)
+            self.save_question()
+            self.db.delete_questions(ids)
             self._changed(refresh_sidebar=True)
 
-    def card_info(self) -> None:
-        if self._card_id is not None:
-            CardInfoDialog(self.db, self._card_id, self).exec()
+    def question_info(self) -> None:
+        if self._question_id is not None:
+            QuestionInfoDialog(self.db, self._question_id, self).exec()
 
     def open_in_book(self) -> None:
-        card = self.db.card(self._card_id) if self._card_id is not None else None
-        if card is None or card["book_id"] is None:
-            self.status.setText("This card isn't from a book.")
+        question = self.db.question(self._question_id) if self._question_id is not None else None
+        if question is None or question["book_id"] is None:
+            self.status.setText("This question isn't from a book.")
             return
-        self.bookRequested.emit(card["book_id"], card["page"] if card["page"] is not None else -1)
+        self.bookRequested.emit(question["book_id"], question["page"] if question["page"] is not None else -1)
 
     def find_replace(self) -> None:
         dialog = FindReplaceDialog(self.db, bool(self.selected_ids()), self)
         if not dialog.exec():
             return
-        notes = self.db.note_ids(self.selected_ids()) if dialog.selected_only.isChecked() else \
-            [r[0] for r in self.db.conn.execute("SELECT id FROM card_notes")]
-        changed, failed = find_replace(self.db, notes, dialog.find.text(), dialog.replace.text(),
+        groups = self.db.group_ids(self.selected_ids()) if dialog.selected_only.isChecked() else \
+            [r[0] for r in self.db.conn.execute("SELECT id FROM question_groups")]
+        changed, failed = find_replace(self.db, groups, dialog.find.text(), dialog.replace.text(),
                                        dialog.field.currentData(), dialog.regex.isChecked(), dialog.case.isChecked())
-        msg = f"Changed {changed} card{'s' * (changed != 1)}."
+        msg = f"Changed {changed} question{'s' * (changed != 1)}."
         if failed:
-            msg += f" {failed} couldn't be changed (the result wasn't a valid card)."
+            msg += f" {failed} couldn't be changed (the result wasn't a valid question)."
         self.status.setText(msg)
         self._changed()
 
@@ -1153,15 +1158,15 @@ class CardBrowser(QMainWindow):
         if deck is None:
             return
         menu = QMenu(self)
-        menu.addAction(icon("cards"), "Review this deck").triggered.connect(lambda: self.reviewDeckRequested.emit(deck_id))
-        menu.addAction(icon("message-plus"), "Add cards here…").triggered.connect(lambda: self.add_cards_to(deck["name"]))
+        menu.addAction(icon("questions"), "Practice this deck").triggered.connect(lambda: self.practiceDeckRequested.emit(deck_id))
+        menu.addAction(icon("message-plus"), "Add questions here…").triggered.connect(lambda: self.add_questions_to(deck["name"]))
         menu.addAction(icon("chart"), "Statistics").triggered.connect(lambda: self.statsRequested.emit(deck_id))
         if self.maker is not None:
             menu.addSeparator()
-            menu.addAction(icon("sparkles"), "Make cards here with Claude…").triggered.connect(
+            menu.addAction(icon("sparkles"), "Make questions here with Claude…").triggered.connect(
                 lambda: self.make_deck(deck["name"]))
-            menu.addAction("Improve this deck's cards with Claude…").triggered.connect(
-                lambda: self.improve(search.card_ids(self.db, f'deck:"{_quote(deck["name"])}"')))
+            menu.addAction("Improve this deck's questions with Claude…").triggered.connect(
+                lambda: self.improve(search.question_ids(self.db, f'deck:"{_quote(deck["name"])}"')))
         menu.addSeparator()
         menu.addAction("Rename or move…").triggered.connect(lambda: self.rename_deck(deck_id))
         menu.addAction(icon("trash", "muted"), "Delete…").triggered.connect(lambda: self.delete_deck(deck_id))
@@ -1182,10 +1187,10 @@ class CardBrowser(QMainWindow):
     def delete_deck(self, deck_id: int) -> None:
         deck = self.db.deck(deck_id)
         n = len(self.db.deck_subtree(deck_id))
-        cards = self.db.count_cards(deck_id=deck_id)
+        questions = self.db.count_questions(deck_id=deck_id)
         if QMessageBox.question(
             self, "Delete deck", f"Delete “{deck['name']}”{f' and its {n - 1} subdeck(s)' if n > 1 else ''}, with "
-            f"{cards} card{'s' * (cards != 1)} and their review history? This can't be undone.",
+            f"{questions} question{'s' * (questions != 1)} and their past attempts? This can't be undone.",
         ) == QMessageBox.StandardButton.Yes:
             self.db.delete_deck(deck_id)
             self._changed(refresh_sidebar=True)
@@ -1193,7 +1198,7 @@ class CardBrowser(QMainWindow):
     def _tag_menu(self, tag: str, pos) -> None:
         menu = QMenu(self)
         menu.addAction("Rename…").triggered.connect(lambda: self.rename_tag(tag))
-        menu.addAction(icon("trash", "muted"), "Remove from all cards…").triggered.connect(lambda: self.delete_tag(tag))
+        menu.addAction(icon("trash", "muted"), "Remove from all questions…").triggered.connect(lambda: self.delete_tag(tag))
         menu.exec(pos)
 
     def rename_tag(self, tag: str) -> None:
@@ -1204,7 +1209,7 @@ class CardBrowser(QMainWindow):
             self._changed(refresh_sidebar=True)
 
     def delete_tag(self, tag: str) -> None:
-        if QMessageBox.question(self, "Remove tag", f"Remove the tag “{tag}” (and tags under it) from every card?") \
+        if QMessageBox.question(self, "Remove tag", f"Remove the tag “{tag}” (and tags under it) from every question?") \
                 == QMessageBox.StandardButton.Yes:
             self.db.rename_tag(tag, "")
             self._changed(refresh_sidebar=True)
@@ -1214,59 +1219,59 @@ class CardBrowser(QMainWindow):
         if self.maker is not None:
             self.maker.make_deck(self, parent_deck)
 
-    def improve(self, card_ids=None) -> None:
-        card_ids = self.selected_ids() if card_ids is None else card_ids
-        if self.maker is not None and card_ids:
-            self.save_note()
-            self.maker.improve(card_ids, self)
+    def improve(self, question_ids=None) -> None:
+        question_ids = self.selected_ids() if question_ids is None else question_ids
+        if self.maker is not None and question_ids:
+            self.save_question()
+            self.maker.improve(question_ids, self)
 
     def show_draft(self) -> None:
         if self.maker is None:
             return
         if self.maker.draft() is None:
             QMessageBox.information(self, "Claude's draft", "There is no draft from Claude waiting. Make a deck with "
-                                    "Claude (Ctrl+Shift+M), or select cards and improve them (Ctrl+Shift+K).")
+                                    "Claude (Ctrl+Shift+M), or select questions and improve them (Ctrl+Shift+K).")
             return
         self.maker.show_draft(self)
 
     def undo_rewrite(self) -> None:
-        self.save_note()
-        if self.maker is not None and self._card_id is not None and self.maker.undo_rewrite(self._card_id):
+        self.save_question()
+        if self.maker is not None and self._question_id is not None and self.maker.undo_rewrite(self._question_id):
             self._changed()
 
-    def cards_rewritten(self) -> None:
-        """Make with Claude added or rewrote cards: re-read them, and the editor's card."""
+    def questions_rewritten(self) -> None:
+        """Make with Claude added or rewrote questions: re-read them, and the editor's question."""
         self.model.invalidate()
         self.sidebar.refresh()
         if self.isVisible():
             self.search()
 
     def closeEvent(self, event) -> None:
-        self.save_note()
+        self.save_question()
         super().closeEvent(event)
 
 
 def sibling_text(kind: str, ord: int, ords: list[int]) -> str:
-    """Which of the cards made from the same text a card is ("Reverse side", "Cloze 2 of 3"),
-    or '' for a card on its own."""
+    """Which of the questions made from the same text a question is ("Reverse side", "Blank 2 of 3"),
+    or '' for a question on its own."""
     if len(ords) < 2:
         return ""
-    if kind == "reversed":
+    if kind == "both_ways":
         return "Reverse side" if ord == 1 else "Forward side"
-    what = {"cloze": "Cloze", "occlusion": "Shape"}.get(kind, "Card")
+    what = {"fill_in": "Blank", "image_labels": "Label"}.get(kind, "Question")
     if sorted(ords) == list(range(len(ords))):
         return f"{what} {ord + 1} of {len(ords)}"
     return f"{what} {ord + 1} (one of {len(ords)})"
 
 
 def sibling_edit_text(kind: str, count: int) -> str:
-    """What else an edit to one of `count` cards made from the same text changes, or ''."""
+    """What else an edit to one of `count` questions made from the same text changes, or ''."""
     if count < 2:
         return ""
-    if kind == "reversed":
+    if kind == "both_ways":
         return " (both sides)"
-    what = {"cloze": "cloze", "occlusion": "image occlusion"}.get(kind, "")
-    return f" (this changes its other {what + ' ' if what else ''}card{'s' * (count > 2)} too)"
+    what = {"fill_in": "fill-in-the-blank", "image_labels": "image labels"}.get(kind, "")
+    return f" (this changes its other {what + ' ' if what else ''}question{'s' * (count > 2)} too)"
 
 
 # -- find and replace ----------------------------------------------------------------------
@@ -1275,22 +1280,22 @@ FIND_FIELDS = [("", "All fields"), ("front", "Front"), ("back", "Back"), ("text"
                ("choices", "Choices")]
 
 
-def find_replace(db: Database, note_ids, find: str, replace: str, field: str = "", regex: bool = False,
+def find_replace(db: Database, group_ids, find: str, replace: str, field: str = "", regex: bool = False,
                  case: bool = False) -> tuple[int, int]:
-    """Replace text in the fields of these card_notes rows (one field, or all text fields).
-    Returns (cards changed, cards that would no longer be valid and were left alone), counting
-    every card that shares the text."""
+    """Replace text in the fields of these question_groups rows (one field, or all text fields).
+    Returns (questions changed, questions that would no longer be valid and were left alone), counting
+    every question that shares the text."""
     if not find:
         return 0, 0
     pattern = re.compile(find if regex else re.escape(find), 0 if case else re.IGNORECASE)
     repl = replace if regex else replace.replace("\\", "\\\\")
     changed = failed = 0
-    for note_id in note_ids:
-        note = db.card_note(note_id)
-        if note is None:
+    for group_id in group_ids:
+        group = db.question_group(group_id)
+        if group is None:
             continue
-        fields = json.loads(note["fields"])
-        keys = cardmodel.TEXT_FIELDS.get(note["kind"]) or ("question", "answer", "explanation", "rubric", "choices", "unit")
+        fields = json.loads(group["fields"])
+        keys = question_model.TEXT_FIELDS.get(group["kind"]) or ("question", "answer", "explanation", "rubric", "choices", "unit")
         new = dict(fields)
         for key in keys:
             if field and key != field:
@@ -1303,12 +1308,12 @@ def find_replace(db: Database, note_ids, find: str, replace: str, field: str = "
         if new == fields:
             continue
         try:
-            if note["kind"] in cardmodel.QUESTION_TYPES:
+            if group["kind"] in question_model.QUESTION_TYPES:
                 new = quiz.validate_question(new)
-            db.update_card_note(note_id, new)
-            changed += len(db.note_cards(note_id))
-        except (cardmodel.NoteError, ValueError, TypeError, KeyError):
-            failed += len(db.note_cards(note_id))
+            db.update_question_group(group_id, new)
+            changed += len(db.group_questions(group_id))
+        except (question_model.QuestionError, ValueError, TypeError, KeyError):
+            failed += len(db.group_questions(group_id))
     return changed, failed
 
 
@@ -1322,7 +1327,7 @@ class FindReplaceDialog(QDialog):
         self.field = QComboBox()
         for key, label in FIND_FIELDS:
             self.field.addItem(label, key)
-        self.selected_only = QCheckBox("Selected cards only (and those sharing their text)")
+        self.selected_only = QCheckBox("Selected questions only (and those sharing their text)")
         self.selected_only.setChecked(has_selection)
         self.selected_only.setEnabled(has_selection)
         self.regex = QCheckBox("Regular expression")
@@ -1341,41 +1346,41 @@ class FindReplaceDialog(QDialog):
         layout.addWidget(buttons)
 
 
-# -- card info -----------------------------------------------------------------------------
-class CardInfoDialog(QDialog):
-    """A card's schedule, memory state and every review."""
+# -- question info -------------------------------------------------------------------------
+class QuestionInfoDialog(QDialog):
+    """A question's schedule, memory state and every attempt."""
 
-    def __init__(self, db: Database, card_id: int, parent=None):
+    def __init__(self, db: Database, question_id: int, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Card info")
+        self.setWindowTitle("Question info")
         self.resize(620, 560)
-        card = db.card(card_id)
-        note = db.card_note(card["note_id"])
-        deck = db.deck(card["deck_id"])
-        reviews = db.reviews(card_id)
+        question = db.question(question_id)
+        group = db.question_group(question["group_id"])
+        deck = db.deck(question["deck_id"])
+        attempts = db.attempts(question_id)
         now = time.time()
-        r = srs.retrievability(db, card, now)
-        total_ms = sum(x["duration"] for x in reviews)
-        timed = [x["duration"] for x in reviews if x["duration"]]
+        r = practice.retrievability(db, question, now)
+        total_ms = sum(x["duration"] for x in attempts)
+        timed = [x["duration"] for x in attempts if x["duration"]]
         rows = [
-            ("Question", note["sort_text"][:160] if note else ""),
+            ("Question", group["sort_text"][:160] if group else ""),
             ("Deck", deck["name"] if deck else ""),
-            ("Type", cardmodel.TYPE_LABELS.get(note["kind"], "") if note else ""),
-            ("Card", sibling_text(note["kind"], card["ord"], [c["ord"] for c in db.note_cards(note["id"])])
-             if note else ""),
-            ("Created", _date(card["created_at"])),
-            ("First review", _date(reviews[0]["reviewed_at"]) if reviews else ""),
-            ("Latest review", _date(reviews[-1]["reviewed_at"]) if reviews else ""),
-            ("Due", "New" if card["stage"] == 0 else _date(card["due"]) + (" (suspended)" if card["suspended"] else "")),
-            ("Interval", _schedule_text(card, "interval")),
-            ("Stability", _schedule_text(card, "stability")),
-            ("Difficulty", _schedule_text(card, "difficulty")),
+            ("Type", question_model.TYPE_LABELS.get(group["kind"], "") if group else ""),
+            ("Part", sibling_text(group["kind"], question["ord"], [c["ord"] for c in db.group_questions(group["id"])])
+             if group else ""),
+            ("Created", _date(question["created_at"])),
+            ("First attempt", _date(attempts[0]["attempted_at"]) if attempts else ""),
+            ("Latest attempt", _date(attempts[-1]["attempted_at"]) if attempts else ""),
+            ("Due", "New" if question["stage"] == 0 else _date(question["due"]) + (" (suspended)" if question["suspended"] else "")),
+            ("Interval", _schedule_text(question, "interval")),
+            ("Stability", _schedule_text(question, "stability")),
+            ("Difficulty", _schedule_text(question, "difficulty")),
             ("Retrievability", f"{r * 100:.0f}%" if r is not None else ""),
-            ("Reviews", str(card["reps"])),
-            ("Lapses", str(card["lapses"])),
+            ("Attempts", str(question["reps"])),
+            ("Lapses", str(question["lapses"])),
             ("Average time", f"{sum(timed) / len(timed) / 1000:.1f} s" if timed else ""),
             ("Total time", f"{total_ms / 60000:.1f} min" if total_ms else ""),
-            ("Card ID", str(card["id"]) + (f" (Anki {card['anki_id']})" if card["anki_id"] else "")),
+            ("Question ID", str(question["id"]) + (f" (Anki {question['anki_id']})" if question["anki_id"] else "")),
         ]
         form = QFormLayout()
         for label, value in rows:
@@ -1384,15 +1389,16 @@ class CardInfoDialog(QDialog):
                 v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 v.setWordWrap(True)
                 form.addRow(QLabel(f"<b>{label}</b>"), v)
-        table = QTableWidget(len(reviews), 5)
+        table = QTableWidget(len(attempts), 5)
         table.setHorizontalHeaderLabels(["Date", "Rating", "Where", "Graded", "Time"])
         table.verticalHeader().hide()
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        where = {"chat": "Quiz in chat", "review": "Review", "anki": "Anki"}
-        for i, x in enumerate(reversed(reviews)):
+        # "review" is what the practice source was called before; the database migration renames it.
+        where = {"chat": "Quiz in chat", "practice": "Practice", "review": "Practice", "anki": "Anki"}
+        for i, x in enumerate(reversed(attempts)):
             for j, value in enumerate((
-                time.strftime("%Y-%m-%d %H:%M", time.localtime(x["reviewed_at"])), quiz.RATINGS.get(x["rating"], "?"),
+                time.strftime("%Y-%m-%d %H:%M", time.localtime(x["attempted_at"])), quiz.RATINGS.get(x["rating"], "?"),
                 where.get(x["source"], x["source"]), x["verdict"] or "", f"{x['duration'] / 1000:.0f} s" if x["duration"] else "",
             )):
                 table.setItem(i, j, QTableWidgetItem(value))
@@ -1400,6 +1406,6 @@ class CardInfoDialog(QDialog):
         close.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
-        layout.addWidget(QLabel(f"<b>Reviews</b> ({len(reviews)})"))
+        layout.addWidget(QLabel(f"<b>Attempts</b> ({len(attempts)})"))
         layout.addWidget(table, 1)
         layout.addWidget(close)

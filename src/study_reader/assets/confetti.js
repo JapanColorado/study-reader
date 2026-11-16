@@ -1,8 +1,8 @@
-// Confetti for the review page's celebrations: paper raining down from above the top edge
+// Confetti for the Practice page's celebrations: paper raining down from above the top edge
 // (drawn by hand, so it works offline). Nothing is shown when the system asks for reduced motion.
 // Each piece is a small element moved by the Web Animations API rather than redrawn from script:
 // the page renders without a GPU, and transform animations then run on the compositor, so the
-// fall stays smooth even while the page is busy laying out the next card.
+// fall stays smooth even while the page is busy laying out the next question.
 const confetti = (() => {
   const COLORS = ["#e8590c", "#f2c94c", "#3a8f5c", "#2f80ed", "#bb6bd9", "#eb5757", "#56ccf2"];
   const SPEED = [420, 640];   // fall speed range, px/s

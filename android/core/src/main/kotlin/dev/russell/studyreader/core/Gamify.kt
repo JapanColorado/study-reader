@@ -19,12 +19,12 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * The review rewards of the desktop's gamify.py: XP and levels, the combo multiplier, the daily
+ * The practice rewards of the desktop's gamify.py: XP and levels, the combo multiplier, the daily
  * goal, streaks and streak freezes, achievements, sessions. The state is the same JSON setting
  * (gamify_state). Whatever changes it is also handed to [record] as a sync event, so the desktop
  * can merge it (phone_sync._apply_reward).
  */
-class Gamify(val srs: Srs, val record: (JsonObject) -> Unit = {}) {
+class Gamify(val practice: Practice, val record: (JsonObject) -> Unit = {}) {
     companion object {
         const val ENABLED_SETTING = "gamify"
         const val GOAL_SETTING = "daily_goal"
@@ -36,7 +36,7 @@ class Gamify(val srs: Srs, val record: (JsonObject) -> Unit = {}) {
         const val MAX_MULTIPLIER = 2.0
         const val COMBO_PAUSE = 120.0
         const val MILESTONE_EVERY = 25
-        const val QUICK_CARDS = 5
+        const val QUICK_QUESTIONS = 5
         const val QUICK_SECONDS = 5 * 60
         const val FREEZE_EVERY = 7
         const val MAX_FREEZES = 2
@@ -51,10 +51,10 @@ class Gamify(val srs: Srs, val record: (JsonObject) -> Unit = {}) {
         data class Achievement(val id: String, val icon: String, val name: String, val desc: String, val value: String, val threshold: Int)
 
         val ACHIEVEMENTS = listOf(
-            Achievement("first", "🌱", "First steps", "Review your first card", "reviews", 1),
-            Achievement("reviews_100", "💯", "Centurion", "Review 100 cards", "reviews", 100),
-            Achievement("reviews_1000", "📚", "Bookworm", "Review 1,000 cards", "reviews", 1000),
-            Achievement("reviews_10000", "🏛️", "Library of Alexandria", "Review 10,000 cards", "reviews", 10000),
+            Achievement("first", "🌱", "First steps", "Answer your first question", "attempts", 1),
+            Achievement("attempts_100", "💯", "Centurion", "Answer 100 questions", "attempts", 100),
+            Achievement("attempts_1000", "📚", "Bookworm", "Answer 1,000 questions", "attempts", 1000),
+            Achievement("attempts_10000", "🏛️", "Library of Alexandria", "Answer 10,000 questions", "attempts", 10000),
             Achievement("streak_3", "🔥", "Warming up", "Reach a 3-day streak", "streak", 3),
             Achievement("streak_7", "🗓️", "A week of it", "Reach a 7-day streak", "streak", 7),
             Achievement("streak_30", "🌙", "Month of memory", "Reach a 30-day streak", "streak", 30),
@@ -62,19 +62,26 @@ class Gamify(val srs: Srs, val record: (JsonObject) -> Unit = {}) {
             Achievement("streak_365", "👑", "Year of learning", "Reach a 365-day streak", "streak", 365),
             Achievement("goal_1", "🎯", "On target", "Meet your daily goal", "goals", 1),
             Achievement("goal_30", "🏹", "Sharpshooter", "Meet your daily goal on 30 days", "goals", 30),
-            Achievement("combo_25", "⚡", "In the flow", "Review 25 cards in a row without a long pause", "combo", 25),
-            Achievement("combo_100", "🌊", "Deep focus", "Review 100 cards in a row without a long pause", "combo", 100),
-            Achievement("marathon", "🏃", "Marathon", "Review 100 cards in one session", "session", 100),
-            Achievement("caught_up", "🧹", "Inbox zero", "Review every card that's due", "caught_up", 1),
+            Achievement("combo_25", "⚡", "In the flow", "Answer 25 questions in a row without a long pause", "combo", 25),
+            Achievement("combo_100", "🌊", "Deep focus", "Answer 100 questions in a row without a long pause", "combo", 100),
+            Achievement("marathon", "🏃", "Marathon", "Answer 100 questions in one session", "session", 100),
+            Achievement("caught_up", "🧹", "Inbox zero", "Practice every question that's due", "caught_up", 1),
             Achievement("quick", "🍪", "Snack-sized", "Finish a quick session", "quick", 1),
-            Achievement("mature_1", "🌳", "Taking root", "Get a card to a 3-week interval", "mature", 1),
-            Achievement("mature_100", "🌲", "Forest", "Have 100 cards at 3-week intervals or longer", "mature", 100),
+            Achievement("mature_1", "🌳", "Taking root", "Get a question to a 3-week interval", "mature", 1),
+            Achievement("mature_100", "🌲", "Forest", "Have 100 questions at 3-week intervals or longer", "mature", 100),
             Achievement("level_10", "⭐", "Rising star", "Reach level 10", "level", 10),
             Achievement("level_25", "🌟", "Shining", "Reach level 25", "level", 25),
-            Achievement("night_owl", "🦉", "Night owl", "Review after midnight", "night_owl", 1),
-            Achievement("early_bird", "🐦", "Early bird", "Review before 7 am", "early_bird", 1),
+            Achievement("night_owl", "🦉", "Night owl", "Practice after midnight", "night_owl", 1),
+            Achievement("early_bird", "🐦", "Early bird", "Practice before 7 am", "early_bird", 1),
             Achievement("comeback", "🤝", "Welcome back", "Come back after $COMEBACK_DAYS or more days away", "comeback", 1),
         )
+
+        /** Achievement keys from before the rename (gamify.ACHIEVEMENT_ALIASES), read in stored state and
+         *  in reward events. */
+        val ACHIEVEMENT_ALIASES = mapOf("reviews_100" to "attempts_100", "reviews_1000" to "attempts_1000",
+            "reviews_10000" to "attempts_10000")
+
+        fun achievementKey(key: String): String = ACHIEVEMENT_ALIASES[key] ?: key
 
         fun levelXp(level: Int): Int = 100 * (level - 1) + 25 * (level - 1) * (level - 2)
 
@@ -87,9 +94,9 @@ class Gamify(val srs: Srs, val record: (JsonObject) -> Unit = {}) {
 
         fun multiplier(combo: Int): Double = min(1 + (combo / COMBO_STEP) / 10.0, MAX_MULTIPLIER)
 
-        fun interval(card: Row): Double {
-            if (card.long("stage") != 2L || card["last_review"] == null) return 0.0
-            return (card.double("due") - card.double("last_review")) / 86400
+        fun interval(question: Row): Double {
+            if (question.long("stage") != 2L || question["last_attempt"] == null) return 0.0
+            return (question.double("due") - question.double("last_attempt")) / 86400
         }
     }
 
@@ -117,39 +124,43 @@ class Gamify(val srs: Srs, val record: (JsonObject) -> Unit = {}) {
                     xp = int("xp", 0), freezes = int("freezes", START_FREEZES),
                     frozen = (o["frozen"] as? JsonArray)?.map { it.jsonPrimitive.content }?.toMutableList() ?: mutableListOf(),
                     freezeEarned = str("freeze_earned"), goals = int("goals", 0), goalDay = str("goal_day"),
-                    achievements = LinkedHashMap((o["achievements"] as? JsonObject)?.mapValues { it.value.jsonPrimitive.doubleOrNull ?: 0.0 } ?: emptyMap()),
+                    achievements = LinkedHashMap<String, Double>().also { out ->
+                        (o["achievements"] as? JsonObject)?.forEach { (k, v) ->
+                            out.putIfAbsent(achievementKey(k), (v as? JsonPrimitive)?.doubleOrNull ?: 0.0)
+                        }
+                    },
                     extra = o.filterKeys { it !in KNOWN },
                 )
             }
         }
     }
 
-    val db get() = srs.db
+    val db get() = practice.db
 
-    fun enabled(): Boolean = srs.setting(ENABLED_SETTING, "1") != "0"
-    fun dailyGoal(): Int = srs.setting(GOAL_SETTING, "$DEFAULT_GOAL").toIntOrNull()?.let { max(it, 1) } ?: DEFAULT_GOAL
+    fun enabled(): Boolean = practice.setting(ENABLED_SETTING, "1") != "0"
+    fun dailyGoal(): Int = practice.setting(GOAL_SETTING, "$DEFAULT_GOAL").toIntOrNull()?.let { max(it, 1) } ?: DEFAULT_GOAL
 
     fun load(now: Double, logged: Boolean = false): State {
-        val raw = srs.setting(STATE_SETTING)
+        val raw = practice.setting(STATE_SETTING)
         if (raw.isNotBlank()) try { return State.fromJson(raw) } catch (_: Exception) {}
         val state = State()
-        val maxId = db.long("SELECT MAX(id) FROM reviews")
-        val row = db.one("SELECT COUNT(*) AS n, COALESCE(SUM(was_new), 0) AS new FROM reviews WHERE id<?", maxId + if (logged) 0 else 1)!!
+        val maxId = db.long("SELECT MAX(id) FROM attempts")
+        val row = db.one("SELECT COUNT(*) AS n, COALESCE(SUM(was_new), 0) AS new FROM attempts WHERE id<?", maxId + if (logged) 0 else 1)!!
         val n = row.long("n").toInt()
         state.xp = BASE_XP * n + NEW_XP * row.long("new").toInt()
-        unlock(state, mapOf("reviews" to n, "streak" to longest(reviewDays()), "level" to level(state.xp)["level"] as Int, "mature" to mature()), now, quiet = true)
+        unlock(state, mapOf("attempts" to n, "streak" to longest(practiceDays()), "level" to level(state.xp)["level"] as Int, "mature" to mature()), now, quiet = true)
         save(state)
         return state
     }
 
-    fun save(state: State) = srs.setSetting(STATE_SETTING, state.toJson())
+    fun save(state: State) = practice.setSetting(STATE_SETTING, state.toJson())
 
-    /** Reviews per review day (days roll over at 4 am). */
-    fun reviewDays(): Map<LocalDate, Int> =
-        db.query("SELECT date(reviewed_at, 'unixepoch', 'localtime', ?) AS d, COUNT(*) AS n FROM reviews GROUP BY d",
-            "-${Srs.DAY_STARTS_AT_HOUR} hours").associate { LocalDate.parse(it.str("d")) to it.long("n").toInt() }
+    /** Attempts per practice day (days roll over at 4 am). */
+    fun practiceDays(): Map<LocalDate, Int> =
+        db.query("SELECT date(attempted_at, 'unixepoch', 'localtime', ?) AS d, COUNT(*) AS n FROM attempts GROUP BY d",
+            "-${Practice.DAY_STARTS_AT_HOUR} hours").associate { LocalDate.parse(it.str("d")) to it.long("n").toInt() }
 
-    fun mature(): Int = db.long("SELECT COUNT(*) FROM cards WHERE stage=2 AND last_review IS NOT NULL AND due-last_review>=?",
+    fun mature(): Int = db.long("SELECT COUNT(*) FROM questions WHERE stage=2 AND last_attempt IS NOT NULL AND due-last_attempt>=?",
         MATURE_DAYS * 86400.0).toInt()
 
     private fun frozen(state: State) = state.frozen.map { LocalDate.parse(it) }.toSet()
@@ -212,15 +223,15 @@ class Gamify(val srs: Srs, val record: (JsonObject) -> Unit = {}) {
         return listOf(buildJsonObject { put("kind", "goal") })
     }
 
-    /** After a review was logged: its XP and what it earned, as events for the page. */
-    fun reviewed(new: Boolean, comboMultiplier: Double, now: Double, combo: Int, session: Int): List<JsonObject> {
+    /** After an attempt was logged: its XP and what it earned, as events for the page. */
+    fun attempted(new: Boolean, comboMultiplier: Double, now: Double, combo: Int, session: Int): List<JsonObject> {
         val state = load(now, logged = true)
-        val days = reviewDays()
-        val today = srs.dayOf(now)
+        val days = practiceDays()
+        val today = practice.dayOf(now)
         settle(state, days, today)
         val events = mutableListOf<JsonObject>()
         val before = level(state.xp)["level"] as Int
-        val gained = Srs.pyRound((BASE_XP + NEW_XP * (if (new) 1 else 0)) * comboMultiplier).toInt()
+        val gained = Practice.pyRound((BASE_XP + NEW_XP * (if (new) 1 else 0)) * comboMultiplier).toInt()
         state.xp += gained
         record(event("xp", now) { put("amount", gained) })
         events += buildJsonObject { put("kind", "xp"); put("xp", gained) }
@@ -240,12 +251,12 @@ class Gamify(val srs: Srs, val record: (JsonObject) -> Unit = {}) {
         val comeback = (days[today] ?: 0) == 1 && earlier.isNotEmpty() &&
             java.time.temporal.ChronoUnit.DAYS.between(earlier.max(), today) >= COMEBACK_DAYS
         if (comeback) events += buildJsonObject { put("kind", "welcome"); put("days", java.time.temporal.ChronoUnit.DAYS.between(earlier.max(), today)) }
-        val hour = ZonedDateTime.ofInstant(java.time.Instant.ofEpochMilli((now * 1000).toLong()), srs.zone).hour
+        val hour = ZonedDateTime.ofInstant(java.time.Instant.ofEpochMilli((now * 1000).toLong()), practice.zone).hour
         events += unlock(state, mapOf(
-            "combo" to combo, "session" to session, "reviews" to days.values.sum(), "streak" to current,
+            "combo" to combo, "session" to session, "attempts" to days.values.sum(), "streak" to current,
             "level" to after["level"] as Int, "mature" to mature(), "goals" to state.goals, "comeback" to if (comeback) 1 else 0,
-            "night_owl" to if (hour < Srs.DAY_STARTS_AT_HOUR) 1 else 0,
-            "early_bird" to if (hour >= Srs.DAY_STARTS_AT_HOUR && hour < 7) 1 else 0,
+            "night_owl" to if (hour < Practice.DAY_STARTS_AT_HOUR) 1 else 0,
+            "early_bird" to if (hour >= Practice.DAY_STARTS_AT_HOUR && hour < 7) 1 else 0,
         ), now)
         save(state)
         return events
@@ -256,12 +267,12 @@ class Gamify(val srs: Srs, val record: (JsonObject) -> Unit = {}) {
         put("xp", l["xp"] as Int); put("into", l["into"] as Int); put("need", l["need"] as Int)
     }
 
-    /** A session ended: everything reviewed (which meets the goal too), or a quick session finished. */
+    /** A session ended: everything due practiced (which meets the goal too), or a quick session finished. */
     fun finished(caughtUp: Boolean, quick: Boolean, now: Double): List<JsonObject> {
         val state = load(now)
         val events = mutableListOf<JsonObject>()
-        val today = srs.dayOf(now)
-        if (caughtUp && (reviewDays()[today] ?: 0) > 0) events += goalMet(state, today, now)
+        val today = practice.dayOf(now)
+        if (caughtUp && (practiceDays()[today] ?: 0) > 0) events += goalMet(state, today, now)
         events += unlock(state, mapOf("caught_up" to if (caughtUp) 1 else 0, "quick" to if (quick) 1 else 0, "goals" to state.goals), now)
         save(state)
         return events
@@ -270,8 +281,8 @@ class Gamify(val srs: Srs, val record: (JsonObject) -> Unit = {}) {
     /** For the overview: level, streak, today against the goal, the calendar, achievements. */
     fun status(now: Double): JsonObject {
         val state = load(now)
-        val days = reviewDays()
-        val today = srs.dayOf(now)
+        val days = practiceDays()
+        val today = practice.dayOf(now)
         if (settle(state, days, today)) save(state)
         val current = streak(days, frozen(state), today)
         val goal = dailyGoal()
@@ -312,7 +323,7 @@ class Gamify(val srs: Srs, val record: (JsonObject) -> Unit = {}) {
         when (type) {
             "xp" -> state.xp += max(e["amount"]?.jsonPrimitive?.intOrNull ?: 0, 0)
             "achievement" -> {
-                val key = e["key"]!!.jsonPrimitive.content
+                val key = achievementKey(e["key"]!!.jsonPrimitive.content)
                 if (ACHIEVEMENTS.any { it.id == key } && key !in state.achievements) state.achievements[key] = at
             }
             "goal" -> {
@@ -331,14 +342,20 @@ class Gamify(val srs: Srs, val record: (JsonObject) -> Unit = {}) {
         save(state)
     }
 
-    /** One sitting: its combo, what it achieved, and how long it runs ("cards", "time" or ""). Times in seconds (monotonic). */
+    /** One sitting: its combo, what it achieved, and how long it runs ([QUESTIONS], [TIME] or ""). Times in seconds (monotonic). */
     class Session(val limit: String = "", val started: Double = monotonic()) {
-        var reviewed = 0; var passed = 0; var combo = 0; var best = 0; var xp = 0; var matured = 0
+        companion object {
+            /** The limits as practice.html names them ("questions": QUICK_QUESTIONS questions; "time": QUICK_SECONDS). */
+            const val QUESTIONS = "questions"
+            const val TIME = "time"
+        }
+
+        var attempted = 0; var passed = 0; var combo = 0; var best = 0; var xp = 0; var matured = 0
         var stability = 0.0
         val multiplier get() = multiplier(combo)
 
         fun record(before: Row, after: Row, rating: Int, seconds: Double): List<JsonObject> {
-            reviewed++
+            attempted++
             if (rating > 1) passed++
             combo = if (seconds >= COMBO_PAUSE) 1 else combo + 1
             best = max(best, combo)
@@ -347,26 +364,26 @@ class Gamify(val srs: Srs, val record: (JsonObject) -> Unit = {}) {
             val events = mutableListOf<JsonObject>()
             if (combo % COMBO_STEP == 0 && multiplier > multiplier(combo - 1))
                 events += buildJsonObject { put("kind", "combo"); put("combo", combo); put("multiplier", multiplier) }
-            if (reviewed % MILESTONE_EVERY == 0) events += buildJsonObject { put("kind", "milestone"); put("n", reviewed) }
+            if (attempted % MILESTONE_EVERY == 0) events += buildJsonObject { put("kind", "milestone"); put("n", attempted) }
             return events
         }
 
         fun over(now: Double = monotonic()): Boolean = when (limit) {
-            "cards" -> reviewed >= QUICK_CARDS
-            "time" -> now - started >= QUICK_SECONDS
+            QUESTIONS -> attempted >= QUICK_QUESTIONS
+            TIME -> now - started >= QUICK_SECONDS
             else -> false
         }
 
         fun progress(remaining: Int, now: Double = monotonic()) = buildJsonObject {
-            put("limit", limit); put("done", reviewed)
-            put("total", if (limit == "cards") QUICK_CARDS else reviewed + remaining)
+            put("limit", limit); put("done", attempted)
+            put("total", if (limit == QUESTIONS) QUICK_QUESTIONS else attempted + remaining)
             put("left", max(QUICK_SECONDS - (now - started), 0.0)); put("seconds", QUICK_SECONDS)
             put("combo", combo); put("multiplier", multiplier)
         }
 
         fun summary(caughtUp: Boolean, now: Double = monotonic()) = buildJsonObject {
-            put("reviewed", reviewed); put("passed", passed); put("seconds", Srs.pyRound(now - started))
-            put("xp", xp); put("best", best); put("matured", matured); put("stability", Srs.pyRound(stability))
+            put("attempted", attempted); put("passed", passed); put("seconds", Practice.pyRound(now - started))
+            put("xp", xp); put("best", best); put("matured", matured); put("stability", Practice.pyRound(stability))
             put("caught_up", caughtUp); put("quick", limit.isNotEmpty() && over(now)); put("limit", limit)
         }
     }

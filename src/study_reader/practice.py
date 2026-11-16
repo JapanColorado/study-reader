@@ -1,6 +1,7 @@
-"""Spaced repetition: every quiz question Claude writes becomes a card, scheduled with FSRS, as do
-the cards made in the card browser or migrated from Anki. A quiz question's first answer in the
-chat counts as its first review; after that it comes back on the Review page. Qt-free."""
+"""Practice: every quiz question Claude writes goes into practice, scheduled with FSRS to come
+back right before it would be forgotten, as do the questions made in the question browser or
+migrated from Anki. A quiz question's first answer in the chat counts as its first attempt; after
+that it comes back on the Practice page. Qt-free."""
 
 from __future__ import annotations
 
@@ -12,19 +13,19 @@ from datetime import datetime, timedelta, timezone
 
 from fsrs import Card, Rating, Scheduler, State
 
-from . import cardmodel, quiz
+from . import question_model, quiz
 from .db import Database, last_page
 
 VERDICT_RATINGS = {"correct": 3, "partial": 2, "incorrect": 1}
-NEW_PER_DAY_SETTING = "srs_new_per_day"
+NEW_PER_DAY_SETTING = "practice_new_per_day"
 DEFAULT_NEW_PER_DAY = 20
-BACKFILL_SETTING = "srs_backfilled"
-RETENTION_SETTING = "srs_desired_retention"
-PARAMETERS_SETTING = "srs_parameters"  # JSON list of FSRS-6 weights ('' for the defaults)
+BACKFILL_SETTING = "practice_backfilled"
+RETENTION_SETTING = "practice_desired_retention"
+PARAMETERS_SETTING = "practice_parameters"  # JSON list of FSRS-6 weights ('' for the defaults)
 DEFAULT_RETENTION = 0.9
-# Like Anki, a day of reviews runs from 4 am to 4 am.
+# Like Anki, a day of practice runs from 4 am to 4 am.
 DAY_STARTS_AT_HOUR = 4
-# With nothing else left, cards in learning this soon are shown early rather than waited for.
+# With nothing else left, questions in learning this soon are shown early rather than waited for.
 LEARN_AHEAD = 20 * 60
 
 _scheduler = Scheduler()
@@ -36,7 +37,7 @@ def dt(t: float) -> datetime:
 
 
 def day_start(now: float) -> float:
-    """When the review day holding `now` began, in local time."""
+    """When the practice day holding `now` began, in local time."""
     local = datetime.fromtimestamp(now)
     start = local.replace(hour=DAY_STARTS_AT_HOUR, minute=0, second=0, microsecond=0)
     if local < start:
@@ -91,12 +92,12 @@ def decay(db: Database | None) -> float:
     return parameters(db)[20]
 
 
-def recall(stability, last_review, now: float, decay: float) -> float | None:
-    """Retrievability on FSRS-6's forgetting curve from a card's stored stability and last
-    review (None while it has neither)."""
-    if not stability or stability <= 0 or last_review is None:
+def recall(stability, last_attempt, now: float, decay: float) -> float | None:
+    """Retrievability on FSRS-6's forgetting curve from a question's stored stability and last
+    attempt (None while it has neither)."""
+    if not stability or stability <= 0 or last_attempt is None:
         return None
-    t = max(now - last_review, 0) / 86400
+    t = max(now - last_attempt, 0) / 86400
     return (1 + (0.9 ** (-1 / decay) - 1) * t / stability) ** -decay
 
 
@@ -108,18 +109,17 @@ def scheduler(db: Database | None = None) -> Scheduler:
     return _schedulers[key]
 
 
-# -- cards ---------------------------------------------------------------------------------
-def add_quiz_cards(db: Database, book_id: int | None, message_id: int, text: str, now: float | None = None,
-                   deck_id: int | None = None) -> list[int]:
-    """Cards for every question of the quizzes in a reply (those it doesn't have yet), in deck_id
-    (else the book's deck), tagged
-    with the tags Claude gives and the section of the book they draw on: the one Claude names
-    (for exercises at a chapter's end), else that of the page Claude gives, else the section
-    holding all the pages the quiz was asked about.
+# -- questions ------------------------------------------------------------------------------
+def add_quiz_questions(db: Database, book_id: int | None, message_id: int, text: str, now: float | None = None,
+                       deck_id: int | None = None) -> list[int]:
+    """Put every question of the quizzes in a reply into practice (those not there yet), in
+    deck_id (else the book's deck), tagged with the tags Claude gives and the section of the book
+    they draw on: the one Claude names (for exercises at a chapter's end), else that of the page
+    Claude gives, else the section holding all the pages the quiz was asked about.
 
-    A quiz that revises an earlier one (quiz.revised_quiz) takes over the cards of the questions
-    it carries over, which keep their schedules and history with the new content; the earlier
-    quiz's other cards go unless they were reviewed. Returns the cards added or taken over."""
+    A quiz that revises an earlier one (quiz.revised_quiz) takes over the questions it carries
+    over, which keep their schedules and history with the new content; the earlier quiz's other
+    questions go unless they were attempted. Returns the ids of the questions added or taken over."""
     now = time.time() if now is None else now
     first, last = _asked_pages(db, message_id)
     book = db.book(book_id)
@@ -127,28 +127,28 @@ def add_quiz_cards(db: Database, book_id: int | None, message_id: int, text: str
     added = []
     for qi, q in enumerate(quiz.quizzes(text)):
         old = _revised(db, message_id, q["revises"]) if q.get("revises") and "questions" in q else None
-        for i, question in enumerate(q.get("questions", [])):
-            question = dict(question)
-            tags = question.pop("tags", [])
-            n = question.pop("revises", None)
-            section = question.pop("section", None)
-            p, to = (question["page"] - 1,) * 2 if question.get("page") else (first, last)
+        for i, content in enumerate(q.get("questions", [])):
+            content = dict(content)
+            tags = content.pop("tags", [])
+            n = content.pop("revises", None)
+            section = content.pop("section", None)
+            p, to = (content["page"] - 1,) * 2 if content.get("page") else (first, last)
             tag = section_tag(book["title"], toc, p, to, section) if book else None
             tags = [*tags, tag] if tag else tags
-            card = db.card_for(old[0], old[1], n - 1) if old and n else None
-            if card is not None and db.card_for(message_id, qi, i) is None:
-                db.relink_card(card["id"], message_id, qi, i, q["title"], p, now)
-                kind, fields = cardmodel.card_fields(question)
-                note = db.card_note(card["note_id"])
-                db.update_card_note(card["note_id"], fields, [*note["tags"].split(), *tags], kind, now)
-                added.append(card["id"])
+            row = db.question_for(old[0], old[1], n - 1) if old and n else None
+            if row is not None and db.question_for(message_id, qi, i) is None:
+                db.relink_question(row["id"], message_id, qi, i, q["title"], p, now)
+                kind, fields = question_model.question_fields(content)
+                group = db.question_group(row["group_id"])
+                db.update_question_group(row["group_id"], fields, [*group["tags"].split(), *tags], kind, now)
+                added.append(row["id"])
                 continue
-            card_id = db.add_card(book_id, message_id, qi, i, q["title"], json.dumps(question), p, now, tags=tags,
-                                  deck_id=deck_id)
-            if card_id is not None:
-                added.append(card_id)
+            question_id = db.add_question(book_id, message_id, qi, i, q["title"], json.dumps(content), p, now,
+                                          tags=tags, deck_id=deck_id)
+            if question_id is not None:
+                added.append(question_id)
         if old:
-            db.drop_new_quiz_cards(*old)
+            db.drop_new_quiz_questions(*old)
     return added
 
 
@@ -181,9 +181,9 @@ def _asked_pages(db: Database, message_id: int) -> tuple[int | None, int | None]
 
 
 # -- sections ------------------------------------------------------------------------------
-# A quiz card is tagged with the section of its book it draws on, from the book's contents:
+# A quiz question is tagged with the section of its book it draws on, from the book's contents:
 # Book::Chapter::Section (tag parts have no spaces or commas, see tag_part).
-tag_part = cardmodel.tag_part
+tag_part = question_model.tag_part
 
 
 # End-of-chapter matter that some books' contents nest inside the chapter's last section.
@@ -264,7 +264,7 @@ def section_tag(book_title: str, toc, page: int | None, last: int | None = None,
 
 
 def learn_toc(db: Database, book_id: int, toc) -> int:
-    """Remember a book's contents. The first time they are known, the book's quiz cards made
+    """Remember a book's contents. The first time they are known, the book's quiz questions made
     before get their section tags. Returns how many were tagged."""
     book = db.book(book_id)
     if book is None:
@@ -275,10 +275,10 @@ def learn_toc(db: Database, book_id: int, toc) -> int:
     if not first or not toc:
         return 0
     tagged = 0
-    for card in db.cards(book_id, "quiz IS NOT NULL AND page IS NOT NULL"):
-        tag = section_tag(book["title"], toc, card["page"])
+    for row in db.questions(book_id, "quiz IS NOT NULL AND page IS NOT NULL"):
+        tag = section_tag(book["title"], toc, row["page"])
         if tag:
-            db.add_tags([card["note_id"]], [tag])
+            db.add_tags([row["group_id"]], [tag])
             tagged += 1
     return tagged
 
@@ -296,7 +296,7 @@ def tags_context(db: Database) -> str:
     tags = concept_tags(db)[:MAX_TAGS_IN_CONTEXT]
     if not tags:
         return ""
-    return ("Tags already in the user's review deck (reuse these for quiz questions where they fit):\n"
+    return ("Tags already on the user's practice questions (reuse these for quiz questions where they fit):\n"
             f"<existing_tags>{' '.join(tags)}</existing_tags>")
 
 
@@ -305,14 +305,14 @@ def section_root(book) -> str:
 
 
 def sections(db: Database, now: float | None = None) -> dict[int, list[dict]]:
-    """For every book, the sections its cards are tagged with, as a tree in reading order:
+    """For every book, the sections its questions are tagged with, as a tree in reading order:
     {book id: [{tag, name, parent (tag or None), due, new, total}]}. A section's counts include
-    those of the sections in it; new: cards waiting, not capped by today's allowance."""
+    those of the sections in it; new: questions waiting, not capped by today's allowance."""
     now = time.time() if now is None else now
     roots = {b["id"]: section_root(b) for b in db.conn.execute("SELECT id, title FROM books")}
     rows = db.conn.execute(
-        f"SELECT c.book_id, c.page, n.tags, {due_sql('c.')} AS due, c.suspended=0 AND c.stage=0 AS new "
-        f"FROM cards c JOIN card_notes n ON n.id=c.note_id WHERE c.book_id IS NOT NULL AND n.tags!=''",
+        f"SELECT c.book_id, c.page, g.tags, {due_sql('c.')} AS due, c.suspended=0 AND c.stage=0 AS new "
+        f"FROM questions c JOIN question_groups g ON g.id=c.group_id WHERE c.book_id IS NOT NULL AND g.tags!=''",
         (next_day(now), now),
     )
     nodes: dict[int, dict[str, dict]] = {}
@@ -336,7 +336,7 @@ def sections(db: Database, now: float | None = None) -> dict[int, list[dict]]:
             n["total"] += 1
             if r["page"] is not None and (n["page"] is None or r["page"] < n["page"]):
                 n["page"] = r["page"]
-    # Sections in the book's order: from where they start, else from their first card.
+    # Sections in the book's order: from where they start, else from their first question.
     for b, ns in nodes.items():
         starts = _section_starts(roots[b], db.book(b)["toc"])
         for n in ns.values():
@@ -357,12 +357,13 @@ def _section_starts(root: str, toc_json: str | None) -> dict[str, int]:
     return starts
 
 
-def question(card) -> dict:
-    return json.loads(card["data"])
+def question(row) -> dict:
+    """A question row's content, as quiz.py parses it."""
+    return json.loads(row["data"])
 
 
-def is_new(card) -> bool:
-    return card["reps"] == 0
+def is_new(row) -> bool:
+    return row["reps"] == 0
 
 
 def suggested_rating(verdict: str | None) -> int | None:
@@ -370,100 +371,101 @@ def suggested_rating(verdict: str | None) -> int | None:
 
 
 # -- scheduling ----------------------------------------------------------------------------
-def _fsrs_card(card, now: float) -> Card:
-    if card["fsrs"]:
-        return Card.from_json(card["fsrs"])
+def _fsrs_card(row, now: float) -> Card:
+    if row["fsrs"]:
+        return Card.from_json(row["fsrs"])
     return Card(due=dt(now))
 
 
-def review(
-    db: Database, card_id: int, rating: int, now: float | None = None, response: dict | None = None,
-    verdict: str | None = None, source: str = "review", duration: int = 0,
+def attempt(
+    db: Database, question_id: int, rating: int, now: float | None = None, response: dict | None = None,
+    verdict: str | None = None, source: str = "practice", duration: int = 0,
 ) -> None:
-    """Schedule a card after it was answered and rated (1 again … 4 easy). duration: ms spent on it."""
+    """Log an attempt at a question, answered and rated (1 missed … 4 easy), and schedule it.
+    duration: ms spent on it."""
     now = time.time() if now is None else now
-    card = db.card(card_id)
-    if card is None:
+    row = db.question(question_id)
+    if row is None:
         return
-    fsrs_card, _ = scheduler(db).review_card(_fsrs_card(card, now), Rating(rating), dt(now))
-    lapse = rating == 1 and card["stage"] == State.Review.value
-    db.record_review(
-        card_id, rating, source, json.dumps(response) if response else "", verdict, now, duration,
-        was_new=card["stage"] == 0, **schedule_columns(fsrs_card), reps=card["reps"] + 1, lapses=card["lapses"] + lapse,
+    fsrs_card, _ = scheduler(db).review_card(_fsrs_card(row, now), Rating(rating), dt(now))
+    lapse = rating == 1 and row["stage"] == State.Review.value
+    db.record_attempt(
+        question_id, rating, source, json.dumps(response) if response else "", verdict, now, duration,
+        was_new=row["stage"] == 0, **schedule_columns(fsrs_card), reps=row["reps"] + 1, lapses=row["lapses"] + lapse,
     )
 
 
 def schedule_columns(fsrs_card: Card) -> dict:
-    """The cards-table columns that hold an fsrs.Card's schedule."""
+    """The questions-table columns that hold an fsrs.Card's schedule."""
     return {
         "fsrs": fsrs_card.to_json(), "stage": fsrs_card.state.value, "due": fsrs_card.due.timestamp(),
         "stability": fsrs_card.stability, "difficulty": fsrs_card.difficulty,
-        "last_review": fsrs_card.last_review.timestamp() if fsrs_card.last_review else None,
+        "last_attempt": fsrs_card.last_review.timestamp() if fsrs_card.last_review else None,
     }
 
 
 def new_schedule_columns(due: float) -> dict:
-    """The cards-table columns of a card that is new (again)."""
+    """The questions-table columns of a question that is new (again)."""
     return {"stage": 0, "fsrs": "", "due": due, "reps": 0, "lapses": 0, "stability": None, "difficulty": None,
-            "last_review": None}
+            "last_attempt": None}
 
 
-def forget(db: Database, card_ids, now: float | None = None) -> None:
-    """Make cards new again (their review log stays)."""
+def forget(db: Database, question_ids, now: float | None = None) -> None:
+    """Make questions new again (their attempts stay logged)."""
     now = time.time() if now is None else now
-    db.update_cards(card_ids, **new_schedule_columns(now), updated_at=now)
+    db.update_questions(question_ids, **new_schedule_columns(now), updated_at=now)
 
 
-def set_due(db: Database, card_ids, first: int, last: int | None = None, now: float | None = None) -> int:
-    """Make cards due in `first` days (0 = today), or spread at random over first..last days.
-    New cards are left in the new queue. Returns how many cards were rescheduled."""
+def set_due(db: Database, question_ids, first: int, last: int | None = None, now: float | None = None) -> int:
+    """Make questions due in `first` days (0 = today), or spread at random over first..last days.
+    New questions are left in the new queue. Returns how many were rescheduled."""
     import random
     now = time.time() if now is None else now
     moved = 0
-    for card_id in card_ids:
-        card = db.card(card_id)
-        if card is None or card["stage"] == 0:
+    for question_id in question_ids:
+        row = db.question(question_id)
+        if row is None or row["stage"] == 0:
             continue
         days = random.randint(first, last) if last is not None and last > first else first
         due = day_start(now) + days * 86400 + (now - day_start(now) if days == 0 else 0)
-        fsrs_card = _fsrs_card(card, now)
+        fsrs_card = _fsrs_card(row, now)
         fsrs_card.due = dt(due)
         if fsrs_card.state != State.Review:  # learning steps don't fit a date: graduate it
             fsrs_card.state, fsrs_card.step = State.Review, None
-        db.update_card(card_id, **schedule_columns(fsrs_card), updated_at=now)
+        db.update_question(question_id, **schedule_columns(fsrs_card), updated_at=now)
         moved += 1
     return moved
 
 
-def retrievability(db: Database | None, card, now: float | None = None) -> float | None:
-    """How likely the card is to be recalled now (None while new)."""
-    if not card["fsrs"]:
+def retrievability(db: Database | None, row, now: float | None = None) -> float | None:
+    """How likely the question is to be recalled now (None while new)."""
+    if not row["fsrs"]:
         return None
     now = time.time() if now is None else now
-    return scheduler(db).get_card_retrievability(Card.from_json(card["fsrs"]), dt(now))
+    return scheduler(db).get_card_retrievability(Card.from_json(row["fsrs"]), dt(now))
 
 
 def answered_in_chat(
     db: Database, message_id: int, quiz_index: int, question_index: int, verdict: str | None,
     response: dict, now: float | None = None,
 ) -> bool:
-    """A quiz question answered (and graded) in the chat: its card's first review, if it has
-    had none. Later answers (retakes) don't change the schedule. True if it was recorded."""
-    card = db.card_for(message_id, quiz_index, question_index)
+    """A quiz question answered (and graded) in the chat: its first attempt, if it has had
+    none. Later answers (retakes) don't change the schedule. True if it was recorded."""
+    row = db.question_for(message_id, quiz_index, question_index)
     rating = response.get("rating") if "rating" in response else suggested_rating(verdict)
-    if card is None or db.reviews(card["id"]) or rating not in quiz.RATINGS:
+    if row is None or db.attempts(row["id"]) or rating not in quiz.RATINGS:
         return False
-    review(db, card["id"], rating, now, response, verdict, source="chat")
+    attempt(db, row["id"], rating, now, response, verdict, source="chat")
     return True
 
 
-def previews(card, now: float | None = None, db: Database | None = None) -> dict[int, str]:
-    """For each rating, when the card would come back: {1: "1m", 3: "10m", …}."""
+def previews(row, now: float | None = None, db: Database | None = None) -> dict[int, str]:
+    """For each rating, when the question would come back: {1: "1m", 3: "10m", …}."""
     now = time.time() if now is None else now
     sched = scheduler(db)
     out = {}
     for rating in quiz.RATINGS:
-        after, _ = sched.review_card(_fsrs_card(card, now), Rating(rating), dt(now))
+        after, _ = sched.review_card(_fsrs_card(row, now), Rating(rating), dt(now))
         out[rating] = format_interval(after.due.timestamp() - now)
     return out
 
@@ -480,7 +482,7 @@ def format_interval(seconds: float) -> str:
 
 
 # -- the queue -----------------------------------------------------------------------------
-# Due cards; args (next_day(now), now). due_sql("c.") is the same over a table alias.
+# Due questions; args (next_day(now), now). due_sql("c.") is the same over a table alias.
 def due_sql(alias: str = "") -> str:
     return f"{alias}suspended=0 AND (({alias}stage=2 AND {alias}due<?) OR ({alias}stage IN (1,3) AND {alias}due<=?))"
 
@@ -490,36 +492,37 @@ NEW = "suspended=0 AND stage=0"
 
 
 def new_left_today(db: Database, now: float) -> int:
-    return max(new_per_day(db) - db.new_cards_reviewed_since(day_start(now)), 0)
+    return max(new_per_day(db) - db.new_questions_attempted_since(day_start(now)), 0)
 
 
 def counts(db: Database, book_id: int | None, now: float | None = None, deck: int | None = None,
            tag: str | None = None, picks=()) -> dict:
-    """What there is to review in a book, deck or tag (a section; or everywhere, with none), or in
-    any of picks (Database._scope): due cards, new cards that can be introduced today, and the total."""
+    """What there is to practice in a book, deck or tag (a section; or everywhere, with none), or
+    in any of picks (Database._scope): due questions, new ones that can be introduced today, and
+    the total."""
     now = time.time() if now is None else now
-    new = db.count_cards(book_id, NEW, deck_id=deck, tag=tag, picks=picks)
+    new = db.count_questions(book_id, NEW, deck_id=deck, tag=tag, picks=picks)
     return {
-        "due": db.count_cards(book_id, DUE, (next_day(now), now), deck_id=deck, tag=tag, picks=picks),
+        "due": db.count_questions(book_id, DUE, (next_day(now), now), deck_id=deck, tag=tag, picks=picks),
         "new": min(new, new_left_today(db, now)),
         "new_total": new,
-        "total": db.count_cards(book_id, deck_id=deck, tag=tag, picks=picks),
-        "suspended": db.count_cards(book_id, "suspended=1", deck_id=deck, tag=tag, picks=picks),
+        "total": db.count_questions(book_id, deck_id=deck, tag=tag, picks=picks),
+        "suspended": db.count_questions(book_id, "suspended=1", deck_id=deck, tag=tag, picks=picks),
     }
 
 
-def left_to_review(db: Database, book_id: int | None, now: float | None = None, deck: int | None = None,
-                   tag: str | None = None, exclude=(), picks=()) -> int:
-    """How many cards are left to review today (due, and new ones today's allowance allows),
-    leaving out exclude (cards skipped this session)."""
+def left_to_practice(db: Database, book_id: int | None, now: float | None = None, deck: int | None = None,
+                     tag: str | None = None, exclude=(), picks=()) -> int:
+    """How many questions are left to practice today (due, and new ones today's allowance
+    allows), leaving out exclude (questions skipped this session)."""
     now = time.time() if now is None else now
-    due = db.count_cards(book_id, *_not_in(DUE, (next_day(now), now), exclude), deck_id=deck, tag=tag, picks=picks)
-    new = db.count_cards(book_id, *_not_in(NEW, (), exclude), deck_id=deck, tag=tag, picks=picks)
+    due = db.count_questions(book_id, *_not_in(DUE, (next_day(now), now), exclude), deck_id=deck, tag=tag, picks=picks)
+    new = db.count_questions(book_id, *_not_in(NEW, (), exclude), deck_id=deck, tag=tag, picks=picks)
     return due + min(new, new_left_today(db, now))
 
 
 def _not_in(where: str, args: tuple, exclude) -> tuple[str, tuple]:
-    """where, also leaving out the cards with the ids in exclude."""
+    """where, also leaving out the questions with the ids in exclude."""
     exclude = tuple(exclude)
     if not exclude:
         return where, args
@@ -527,11 +530,11 @@ def _not_in(where: str, args: tuple, exclude) -> tuple[str, tuple]:
 
 
 def deck_counts(db: Database, now: float | None = None) -> dict[int, dict]:
-    """For every deck, its cards and those of the decks under it: {deck id: {due, new, total}}
-    (new: cards waiting, not capped by today's allowance)."""
+    """For every deck, its questions and those of the decks under it: {deck id: {due, new, total}}
+    (new: questions waiting, not capped by today's allowance)."""
     now = time.time() if now is None else now
     own = {r["deck_id"]: r for r in db.conn.execute(
-        f"SELECT deck_id, SUM({DUE}) AS due, SUM({NEW}) AS new, COUNT(*) AS total FROM cards GROUP BY deck_id",
+        f"SELECT deck_id, SUM({DUE}) AS due, SUM({NEW}) AS new, COUNT(*) AS total FROM questions GROUP BY deck_id",
         (next_day(now), now),
     )}
     decks = db.decks()
@@ -550,12 +553,12 @@ def deck_counts(db: Database, now: float | None = None) -> dict[int, dict]:
     return out
 
 
-def next_card(db: Database, book_id: int | None, now: float | None = None, skip=(), deck: int | None = None,
-              tag: str | None = None, exclude=(), picks=()):
-    """The card to review next: due learning and review cards first (most overdue first),
-    then new ones while today's allowance lasts, then learning cards due within LEARN_AHEAD.
-    skip: ids of cards not to show again yet (the one just answered), unless nothing else is left.
-    exclude: ids of cards never to show (skipped this session)."""
+def next_question(db: Database, book_id: int | None, now: float | None = None, skip=(), deck: int | None = None,
+                  tag: str | None = None, exclude=(), picks=()):
+    """The question to practice next: due learning and learned questions first (most overdue
+    first), then new ones while today's allowance lasts, then learning ones due within
+    LEARN_AHEAD. skip: ids of questions not to show again yet (the one just answered), unless
+    nothing else is left. exclude: ids of questions never to show (skipped this session)."""
     now = time.time() if now is None else now
     tiers = [(DUE, (next_day(now), now), "due, id")]
     if new_left_today(db, now):
@@ -564,27 +567,27 @@ def next_card(db: Database, book_id: int | None, now: float | None = None, skip=
     fallback = None
     for where, args, order in tiers:
         where, args = _not_in(where, args, exclude)
-        for card in db.cards(book_id, where, args, order=order, limit=len(skip) + 1, deck_id=deck, tag=tag,
-                             picks=picks):
-            if card["id"] not in skip:
-                return card
-            fallback = fallback or card
+        for row in db.questions(book_id, where, args, order=order, limit=len(skip) + 1, deck_id=deck, tag=tag,
+                                picks=picks):
+            if row["id"] not in skip:
+                return row
+            fallback = fallback or row
     return fallback
 
 
 def next_due(db: Database, book_id: int | None, now: float | None = None, deck: int | None = None,
              tag: str | None = None, picks=()) -> float | None:
-    """When the next card that isn't due yet will be."""
+    """When the next question that isn't due yet will be."""
     now = time.time() if now is None else now
-    row = db.cards(book_id, "suspended=0 AND stage>0 AND due>?", (now,), order="due", limit=1, deck_id=deck,
+    row = db.questions(book_id, "suspended=0 AND stage>0 AND due>?", (now,), order="due", limit=1, deck_id=deck,
                    tag=tag, picks=picks)
     return row[0]["due"] if row else None
 
 
 # -- existing quizzes ----------------------------------------------------------------------
 def backfill(db: Database) -> int:
-    """Once: cards for the quizzes in replies written before cards existed, with the answers
-    already given counted as first reviews (at the time they were given)."""
+    """Once: practice questions for the quizzes in replies written before practice existed, with
+    the answers already given counted as first attempts (at the time they were given)."""
     if db.get_setting(BACKFILL_SETTING) == "1":
         return 0
     added = 0
@@ -593,7 +596,7 @@ def backfill(db: Database) -> int:
         "JOIN chats c ON c.id=m.chat_id WHERE m.role='assistant' AND m.text LIKE '%quiz%' ORDER BY m.id"
     ).fetchall()
     for m in rows:
-        if not add_quiz_cards(db, m["book_id"], m["id"], m["text"], now=m["created_at"]):
+        if not add_quiz_questions(db, m["book_id"], m["id"], m["text"], now=m["created_at"]):
             continue
         added += 1
         for a in db.quiz_answers(m["chat_id"]).get(m["id"], []):
@@ -605,36 +608,37 @@ def backfill(db: Database) -> int:
 
 
 # -- parameters ----------------------------------------------------------------------------
-MIN_OPTIMIZE_REVIEWS = 400  # below this, FSRS's defaults are a better bet than a fit
+MIN_OPTIMIZE_ATTEMPTS = 400  # below this, FSRS's defaults are a better bet than a fit
 
 
-def optimizable_reviews(db: Database) -> int:
-    """Reviews of cards past their first review, which is what the optimizer learns from."""
+def optimizable_attempts(db: Database) -> int:
+    """Attempts at questions past their first, which is what the optimizer learns from."""
     return db.conn.execute(
-        "SELECT COUNT(*) FROM reviews r JOIN (SELECT card_id, MIN(reviewed_at) AS first FROM reviews GROUP BY card_id) "
-        "f USING (card_id) WHERE r.reviewed_at>f.first"
+        "SELECT COUNT(*) FROM attempts r JOIN (SELECT question_id, MIN(attempted_at) AS first FROM attempts "
+        "GROUP BY question_id) f USING (question_id) WHERE r.attempted_at>f.first"
     ).fetchone()[0]
 
 
-def review_logs(db: Database) -> list:
-    """The whole review log as fsrs.ReviewLog objects, for fit() (which may run off the GUI thread)."""
+def attempt_logs(db: Database) -> list:
+    """Every attempt as an fsrs.ReviewLog, for fit() (which may run off the GUI thread)."""
     from fsrs import ReviewLog
 
     return [
-        ReviewLog(card_id=r["card_id"], rating=Rating(r["rating"]), review_datetime=dt(r["reviewed_at"]),
+        ReviewLog(card_id=r["question_id"], rating=Rating(r["rating"]), review_datetime=dt(r["attempted_at"]),
                   review_duration=r["duration"] or None)
-        for r in db.conn.execute("SELECT card_id, rating, reviewed_at, duration FROM reviews ORDER BY reviewed_at, id")
+        for r in db.conn.execute("SELECT question_id, rating, attempted_at, duration FROM attempts "
+                                 "ORDER BY attempted_at, id")
     ]
 
 
 def fit(logs: list) -> list[float]:
-    """FSRS weights fitted to a review log (needs the optimizer's PyTorch)."""
+    """FSRS weights fitted to the attempts (needs the optimizer's PyTorch)."""
     from fsrs import Optimizer
 
     return [float(w) for w in Optimizer(logs).compute_optimal_parameters()]
 
 
 def set_parameters(db: Database, weights) -> None:
-    """Use these FSRS weights from now on ([] or None: the defaults). Cards keep their memory
-    state; the new weights shape the intervals of their next reviews."""
+    """Use these FSRS weights from now on ([] or None: the defaults). Questions keep their memory
+    state; the new weights shape the intervals after their next attempts."""
     db.set_setting(PARAMETERS_SETTING, json.dumps(list(fsrs6_parameters(weights))) if weights else "")

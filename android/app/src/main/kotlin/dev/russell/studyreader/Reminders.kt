@@ -10,7 +10,7 @@ import android.content.Intent
 import android.app.Notification
 import java.util.Calendar
 
-/** The daily reminder: a notification at a chosen time when cards are waiting. */
+/** The daily reminder: a notification at a chosen time when questions are waiting. */
 object Reminders {
     private const val CHANNEL = "reminders"
     private const val NOTIFICATION = 1
@@ -44,14 +44,14 @@ object Reminders {
 
     fun notify(context: Context, waiting: Int) {
         val manager = context.getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel(CHANNEL, "Review reminders", NotificationManager.IMPORTANCE_DEFAULT))
+        manager.createNotificationChannel(NotificationChannel(CHANNEL, "Practice reminders", NotificationManager.IMPORTANCE_DEFAULT))
         val open = PendingIntent.getActivity(
             context, 0, Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
             PendingIntent.FLAG_IMMUTABLE,
         )
         val n = Notification.Builder(context, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("$waiting card${if (waiting == 1) "" else "s"} to review")
+            .setContentTitle("$waiting question${if (waiting == 1) "" else "s"} to practice")
             .setContentText("A few minutes now keeps them fresh.")
             .setContentIntent(open)
             .setAutoCancel(true)

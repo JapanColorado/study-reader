@@ -1,5 +1,5 @@
-/* Shared by the app's full-page views (home.html, review.html): base type, panels, buttons and
-   the review counts' colors. The app sets the variables from theme.py; these are fallbacks. */
+/* Shared by the app's full-page views (home.html, practice.html): base type, panels, buttons and
+   the practice counts' colors. The app sets the variables from theme.py; these are fallbacks. */
 :root { --window:#f4f1ea; --surface:#faf8f4; --raised:#ffffff; --fg:#1d1b18; --muted:#69645c; --faint:#a39e95;
         --border:#e2ddd3; --hover:#ece8df; --accent:#b9532b; --accent-hover:#a34723; --accent-fg:#ffffff;
         --accent-soft:#f6e4da; --code:#f2efe9; --scroll:#d2ccc2; --user:#efebe4; --error:#c0392b;
@@ -38,7 +38,7 @@ a { color:var(--accent); }
 .btn.ghost { border-color:transparent; background:transparent; color:var(--muted); }
 .btn.ghost:hover { background:var(--hover); color:var(--fg); }
 
-/* Review counts */
+/* Practice counts: due, new, done */
 .due-c { color:var(--accent); } .new-c { color:var(--new); } .done-c { color:var(--success); }
 .pill { display:inline-flex; align-items:center; gap:4px; font-size:12px; font-weight:650; border-radius:999px;
         padding:1px 8px; font-variant-numeric:tabular-nums; white-space:nowrap; }

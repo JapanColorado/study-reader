@@ -84,8 +84,8 @@ class _QuizBridge(QObject):
         self.view.quizRegrade.emit(message_id, quiz, question)
 
     @Slot(int, int)
-    def toggleReview(self, message_id: int, quiz: int) -> None:
-        self.view.quizReviewToggled.emit(message_id, quiz)
+    def togglePractice(self, message_id: int, quiz: int) -> None:
+        self.view.quizPracticeToggled.emit(message_id, quiz)
 
     @Slot(int, int)
     def revise(self, message_id: int, quiz: int) -> None:
@@ -102,7 +102,7 @@ class TranscriptView(QWebEngineView):
     quizAnswered = Signal(int, int, int, str)  # message id, quiz, question, response JSON
     quizRetake = Signal(int, int)  # message id, quiz
     quizRegrade = Signal(int, int, int)  # message id, quiz, question (its grading failed)
-    quizReviewToggled = Signal(int, int)  # message id, quiz: put its cards in or out of review
+    quizPracticeToggled = Signal(int, int)  # message id, quiz: put its questions in or out of practice
     quizReviseRequested = Signal(int, int)  # message id, quiz: ask Claude to revise it
 
     def __init__(self, parent=None, listen: bool = True):

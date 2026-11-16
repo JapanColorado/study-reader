@@ -1,15 +1,15 @@
-"""Fresh versions of questions for review: after a numeric or written-answer card is reviewed
-(or first answered in its chat), Claude writes the same problem with new numbers, which review
-shows the next time the card comes up (cards.variant), so a remembered answer doesn't stand in
-for doing the problem. A multiple-choice card gets new choices instead: its question stays as
-written, the right answer is reworded and the wrong ones replaced, so it can't be picked by its
-familiar wording (review also draws the choices in a new order each time, in review.html). It is
-asked in a fresh session without the book (the problem and its solution are enough), to keep it
-cheap. Calculation questions Claude marked "varies": false when writing the quiz are never asked
-about; for older ones without the mark Claude may decline (a concept rather than a calculation),
-and that is remembered. The card browser can turn a question's "varies" on or off, and the
-ENABLED_SETTING turns new versions off for every card (review then shows the cards' own
-questions). Qt-free."""
+"""Fresh versions of questions for practice: after a calculation or short-answer question is
+attempted (or first answered in its chat), Claude writes the same problem with new numbers, which
+practice shows the next time the question comes up (questions.variant), so a remembered answer
+doesn't stand in for doing the problem. A multiple-choice question gets new choices instead: its
+question text stays as written, the right answer is reworded and the wrong ones replaced, so it
+can't be picked by its familiar wording (practice also draws the choices in a new order each time,
+in practice.html). It is asked in a fresh session without the book (the problem and its solution
+are enough), to keep it cheap. Calculation questions Claude marked "varies": false when writing
+the quiz are never asked about; for older ones without the mark Claude may decline (a concept
+rather than a calculation), and that is remembered. The question browser can turn a question's
+"varies" on or off, and the ENABLED_SETTING turns new versions off for every question (practice
+then shows the questions as written). Qt-free."""
 
 from __future__ import annotations
 
@@ -18,39 +18,39 @@ import re
 
 from . import quiz
 
-TYPES = ("numeric", "written", "choice")
-ENABLED_SETTING = "variants"  # "0": no new versions, and review shows the cards' own questions
+TYPES = ("calculation", "short_answer", "choice")
+ENABLED_SETTING = "variants"  # "0": no new versions, and practice shows the questions as written
 SKIP = {"skip": True}
 # Fields of a question that aren't part of the problem itself.
 _EXTRA = ("page", "tags", "revises", "section", "answer_latex", "html", "varies")
 
 
-def _load(card) -> dict | None:
-    return json.loads(card["variant"]) if card["variant"] else None
+def _load(row) -> dict | None:
+    return json.loads(row["variant"]) if row["variant"] else None
 
 
 def enabled(db) -> bool:
     return db.get_setting(ENABLED_SETTING, "1") != "0"
 
 
-def wants_variant(card) -> bool:
-    """A card whose next version is worth asking for: a numeric, written-answer or multiple-choice
-    question not known to have nothing to vary."""
-    q = json.loads(card["data"])
-    return q.get("type") in TYPES and q.get("varies") is not False and _load(card) != SKIP
+def wants_variant(row) -> bool:
+    """A question whose next version is worth asking for: a calculation, short-answer or
+    multiple-choice question not known to have nothing to vary."""
+    q = json.loads(row["data"])
+    return q.get("type") in TYPES and q.get("varies") is not False and _load(row) != SKIP
 
 
-def question(card, db=None) -> dict:
-    """The question review shows: the latest version with new numbers, else the card's own.
-    db: to show the card's own while new versions are turned off."""
-    variant = _load(card)
+def question(row, db=None) -> dict:
+    """The question practice shows: the latest version with new numbers, else the question as
+    written. db: to show it as written while new versions are turned off."""
+    variant = _load(row)
     if variant and variant != SKIP and (db is None or enabled(db)):
         return variant
-    return json.loads(card["data"])
+    return json.loads(row["data"])
 
 
-def is_varied(card) -> bool:
-    variant = _load(card)
+def is_varied(row) -> bool:
+    variant = _load(row)
     return bool(variant) and variant != SKIP
 
 
@@ -63,7 +63,7 @@ def request(original: dict, last: dict | None = None, book: str = "", title: str
     a new one. book: the book it is about, if any; title: its quiz's (or deck's) name."""
     source = f" on \"{book}\"" if book else ""
     named = f" (\"{title}\")" if title else ""
-    intro = f"I just reviewed this question{named} from my spaced-repetition cards{source}."
+    intro = f"I just practiced this question{named}{source}, one that keeps coming back to me in practice."
     if original.get("type") == "choice":
         return _choices_request(intro, original, last)
     parts = [
@@ -77,9 +77,9 @@ def request(original: dict, last: dict | None = None, book: str = "", title: str
         "Write a new version: the same type, idea, method and difficulty, with different given values "
         "(and, if it helps, a different setting), so its answer differs from the original's"
         + (" and the last version's" if last else "") + ". Work the solution out step by step and check "
-        "it before writing the question. For \"numeric\", \"answer\" is the exact value as a number or a "
+        "it before writing the question. For \"calculation\", \"answer\" is the exact value as a number or a "
         "short expression like \"3/8\" or \"sqrt(2)/2\", with \"unit\" and \"tolerance\" if the original "
-        "has them (rescaled to the new answer); for \"written\", \"answer\" is a model answer and \"rubric\" "
+        "has them (rescaled to the new answer); for \"short_answer\", \"answer\" is a model answer and \"rubric\" "
         "what a full-credit answer must contain. \"explanation\" briefly shows the worked solution.\n\n"
         + ("If the question has no givens that could change, ask about the same idea in other words or "
            "from another angle instead.\n\n" if original.get("varies") is True else
@@ -136,5 +136,5 @@ def parse(text: str, original: dict) -> dict:
         raise ValueError(f"a {q['type']} question in place of a {original.get('type')} one")
     q["page"] = original.get("page")
     if q["type"] == "choice" and original.get("html"):
-        q["html"] = original["html"]  # its question is the card's own text
+        q["html"] = original["html"]  # its question text is the one written
     return q

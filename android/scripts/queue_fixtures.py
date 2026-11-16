@@ -1,5 +1,5 @@
-"""Builds a desktop database with books, sections, decks and a review history, exports it with
-phone_sync.export_snapshot, and records what the desktop's srs.py and gamify.py say about it, so
+"""Builds a desktop database with books, sections, decks and a practice history, exports it with
+phone_sync.export_snapshot, and records what the desktop's practice.py and gamify.py say about it, so
 the Kotlin port can be checked against the real thing (QueueTest.kt).
 
 Run with the desktop's Python (from android/):
@@ -25,7 +25,7 @@ sys.path.insert(0, str(HERE.parent.parent / "src"))
 tmp = Path(tempfile.mkdtemp())
 os.environ["STUDY_READER_DATA"] = str(tmp / "data")
 
-from study_reader import gamify, phone_sync, srs  # noqa: E402
+from study_reader import gamify, phone_sync, practice  # noqa: E402
 from study_reader.db import Database  # noqa: E402
 
 OUT = HERE.parent / "core" / "src" / "test" / "resources"
@@ -34,15 +34,15 @@ DAY = 86400
 random.seed(7)
 
 db = Database(tmp / "t.db")
-db.set_setting(srs.NEW_PER_DAY_SETTING, "6")
+db.set_setting(practice.NEW_PER_DAY_SETTING, "6")
 db.set_setting(gamify.GOAL_SETTING, "5")
 
 QUESTIONS = [
     {"type": "choice", "question": "How many legs?", "choices": ["Six", "Seven"], "answer": 1},
     {"type": "truefalse", "question": "Near a window?", "answer": False},
-    {"type": "numeric", "question": "Rinse time?", "answer": "41", "unit": "s"},
-    {"type": "written", "question": "Why rinse?", "answer": "To calibrate.", "rubric": "tea"},
-    {"type": "flashcard", "question": "Front", "answer": "Back"},
+    {"type": "calculation", "question": "Rinse time?", "answer": "41", "unit": "s"},
+    {"type": "short_answer", "question": "Why rinse?", "answer": "To calibrate.", "rubric": "tea"},
+    {"type": "self_check", "question": "Front", "answer": "Back"},
 ]
 
 books = []
@@ -55,36 +55,36 @@ for b, title in enumerate(["The Zorblatt Manual", "Marmalade: A History"]):
         db.add_message(chat, "user", "Quiz me", [])
         page = random.choice([1, 3, 9, 21, 23, 31, 45])
         q = dict(random.choice(QUESTIONS), page=page + 1)
-        if q["type"] == "flashcard":
+        if q["type"] == "self_check":
             q["question"] = f"Front {b}-{n}"
         text = f"```quiz Quiz {n}\n{json.dumps({'questions': [q, dict(QUESTIONS[0], page=page + 1)]})}\n```"
         reply = db.add_message(chat, "assistant", text)
-        srs.add_quiz_cards(db, book_id, reply, text, now=NOW - (40 - n) * DAY)
-    srs.learn_toc(db, book_id, toc)
+        practice.add_quiz_questions(db, book_id, reply, text, now=NOW - (40 - n) * DAY)
+    practice.learn_toc(db, book_id, toc)
     books.append(book_id)
 
-# A user deck tree of flashcards, outside the books.
+# A user deck tree of self-checks, outside the books.
 for name in ("Languages::Japanese::Kanji", "Languages::Japanese::Vocab", "Languages::Spanish", "Misc"):
     deck = db.ensure_deck(name)
     for i in range(5):
-        db.add_card_note("flashcard", {"front": f"{name} {i}", "back": "x"}, deck, tags=["vocab"] if "Vocab" in name else [],
+        db.add_question_group("self_check", {"front": f"{name} {i}", "back": "x"}, deck, tags=["vocab"] if "Vocab" in name else [],
                          now=NOW - (30 - i) * DAY)
 
-# A review history: some cards reviewed over the last weeks, a few suspended, one flagged.
-ids = [r["id"] for r in db.conn.execute("SELECT id FROM cards ORDER BY id")]
+# A practice history: some questions attempted over the last weeks, a few suspended, one flagged.
+ids = [r["id"] for r in db.conn.execute("SELECT id FROM questions ORDER BY id")]
 random.shuffle(ids)
-for card_id in ids[:45]:
+for question_id in ids[:45]:
     t = NOW - random.randint(5, 35) * DAY + random.randint(0, DAY)
     while t < NOW - 600:
-        srs.review(db, card_id, random.choice([1, 2, 3, 3, 3, 4]), now=t, duration=3000)
-        card = db.card(card_id)
-        t = max(card["due"], t + 60) + random.choice([0, 3600, DAY])
-for card_id in ids[45:48]:
-    db.update_card(card_id, suspended=1)
-db.update_card(ids[50], flag=2)
-# Reviews today: two new introductions (they count against the cap) and a few more.
-for card_id in ids[52:54]:
-    srs.review(db, card_id, 3, now=NOW - 1800)
+        practice.attempt(db, question_id, random.choice([1, 2, 3, 3, 3, 4]), now=t, duration=3000)
+        question = db.question(question_id)
+        t = max(question["due"], t + 60) + random.choice([0, 3600, DAY])
+for question_id in ids[45:48]:
+    db.update_question(question_id, suspended=1)
+db.update_question(ids[50], flag=2)
+# Attempts today: two new introductions (they count against the cap).
+for question_id in ids[52:54]:
+    practice.attempt(db, question_id, 3, now=NOW - 1800)
 gamify.load(db, NOW)
 
 snap_dir = tmp / "sync"
@@ -101,25 +101,25 @@ def row(r):
 scopes = [{"book": None, "deck": None, "tag": None}]
 scopes += [{"book": b, "deck": None, "tag": None} for b in books]
 scopes += [{"book": None, "deck": d["id"], "tag": None} for d in db.decks()]
-for b, secs in srs.sections(db, NOW).items():
+for b, secs in practice.sections(db, NOW).items():
     scopes += [{"book": b, "deck": None, "tag": s["tag"]} for s in secs]
 
-cases = {"now": NOW, "new_left_today": srs.new_left_today(db, NOW), "scopes": [], "previews": {}, "sections": {},
-         "deck_counts": {str(k): v for k, v in srs.deck_counts(db, NOW).items()}}
+cases = {"now": NOW, "new_left_today": practice.new_left_today(db, NOW), "scopes": [], "previews": {}, "sections": {},
+         "deck_counts": {str(k): v for k, v in practice.deck_counts(db, NOW).items()}}
 for sc in scopes:
     args = dict(deck=sc["deck"], tag=sc["tag"])
-    first = srs.next_card(db, sc["book"], NOW, **args)
+    first = practice.next_question(db, sc["book"], NOW, **args)
     skip = [first["id"]] if first else []
-    second = srs.next_card(db, sc["book"], NOW, skip=skip, **args)
-    cases["scopes"].append({**sc, "counts": srs.counts(db, sc["book"], NOW, **args),
+    second = practice.next_question(db, sc["book"], NOW, skip=skip, **args)
+    cases["scopes"].append({**sc, "counts": practice.counts(db, sc["book"], NOW, **args),
                             "next": first["id"] if first else None, "next_skipping": second["id"] if second else None,
-                            "next_due": srs.next_due(db, sc["book"], NOW, **args)})
-for b, secs in srs.sections(db, NOW).items():
+                            "next_due": practice.next_due(db, sc["book"], NOW, **args)})
+for b, secs in practice.sections(db, NOW).items():
     cases["sections"][str(b)] = secs
-srs.scheduler(db).enable_fuzzing = False  # previews comparable with the Kotlin port (Srs(fuzz = false))
-for card in db.conn.execute("SELECT * FROM cards WHERE stage>0 ORDER BY id").fetchall():
-    cases["previews"][str(card["id"])] = {str(k): v for k, v in srs.previews(card, NOW, db).items()}
-cases["format_interval"] = {str(s): srs.format_interval(s) for s in
+practice.scheduler(db).enable_fuzzing = False  # previews comparable with the Kotlin port (Practice(fuzz = false))
+for question in db.conn.execute("SELECT * FROM questions WHERE stage>0 ORDER BY id").fetchall():
+    cases["previews"][str(question["id"])] = {str(k): v for k, v in practice.previews(question, NOW, db).items()}
+cases["format_interval"] = {str(s): practice.format_interval(s) for s in
                             (0, 30, 59, 60, 89, 90, 150, 3599, 3600, 5400, 86399, 86400, 129600, 30 * DAY, 45 * DAY,
                              364 * DAY, 365 * DAY, 400 * DAY, 3650 * DAY)}
 status = gamify.status(db, NOW)

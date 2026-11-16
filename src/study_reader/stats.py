@@ -1,5 +1,5 @@
-"""Review statistics for the Statistics window: what was reviewed and how well, what is coming
-due, and how the cards' memory states are spread. Everything comes out JSON-ready for
+"""Practice statistics for the Statistics window: what was practiced and how well, what is coming
+due, and how the questions' memory states are spread. Everything comes out JSON-ready for
 stats.html. Qt-free."""
 
 from __future__ import annotations
@@ -7,10 +7,10 @@ from __future__ import annotations
 import time
 from datetime import date, datetime, timedelta
 
-from . import srs
+from . import practice
 from .db import SUBTREE, Database
 
-MATURE_DAYS = 21  # Anki's line between young and mature cards
+MATURE_DAYS = 21  # Anki's line between young and mature (learned) questions
 FORECAST_DAYS = 30
 RECENT_DAYS = 30
 CALENDAR_DAYS = 365
@@ -28,12 +28,12 @@ RETRIEVABILITY_BUCKETS = (
 
 
 def day_of(t: float) -> date:
-    """The review day a moment falls on (days roll over at 4 am local time, as in srs.py)."""
-    return datetime.fromtimestamp(srs.day_start(t)).date()
+    """The practice day a moment falls on (days roll over at 4 am local time, as in practice.py)."""
+    return datetime.fromtimestamp(practice.day_start(t)).date()
 
 
 def _scope(deck_id: int | None, book_id: int | None) -> tuple[str, tuple]:
-    """SQL condition on cards (alias c) for the scope, with its arguments."""
+    """SQL condition on questions (alias c) for the scope, with its arguments."""
     if deck_id is not None:
         return f"c.deck_id IN ({SUBTREE})", (deck_id,)
     if book_id is not None:
@@ -60,19 +60,19 @@ def _rate(passed: int, total: int) -> dict:
 
 
 def compute(db: Database, deck_id: int | None = None, book_id: int | None = None, now: float | None = None) -> dict:
-    """Statistics for a deck and the decks under it, a book's cards, or (neither) every card."""
+    """Statistics for a deck and the decks under it, a book's questions, or (neither) every question."""
     now = time.time() if now is None else now
     today = day_of(now)
     where, args = _scope(deck_id, book_id)
-    decay = srs.decay(db)
+    decay = practice.decay(db)
 
-    # -- cards -------------------------------------------------------------------------
+    # -- questions ---------------------------------------------------------------------
     counts = {"new": 0, "learning": 0, "relearning": 0, "young": 0, "mature": 0, "suspended": 0, "total": 0}
     forecast = [0] * FORECAST_DAYS
     intervals, stabilities, difficulties, retrievabilities = [], [], [], []
     added: dict[date, int] = {}
     for c in db.conn.execute(
-        f"SELECT stage, suspended, due, last_review, stability, difficulty, created_at FROM cards c WHERE {where}",
+        f"SELECT stage, suspended, due, last_attempt, stability, difficulty, created_at FROM questions c WHERE {where}",
         args,
     ):
         counts["total"] += 1
@@ -86,7 +86,7 @@ def compute(db: Database, deck_id: int | None = None, book_id: int | None = None
         if stage == 0:
             counts["new"] += 1
             continue
-        interval = (c["due"] - c["last_review"]) / 86400 if c["last_review"] else None
+        interval = (c["due"] - c["last_attempt"]) / 86400 if c["last_attempt"] else None
         if stage == 1:
             counts["learning"] += 1
         elif stage == 3:
@@ -100,44 +100,44 @@ def compute(db: Database, deck_id: int | None = None, book_id: int | None = None
             forecast[ahead] += 1
         if c["stability"]:
             stabilities.append(c["stability"])
-            if c["last_review"]:
-                retrievabilities.append(srs.recall(c["stability"], c["last_review"], now, decay))
+            if c["last_attempt"]:
+                retrievabilities.append(practice.recall(c["stability"], c["last_attempt"], now, decay))
         if c["difficulty"] is not None:
             difficulties.append(c["difficulty"])
 
-    # -- reviews -----------------------------------------------------------------------
+    # -- attempts ----------------------------------------------------------------------
     calendar: dict[date, int] = {}
-    recent = {(today - timedelta(days=i)): {"first": 0, "again": 0, "passed": 0, "minutes": 0.0}
+    recent = {(today - timedelta(days=i)): {"first": 0, "missed": 0, "passed": 0, "minutes": 0.0}
               for i in range(RECENT_DAYS)}
-    today_stats = {"reviews": 0, "minutes": 0.0, "again": 0, "passed": 0, "new": 0}
+    today_stats = {"attempts": 0, "minutes": 0.0, "missed": 0, "passed": 0, "new": 0}
     retention = {name: {"young": [0, 0], "mature": [0, 0]} for name, _ in RETENTION_PERIODS}
-    total_reviews = 0
-    prev_card, prev_time = None, None
+    total_attempts = 0
+    prev_question, prev_time = None, None
     for r in db.conn.execute(
-        f"SELECT r.card_id, r.rating, r.reviewed_at, r.duration FROM reviews r JOIN cards c ON c.id=r.card_id "
-        f"WHERE {where} ORDER BY r.card_id, r.reviewed_at, r.id",
+        f"SELECT r.question_id, r.rating, r.attempted_at, r.duration FROM attempts r JOIN questions c ON c.id=r.question_id "
+        f"WHERE {where} ORDER BY r.question_id, r.attempted_at, r.id",
         args,
     ):
-        total_reviews += 1
-        first = r["card_id"] != prev_card
+        total_attempts += 1
+        first = r["question_id"] != prev_question
         previous = None if first else prev_time
-        prev_card, prev_time = r["card_id"], r["reviewed_at"]
-        day = day_of(r["reviewed_at"])
+        prev_question, prev_time = r["question_id"], r["attempted_at"]
+        day = day_of(r["attempted_at"])
         ago = (today - day).days
         passed = r["rating"] > 1
         if 0 <= ago < CALENDAR_DAYS:
             calendar[day] = calendar.get(day, 0) + 1
         if day in recent:
             bucket = recent[day]
-            bucket["first" if first else "passed" if passed else "again"] += 1
+            bucket["first" if first else "passed" if passed else "missed"] += 1
             bucket["minutes"] += (r["duration"] or 0) / 60000
         if ago == 0:
-            today_stats["reviews"] += 1
+            today_stats["attempts"] += 1
             today_stats["minutes"] += (r["duration"] or 0) / 60000
-            today_stats["again" if r["rating"] == 1 else "passed"] += 1
+            today_stats["missed" if r["rating"] == 1 else "passed"] += 1
             today_stats["new"] += first
         if previous is not None and day_of(previous) < day:
-            kind = "young" if (r["reviewed_at"] - previous) / 86400 < MATURE_DAYS else "mature"
+            kind = "young" if (r["attempted_at"] - previous) / 86400 < MATURE_DAYS else "mature"
             for name, days in RETENTION_PERIODS:
                 if 0 <= ago < days:
                     retention[name][kind][0] += passed
@@ -157,7 +157,7 @@ def compute(db: Database, deck_id: int | None = None, book_id: int | None = None
         last = d
     span = (today - min(calendar)).days + 1 if calendar else 0
 
-    n = today_stats["reviews"]
+    n = today_stats["attempts"]
     estimated = sum(retrievabilities)
     return {
         "today": {
@@ -173,7 +173,7 @@ def compute(db: Database, deck_id: int | None = None, book_id: int | None = None
             "studied": len(calendar), "span": span,
             "studied_pct": len(calendar) / span if span else None,
         },
-        "reviews": [
+        "attempts": [
             {"date": d.isoformat(), **{k: (round(v, 1) if k == "minutes" else v) for k, v in recent[d].items()}}
             for d in sorted(recent)
         ],
@@ -202,10 +202,10 @@ def compute(db: Database, deck_id: int | None = None, book_id: int | None = None
         "added": [{"date": (today - timedelta(days=i)).isoformat(), "count": added.get(today - timedelta(days=i), 0)}
                   for i in reversed(range(RECENT_DAYS))],
         "settings": {
-            "desired_retention": srs.desired_retention(db),
-            "custom_parameters": bool(db.get_setting(srs.PARAMETERS_SETTING)),
-            "total_reviews": total_reviews,
-            "optimizable_reviews": srs.optimizable_reviews(db),
-            "min_optimize_reviews": srs.MIN_OPTIMIZE_REVIEWS,
+            "desired_retention": practice.desired_retention(db),
+            "custom_parameters": bool(db.get_setting(practice.PARAMETERS_SETTING)),
+            "total_attempts": total_attempts,
+            "optimizable_attempts": practice.optimizable_attempts(db),
+            "min_optimize_attempts": practice.MIN_OPTIMIZE_ATTEMPTS,
         },
     }

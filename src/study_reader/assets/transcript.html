@@ -79,10 +79,10 @@
   .quiz-broken { padding:10px 12px; color:var(--muted); font-size:13px; }
   .quiz-foot { display:flex; align-items:center; gap:8px; padding:8px 12px; background:var(--code); font-size:13px; }
   .quiz-foot .score { flex:1; font-weight:600; }
-  .quiz-head .deck { font:inherit; font-size:11px; padding:1px 7px; border-radius:5px; cursor:pointer; color:var(--muted);
+  .quiz-head .practice-toggle { font:inherit; font-size:11px; padding:1px 7px; border-radius:5px; cursor:pointer; color:var(--muted);
                      background:transparent; border:1px solid var(--border); }
-  .quiz-head .deck.on { color:var(--success); border-color:var(--success); }
-  .quiz-head .deck:hover { background:var(--accent-soft); }
+  .quiz-head .practice-toggle.on { color:var(--success); border-color:var(--success); }
+  .quiz-head .practice-toggle:hover { background:var(--accent-soft); }
   .quiz-head .revise { font:inherit; font-size:11px; padding:1px 7px; border-radius:5px; cursor:pointer; color:var(--muted);
                        background:transparent; border:1px solid var(--border); }
   .quiz-head .revise:hover { background:var(--accent-soft); color:var(--accent); }
@@ -194,13 +194,13 @@ window.addEventListener("resize", () => {
 });
 // ```quiz fences: the app parses them (quiz.py) and replaces each with `#<index>` into
 // the message's `quizzes`; answers go back through the web channel and come back graded.
-// Questions are drawn by quiz.js. Each quiz's questions are also review cards (srs.py).
+// Questions are drawn by quiz.js. Each quiz's questions also go into practice (practice.py).
 const QUIZ_LANG = /^quiz\b/;
 let LISTEN = true;  // offer Listen on replies (not where read aloud's controls aren't shown)
 let MSG_QUIZZES = {};  // message id -> its quizzes, for the current render
 let CURRENT_MSG = null;  // message being rendered, which its quiz fences resolve against
 const QUIZ_DRAFTS = {};  // "msg:quiz:question" -> typed answer not yet submitted, kept across renders
-const REVEALED = {};  // "msg:quiz:question" -> true for a flashcard whose back is showing, not yet rated
+const REVEALED = {};  // "msg:quiz:question" -> true for a self-check whose answer is showing, not yet rated
 
 let bridge = null;
 new QWebChannel(qt.webChannelTransport, channel => { bridge = channel.objects.quiz; });
@@ -217,11 +217,13 @@ function points(a) {
   return a && a.status === "done" ? { correct: 1, partial: 0.5 }[a.verdict] || 0 : 0;
 }
 
-function deckToggle(quiz) {
-  if (!quiz.review) return "";
-  const on = quiz.review === "on";
-  const title = on ? "Its questions come back in Review; click to leave them out" : "Left out of Review; click to add its questions back";
-  return `<button class="deck${on ? " on" : ""}" data-act="deck" title="${title}">${on ? "In review" : "Not in review"}</button>`;
+// quiz.practice: "on" or "off" for whether the quiz's questions are in practice;
+// missing when none of them are.
+function practiceToggle(quiz) {
+  if (!quiz.practice) return "";
+  const on = quiz.practice === "on";
+  const title = on ? "Its questions come back in Practice; click to leave them out" : "Left out of Practice; click to add its questions back";
+  return `<button class="practice-toggle${on ? " on" : ""}" data-act="practice" title="${title}">${on ? "In practice" : "Not in practice"}</button>`;
 }
 
 function quizInner(msg, qi, quiz) {
@@ -239,12 +241,12 @@ function quizInner(msg, qi, quiz) {
     const shown = Number.isInteger(score) ? score : score.toFixed(1);
     const text = graded === qs.length ? `Score: ${shown} / ${qs.length}` : `${answered} of ${qs.length} answered`;
     foot = `<div class="quiz-foot"><span class="score">${text}</span>`
-      + `<button class="qbtn quiet" data-act="retake" title="Clear your answers and start again (review scheduling is kept)">Retake</button></div>`;
+      + `<button class="qbtn quiet" data-act="retake" title="Clear your answers and start again (practice scheduling is kept)">Retake</button></div>`;
   }
-  const revise = `<button class="revise" data-act="revise" title="Ask Claude to change this quiz; the questions it keeps keep their review cards">Revise…</button>`;
+  const revise = `<button class="revise" data-act="revise" title="Ask Claude to change this quiz; the questions it keeps keep their practice history">Revise…</button>`;
   const revised = quiz.revised_by
     ? `<div class="quiz-revised">Claude revised this quiz in a later reply. <button data-act="goto" data-to="${quiz.revised_by}">Show the revision</button></div>` : "";
-  return head(`${quiz.revised_by ? "" : revise}${deckToggle(quiz)}<span>${answered} / ${qs.length}</span>`) + revised
+  return head(`${quiz.revised_by ? "" : revise}${practiceToggle(quiz)}<span>${answered} / ${qs.length}</span>`) + revised
     + qs.map((q, i) => {
       const key = `${msg}:${qi}:${i}`;
       const page = q.page ? `<a href="page://go/${q.page - 1}" title="Go to page ${q.page}">p. ${q.page}</a>` : "";
@@ -257,7 +259,7 @@ function quizInner(msg, qi, quiz) {
 
 // Math fields in freshly rendered quizzes: Enter to check, drafts kept.
 function setupQuizFields(root) {
-  setupMathFields(root, qEl => submitQuiz(qEl, "numeric"), mf => { QUIZ_DRAFTS[quizKey(mf)] = mf.value; });
+  setupMathFields(root, qEl => submitQuiz(qEl, "calculation"), mf => { QUIZ_DRAFTS[quizKey(mf)] = mf.value; });
 }
 
 function quizKey(el) {
@@ -286,7 +288,7 @@ document.addEventListener("click", ev => {
     const el = document.querySelector(`.quiz[data-msg="${button.dataset.to}"]`);
     if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
   }
-  else if (act === "deck") bridge.toggleReview(msg, qi);
+  else if (act === "practice") bridge.togglePractice(msg, qi);
   else if (act === "regrade") bridge.regrade(msg, qi, +qEl.dataset.q);
   else if (act === "reveal") {
     REVEALED[quizKey(qEl)] = true;
@@ -296,14 +298,14 @@ document.addEventListener("click", ev => {
 document.addEventListener("keydown", ev => {
   if (ev.target.matches && ev.target.matches(".quiz textarea") && ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) {
     ev.preventDefault();
-    submitQuiz(ev.target.closest(".q"), "written");
+    submitQuiz(ev.target.closest(".q"), "short_answer");
   }
 });
 document.addEventListener("input", ev => {
   if (ev.target.matches && ev.target.matches(".quiz textarea")) QUIZ_DRAFTS[quizKey(ev.target)] = ev.target.value;
 });
 
-// From the app: one quiz changed (an answer saved or graded, a retake, or a review toggle).
+// From the app: one quiz changed (an answer saved or graded, a retake, or a practice toggle).
 function updateQuiz(msg, qi, quiz) {
   (MSG_QUIZZES[msg] = MSG_QUIZZES[msg] || [])[qi] = quiz;
   const el = document.querySelector(`.quiz[data-msg="${msg}"][data-quiz="${qi}"]`);
@@ -343,7 +345,7 @@ function actionsHtml(m, isLast, idle) {
     return `<div class="actions user"><a href="edit://message/${m.id}" title="Edit this message and ask again">${EDIT_ICON}Edit</a></div>`;
   // A quiz on a reply that isn't itself a quiz.
   let quiz = m.role === "assistant" && !(m.quizzes || []).length && m.text.trim()
-    ? `<a href="quiz://message/${m.id}" title="Draft a quiz request on this reply, to add instructions and send; the questions join your review deck">${QUIZ_ICON}Quiz me</a>` : "";
+    ? `<a href="quiz://message/${m.id}" title="Draft a quiz request on this reply, to add instructions and send; the questions go into practice">${QUIZ_ICON}Quiz me</a>` : "";
   if (m.role === "assistant" && LISTEN && m.text.trim())
     quiz += `<a href="speak://message/${m.id}" title="Read this reply aloud">${SPEAK_ICON}Listen</a>`;
   if (isLast) {

@@ -1,4 +1,4 @@
-"""The Review page's chat panel, throwaway chats, stopping a reply, and panels sharing a hub."""
+"""The Practice page's chat panel, throwaway chats, stopping a reply, and panels sharing a hub."""
 
 import asyncio
 import json
@@ -10,29 +10,29 @@ from study_reader import quiz
 from study_reader.db import Database
 
 QUIZ = '''```quiz Zorblatts
-{"questions": [{"type": "flashcard", "question": "Rinse time?", "answer": "41 seconds"}]}
+{"questions": [{"type": "self_check", "question": "Rinse time?", "answer": "41 seconds"}]}
 ```'''
 
 
-def card_of(db, note_id):
-    return db.conn.execute("SELECT id FROM cards WHERE note_id=?", (note_id,)).fetchone()[0]
+def question_of(db, group_id):
+    return db.conn.execute("SELECT id FROM questions WHERE group_id=?", (group_id,)).fetchone()[0]
 
 
-def review_panel(chat_panel):
-    """The fixture's worker and database with a second, Review page panel on the same hub."""
+def practice_panel(chat_panel):
+    """The fixture's worker and database with a second, Practice page panel on the same hub."""
     from study_reader.chat_panel import ChatPanel
 
     panel, worker, db, book_id = chat_panel
-    review = ChatPanel(db, worker, hub=panel.hub, review=True)
-    return panel, review, worker, db, book_id
+    other = ChatPanel(db, worker, hub=panel.hub, practice=True)
+    return panel, other, worker, db, book_id
 
 
-def card(db, card_id, revealed=False, chat_id=None):
-    """What ReviewPanel.chat_card hands the panel."""
-    row = db.card(card_id)
-    q = {"type": "flashcard", "question": "Front?", "answer": "Back"}
-    return {"id": card_id, "book_id": row["book_id"], "chat_id": chat_id, "title": "Deck", "revealed": revealed,
-            "context": quiz.card_context(q, "Deck", {"response": {}} if revealed else None)}
+def shown(db, question_id, revealed=False, chat_id=None):
+    """What PracticePanel.chat_question hands the panel."""
+    row = db.question(question_id)
+    q = {"type": "self_check", "question": "Front?", "answer": "Back"}
+    return {"id": question_id, "book_id": row["book_id"], "chat_id": chat_id, "title": "Deck", "revealed": revealed,
+            "context": quiz.question_context(q, "Deck", {"response": {}} if revealed else None)}
 
 
 # -- the database ----------------------------------------------------------------------------
@@ -53,9 +53,9 @@ def test_old_chats_table_is_rebuilt_keeping_messages(tmp_path):
     conn.commit()
     conn.close()
     db = Database(path)
-    assert db.chat(1)["model"] == "opus" and db.chat(1)["card_id"] is None and not db.chat(1)["throwaway"]
+    assert db.chat(1)["model"] == "opus" and db.chat(1)["question_id"] is None and not db.chat(1)["throwaway"]
     assert [m["text"] for m in db.messages(1)] == ["hi"] and not db.messages(1)[0]["stopped"]
-    bookless = db.create_chat(None, "About a card")  # book_id is optional now
+    bookless = db.create_chat(None, "About a question")  # book_id is optional now
     assert [c["id"] for c in db.chats(None)] == [bookless] and [c["id"] for c in db.chats(1)] == [1]
     db.delete_book(1)  # still cascades
     assert db.chat(1) is None and db.messages(1) == []
@@ -85,9 +85,9 @@ def test_bookless_chats_resume_their_session_or_replay(monkeypatch, tmp_path):
     monkeypatch.setattr(cc, "session_exists", lambda sid, cwd: sid == "mine")
     events = []
     svc = cs.ChatService(lambda *a: events.append(a), tmp_path)
-    asyncio.run(svc.ask(cs.Job(chat_id=1, book=None, chat_session_id="mine", question="Q?")))
+    asyncio.run(svc.ask(cs.Job(chat_id=1, book=None, chat_session_id="mine", message="Q?")))
     assert calls[-1]["resume"] == "mine" and not calls[-1]["fork"] and calls[-1]["cwd"] == tmp_path / "cards"
-    asyncio.run(svc.ask(cs.Job(chat_id=1, book=None, chat_session_id="lost", question="Q2?",
+    asyncio.run(svc.ask(cs.Job(chat_id=1, book=None, chat_session_id="lost", message="Q2?",
                                history=[("user", "Q?"), ("assistant", "A.")])))
     assert calls[-1]["resume"] is None and "<transcript>" in calls[-1]["text"] and "A." in calls[-1]["text"]
     assert ("done", 1, "s-new", "answer", "u") in events
@@ -103,7 +103,7 @@ def test_a_stopped_reply_reports_nothing(monkeypatch, tmp_path):
     svc = cs.ChatService(lambda *a: events.append(a), tmp_path)
 
     async def go():
-        task = asyncio.create_task(svc.ask(cs.Job(chat_id=1, book=None, chat_session_id=None, question="Q")))
+        task = asyncio.create_task(svc.ask(cs.Job(chat_id=1, book=None, chat_session_id=None, message="Q")))
         await asyncio.sleep(0.01)
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -152,7 +152,7 @@ def test_throwaway_chats_go_when_left(chat_panel):
     chat = panel.chat_id
     assert db.chat(chat)["throwaway"] and db.chats(book_id) == []
     worker.done.emit(chat, "s1", QUIZ, "u1")
-    assert db.cards(book_id) == [] and worker.titles == []  # no cards, and no title asked for
+    assert db.questions(book_id) == [] and worker.titles == []  # no questions, and no title asked for
 
     panel.new_chat()  # leaving it deletes it, with its Claude session
     assert db.chat(chat) is None and worker.forgotten == [(book_id, ["s1"])]
@@ -176,7 +176,7 @@ def test_saving_a_throwaway_chat_keeps_it(chat_panel):
     worker.done.emit(chat, "s1", QUIZ, "u1")
     panel.save_throwaway()
     assert not db.chat(chat)["throwaway"] and [c["id"] for c in db.chats(book_id)] == [chat]
-    assert len(db.cards(book_id)) == 1 and not panel.throwaway_btn.isChecked()
+    assert len(db.questions(book_id)) == 1 and not panel.throwaway_btn.isChecked()
     assert worker.titles[-1][0] == chat  # named now
     panel.new_chat()
     assert db.chat(chat) is not None
@@ -200,109 +200,109 @@ def test_throwaway_chats_left_by_a_crash_are_dropped(tmp_path):
 
 # -- two panels ------------------------------------------------------------------------------------
 def test_panels_share_replies(chat_panel):
-    panel, review, worker, db, book_id = review_panel(chat_panel)
-    review.set_book(book_id)
+    panel, practice_chat, worker, db, book_id = practice_panel(chat_panel)
+    practice_chat.set_book(book_id)
     panel.input.setPlainText("q")
     panel.send()
     chat = panel.chat_id
-    assert review.chat_list.count() == 1  # the other panel lists the new chat
-    review.open_chat(chat)
-    review.input.setPlainText("again")
-    review.send()  # already waiting for a reply: not sent twice
+    assert practice_chat.chat_list.count() == 1  # the other panel lists the new chat
+    practice_chat.open_chat(chat)
+    practice_chat.input.setPlainText("again")
+    practice_chat.send()  # already waiting for a reply: not sent twice
     assert len(worker.jobs) == 1
     worker.delta.emit(chat, "part")
     assert panel.hub.streams[chat] == "part"  # counted once
     worker.done.emit(chat, "s1", "answer", "u1")
     assert [m["text"] for m in db.messages(chat)] == ["q", "answer"]  # saved once
-    review.stop()  # nothing on the way: nothing happens
+    practice_chat.stop()  # nothing on the way: nothing happens
     assert worker.stopped == []
 
     # A reply is stopped from either panel by the one that asked for it.
-    review.input.setPlainText("more")
-    review.send()
+    practice_chat.input.setPlainText("more")
+    practice_chat.send()
     worker.delta.emit(chat, "so")
     panel.stop()
     assert db.messages(chat)[-1]["text"] == "so" and db.messages(chat)[-1]["stopped"]
 
 
-# -- the Review page's panel --------------------------------------------------------------------
-def test_review_chats_follow_the_card(chat_panel):
-    panel, review, worker, db, book_id = review_panel(chat_panel)
+# -- the Practice page's panel ------------------------------------------------------------------
+def test_practice_chats_follow_the_question(chat_panel):
+    panel, practice_chat, worker, db, book_id = practice_panel(chat_panel)
     deck = db.ensure_deck("Deck")
-    first = card_of(db, db.add_card_note("flashcard", {"front": "a", "back": "b"}, deck, book_id=book_id))
-    loose = card_of(db, db.add_card_note("flashcard", {"front": "c", "back": "d"}, deck))
+    first = question_of(db, db.add_question_group("self_check", {"front": "a", "back": "b"}, deck, book_id=book_id))
+    loose = question_of(db, db.add_question_group("self_check", {"front": "c", "back": "d"}, deck))
 
-    review.set_card(card(db, first))
-    assert review.book_id == book_id and review.chat_id is None and review.isEnabled()
-    assert review.chips.count() == 1  # the card goes with the question
-    review.input.setPlainText("hint please")
-    review.send()
-    chat = review.chat_id
-    assert db.chat(chat)["card_id"] == first and db.chat(chat)["book_id"] == book_id
+    practice_chat.set_question(shown(db, first))
+    assert practice_chat.book_id == book_id and practice_chat.chat_id is None and practice_chat.isEnabled()
+    assert practice_chat.chips.count() == 1  # the question goes with the message
+    practice_chat.input.setPlainText("hint please")
+    practice_chat.send()
+    chat = practice_chat.chat_id
+    assert db.chat(chat)["question_id"] == first and db.chat(chat)["book_id"] == book_id
     job = worker.jobs[-1]
-    assert "<review_card>" in job.context and "Don't give the answer away" in job.context
+    assert "<practice_question>" in job.context and "Don't give the answer away" in job.context
     worker.done.emit(chat, "s1", "Think tea.", "u1")
-    review.set_card(card(db, first, revealed=True))  # answered: the same card, now with its answer
-    assert review.chat_id == chat
-    review.input.setPlainText("why?")
-    review.send()
+    practice_chat.set_question(shown(db, first, revealed=True))  # answered: the same question, now with its answer
+    assert practice_chat.chat_id == chat
+    practice_chat.input.setPlainText("why?")
+    practice_chat.send()
     assert "Answer: Back" in worker.jobs[-1].context and "Don't give" not in worker.jobs[-1].context
     worker.done.emit(chat, "s1", "Because.", "u2")
 
-    # A card with no book: the chats about such cards, in a session with no book.
-    review.set_card(card(db, loose))
-    assert review.book_id is None and review.chat_id is None and review.chat_list.count() == 0
-    review.input.setPlainText("what is c?")
-    review.send()
-    bookless = review.chat_id
+    # A question with no book: the chats about such questions, in a session with no book.
+    practice_chat.set_question(shown(db, loose))
+    assert practice_chat.book_id is None and practice_chat.chat_id is None and practice_chat.chat_list.count() == 0
+    practice_chat.input.setPlainText("what is c?")
+    practice_chat.send()
+    bookless = practice_chat.chat_id
     assert db.chat(bookless)["book_id"] is None and worker.jobs[-1].book is None
     worker.done.emit(bookless, "s3", QUIZ, "u3")
-    made = db.conn.execute("SELECT deck_id FROM cards WHERE message_id IS NOT NULL").fetchall()
-    assert [r[0] for r in made] == [deck]  # its quiz cards join the card's deck
+    made = db.conn.execute("SELECT deck_id FROM questions WHERE message_id IS NOT NULL").fetchall()
+    assert [r[0] for r in made] == [deck]  # its quiz questions join the question's deck
 
-    # Back to the first card: its chat comes back up. Removing the chip leaves the card out.
-    review.set_card(card(db, first))
-    assert review.chat_id == chat and review.book_id == book_id
-    review._drop_card()
-    review.input.setPlainText("unrelated")
-    review.send()
-    assert "<review_card>" not in worker.jobs[-1].context
+    # Back to the first question: its chat comes back up. Removing the chip leaves the question out.
+    practice_chat.set_question(shown(db, first))
+    assert practice_chat.chat_id == chat and practice_chat.book_id == book_id
+    practice_chat._drop_question()
+    practice_chat.input.setPlainText("unrelated")
+    practice_chat.send()
+    assert "<practice_question>" not in worker.jobs[-1].context
     worker.done.emit(chat, "s1", "ok", "u4")
 
-    # The overview: the chat stays, with no card to send.
-    review.set_card(None)
-    assert review.chat_id == chat and review.chips.count() == 0
+    # The overview: the chat stays, with no question to send.
+    practice_chat.set_question(None)
+    assert practice_chat.chat_id == chat and practice_chat.chips.count() == 0
 
 
-def test_review_opens_the_quiz_chat_a_card_came_from(chat_panel):
-    panel, review, worker, db, book_id = review_panel(chat_panel)
-    from study_reader import srs
+def test_practice_opens_the_quiz_chat_a_question_came_from(chat_panel):
+    panel, practice_chat, worker, db, book_id = practice_panel(chat_panel)
+    from study_reader import practice
 
     source = db.create_chat(book_id, "Quiz")
     reply = db.add_message(source, "assistant", QUIZ)
-    (card_id,) = srs.add_quiz_cards(db, book_id, reply, QUIZ)
-    review.set_card(card(db, card_id, chat_id=source))
-    assert review.chat_id == source
-    assert review.chips.count() == 1  # questions there carry the card too
-    review.set_card(None)
+    (question_id,) = practice.add_quiz_questions(db, book_id, reply, QUIZ)
+    practice_chat.set_question(shown(db, question_id, chat_id=source))
+    assert practice_chat.chat_id == source
+    assert practice_chat.chips.count() == 1  # messages there carry the question too
+    practice_chat.set_question(None)
     other = db.create_chat(book_id, "Other")
-    review.show_chat(other)  # Open chat, or picking another chat from the list
-    assert review.chat_id == other
+    practice_chat.show_chat(other)  # Open chat, or picking another chat from the list
+    assert practice_chat.chat_id == other
 
 
-def test_card_context_hides_the_answer_until_shown():
+def test_question_context_hides_the_answer_until_shown():
     q = {"type": "choice", "question": "Which?", "choices": ["red", "blue"], "answer": 1, "explanation": "Sky."}
-    hidden = quiz.card_context(q, "Colors, question 2", None)
+    hidden = quiz.question_context(q, "Colors, question 2", None)
     assert "Which?" in hidden and "- blue" in hidden and "Sky." not in hidden and "Don't give" in hidden
-    shown = quiz.card_context(q, "Colors, question 2", {"response": {"choice": 0}, "verdict": "incorrect"})
+    shown = quiz.question_context(q, "Colors, question 2", {"response": {"choice": 0}, "verdict": "incorrect"})
     assert "Answer: blue" in shown and "I chose: red (incorrect)" in shown and "Sky." in shown
-    written = {"type": "written", "question": "Why?", "answer": "Because.", "rubric": "Mentions cause."}
-    assert "I wrote:\n<answer>\nhmm\n</answer>" in quiz.card_context(written, "", {"response": {"text": "hmm"}})
-    assert "I've seen the answer." in quiz.card_context(written, "", {"response": {}})
+    short = {"type": "short_answer", "question": "Why?", "answer": "Because.", "rubric": "Mentions cause."}
+    assert "I wrote:\n<answer>\nhmm\n</answer>" in quiz.question_context(short, "", {"response": {"text": "hmm"}})
+    assert "I've seen the answer." in quiz.question_context(short, "", {"response": {}})
     assert "stopped it before any" in quiz.stopped_context("q", "")
 
 
-def test_review_page_chat_panel(pdf_path, tmp_path, monkeypatch):
+def test_practice_page_chat_panel(pdf_path, tmp_path, monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
     from PySide6.QtCore import Qt
@@ -313,29 +313,29 @@ def test_review_page_chat_panel(pdf_path, tmp_path, monkeypatch):
 
     app = QApplication.instance() or QApplication([])
     db = Database(tmp_path / "t.db")
-    db.set_setting("review_calc", "1")  # from before the chat panel: the calculator was open
+    db.set_setting("practice_calc", "1")  # from before the chat panel: the calculator was open
     leftover = db.create_chat(None, "crashed", throwaway=True)
     win = MainWindow(db)
     assert db.chat(leftover) is None
     win.show()
     win.activateWindow()
     win.open_book(pdf_path)
-    db.add_card_note("flashcard", {"front": "q", "back": "a"}, db.ensure_deck("D"), book_id=win.book_id)
-    win.show_page("review")
-    assert win.review_calc.isVisible() and not win.review_chat.isVisible()
+    db.add_question_group("self_check", {"front": "q", "back": "a"}, db.ensure_deck("D"), book_id=win.book_id)
+    win.show_page("practice")
+    assert win.practice_calc.isVisible() and not win.practice_chat.isVisible()
     app.processEvents()
     QTest.keyClick(win, Qt.Key.Key_F10)  # the chat takes the calculator's place
-    assert win.review_chat.isVisible() and not win.review_calc_action.isChecked()
-    assert db.get_setting("review_panel") == "chat" and win.chat_action.isChecked()  # the book's left alone
-    win.review.start()
-    assert win.review_chat._card["id"] == win.review.card_id and win.review_chat.book_id == win.book_id
-    win.review.check(win.review.card_id, {})
-    assert win.review_chat._card["revealed"]
+    assert win.practice_chat.isVisible() and not win.practice_calc_action.isChecked()
+    assert db.get_setting("practice_panel") == "chat" and win.chat_action.isChecked()  # the book's left alone
+    win.practice.start()
+    assert win.practice_chat._question["id"] == win.practice.question_id and win.practice_chat.book_id == win.book_id
+    win.practice.check(win.practice.question_id, {})
+    assert win.practice_chat._question["revealed"]
 
-    shown = []
-    monkeypatch.setattr(win.review, "_js", lambda f, *args: shown.append((f, args)))
-    win.review.refresh()
-    assert shown[-1][1][0]["chat_panel"] is True
-    win.review.channel.registeredObjects()["review"].open("chat")  # the Chat button
-    assert not win.review_chat.isVisible() and win.review.chat_panel is False and db.get_setting("review_panel") == ""
+    drawn = []
+    monkeypatch.setattr(win.practice, "_js", lambda f, *args: drawn.append((f, args)))
+    win.practice.refresh()
+    assert drawn[-1][1][0]["chat_panel"] is True
+    win.practice.channel.registeredObjects()["practice"].open("chat")  # the Chat button
+    assert not win.practice_chat.isVisible() and win.practice.chat_panel is False and db.get_setting("practice_panel") == ""
     win.close()

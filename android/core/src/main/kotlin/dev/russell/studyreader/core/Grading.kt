@@ -13,28 +13,29 @@ import kotlin.math.abs
 class AnswerError(message: String) : Exception(message)
 
 /**
- * Port of the desktop's local quiz grading (quiz.grade and quiz.expected_value). Numeric answers are typed
- * as LaTeX in a MathLive field and read through [CalcLatex] and [Calc], as on the desktop.
+ * Port of the desktop's local quiz grading (quiz.grade and quiz.expected_value). Calculation answers are
+ * typed as LaTeX in a MathLive field and read through [CalcLatex] and [Calc], as on the desktop.
  */
 object Grading {
-    /** Numeric answers within this fraction of the expected value count, unless the question gives a tolerance. */
+    /** Calculation answers within this fraction of the expected value count, unless the question gives a tolerance. */
     const val RELATIVE_TOLERANCE = 0.01
 
-    /** How well a flashcard was recalled (Again / Hard / Good / Easy) as a verdict. */
+    /** How well a self-check was recalled (Missed / Shaky / Got it / Easy) as a verdict. */
     val RATING_VERDICTS = mapOf(1 to "incorrect", 2 to "partial", 3 to "correct", 4 to "correct")
 
     /**
      * Verdict ("correct" | "incorrect" | "partial") for a locally graded question: choice, truefalse,
-     * flashcard (by rating) and numeric. question/response are the JSON the cards store / review.html sends:
+     * self_check (by rating) and calculation, under their old names too (flashcard, numeric). question/response
+     * are the JSON the questions store / practice.html sends:
      * {"choice": i} | {"value": bool} | {"latex": s} | {"rating": n}.
      *
      * Throws [AnswerError] for input that can't be graded as entered, and IllegalArgumentException where the
-     * desktop raises ValueError (written answers, which Claude grades; unreadable expected answers), KeyError
+     * desktop raises ValueError (short answers, which Claude grades; unreadable expected answers), KeyError
      * or TypeError (malformed questions). An expected answer beyond the double range throws
      * ArithmeticException (the desktop's uncaught OverflowError); a typed answer beyond it is an AnswerError.
      */
     fun grade(question: JsonObject, response: JsonObject): String {
-        val kind = question.required("type").let { if (it is JsonPrimitive && it.isString) it.content else null }
+        val kind = question.required("type").let { if (it is JsonPrimitive && it.isString) Practice.kind(it.content) else null }
         when (kind) {
             "choice" -> {
                 val given = response["choice"]
@@ -48,7 +49,7 @@ object Grading {
                     (given is PyValue.None && answer is PyValue.None)
                 return if (same) "correct" else "incorrect"
             }
-            "flashcard" -> {
+            "self_check" -> {
                 val rating = when (val r = PyValue.of(response["rating"])) {
                     is PyValue.Bool -> if (r.b) 1 else 0
                     is PyValue.Int -> if (r.n.bitLength() < 31) r.n.toInt() else 0
@@ -59,7 +60,7 @@ object Grading {
                 }
                 return RATING_VERDICTS[rating] ?: throw AnswerError("Rate how well you knew it")
             }
-            "numeric" -> {
+            "calculation" -> {
                 val latex = PyText.strip(response["latex"]?.let { PyValue.str(it) } ?: "")
                 if (latex.isEmpty()) throw AnswerError("Enter a number")
                 val given = try {
@@ -83,17 +84,18 @@ object Grading {
                 return if (isClose(given, expected, tol + 1e-12)) "correct" else "incorrect"
             }
         }
-        throw IllegalArgumentException("written answers are graded by Claude")
+        // The messages match quiz.py's, which the grading fixtures compare.
+        throw IllegalArgumentException("short answers are graded by Claude")
     }
 
     /**
-     * The value of a numeric question's answer: a JSON number, or a string holding a plain expression
+     * The value of a calculation question's answer: a JSON number, or a string holding a plain expression
      * ("3/8", "sqrt(2)/2", "2e-3") or LaTeX. Throws IllegalArgumentException if it can't be read, and
      * ArithmeticException for a value beyond the double range (where the desktop raises OverflowError).
      */
     fun expectedValue(answer: JsonElement): Double {
         when (val a = PyValue.of(answer)) {
-            is PyValue.Bool -> throw IllegalArgumentException("a numeric answer must be a number")
+            is PyValue.Bool -> throw IllegalArgumentException("a calculation's answer must be a number")
             is PyValue.Int -> return intToFloat(a.n)
             is PyValue.Float -> return a.v
             else -> {}
@@ -105,9 +107,9 @@ object Grading {
             try {
                 Calc.computeFloat(CalcLatex.latexToExpr(text))
             } catch (e: CalcError) {
-                throw IllegalArgumentException("can't read the numeric answer ${PyText.repr(text)}")
+                throw IllegalArgumentException("can't read the calculation's answer ${PyText.repr(text)}")
             } catch (e: LatexError) {
-                throw IllegalArgumentException("can't read the numeric answer ${PyText.repr(text)}")
+                throw IllegalArgumentException("can't read the calculation's answer ${PyText.repr(text)}")
             }
         }
     }

@@ -46,8 +46,8 @@
   .book .track i { display:block; height:100%; background:var(--accent); border-radius:2px; }
   .book .foot { display:flex; align-items:center; gap:5px; margin-top:auto; padding-top:7px; }
   .book .foot .grow { flex:1; }
-  .book .rev { width:28px; height:28px; padding:0; border-radius:50%; flex:none; }
-  .book .rev svg { width:11px; height:11px; fill:currentColor; stroke:none; margin-left:2px; }
+  .book .practice { width:28px; height:28px; padding:0; border-radius:50%; flex:none; }
+  .book .practice svg { width:11px; height:11px; fill:currentColor; stroke:none; margin-left:2px; }
   .book .foot .pill { padding:1px 7px; }
   .empty-books { color:var(--muted); font-size:13.5px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
 
@@ -91,7 +91,7 @@ function show(d) {
   DATA = d;
   const root = document.getElementById("root");
   let html = `<header><div><h1>${esc(d.greeting)}</h1><div class="date">${esc(d.date)}</div></div><span class="grow"></span>`
-    + `<button class="btn" data-act="make" title="Describe a deck and Claude writes its cards">${ICON.sparkles}Make a deck with Claude…</button>`
+    + `<button class="btn" data-act="make" title="Describe a deck and Claude writes its questions">${ICON.sparkles}Make a deck with Claude…</button>`
     + `<button class="btn" data-act="web">${ICON.globe}Open web page…</button>`
     + `<button class="btn" data-act="file">${ICON.folder}Open PDF or EPUB…</button></header>`;
   html += `<div class="grid">`;
@@ -99,9 +99,9 @@ function show(d) {
   html += `<section class="panel wide">${readingHtml(d)}</section>`;
   html += `<section class="panel">${decksHtml(d)}</section>`;
   html += `<div class="stack"><section class="panel"><div class="panel-head"><h2>Activity</h2><span class="grow"></span>`
-    + `<span class="aside">${comma(d.heat.total)} reviews · ${plural(d.heat.active, "day")} in 6 months</span></div><div class="heat" id="heat"></div></section>`
+    + `<span class="aside">${comma(d.heat.total)} attempt${d.heat.total === 1 ? "" : "s"} · ${plural(d.heat.active, "day")} in 6 months</span></div><div class="heat" id="heat"></div></section>`
     + `<section class="panel"><div class="panel-head"><h2>Coming up</h2><span class="grow"></span>`
-    + `<span class="aside">${comma(d.forecast.reduce((a, f) => a + f.count, 0))} cards in 2 weeks</span>`
+    + `<span class="aside">${comma(d.forecast.reduce((a, f) => a + f.count, 0))} questions in 2 weeks</span>`
     + `<a href="#" data-act="go" data-page="stats">Statistics →</a></div>${forecastHtml(d.forecast)}</section></div>`;
   html += `</div>`;
   root.innerHTML = html;
@@ -110,27 +110,27 @@ function show(d) {
 
 function todayHtml(d) {
   const g = d.game;
-  let left = `<div class="panel-head"><h2>Today's review</h2></div>`;
+  let left = `<div class="panel-head"><h2>Today's practice</h2></div>`;
   if (!d.total) {
-    left += `<div class="done">No review cards yet</div><div class="help">Every question in a quiz Claude writes becomes a review card.
+    left += `<div class="done">No questions to practice yet</div><div class="help">Every question in a quiz Claude writes goes into practice.
       Open a book, select a passage or go to a section, and choose <em>Quiz me</em> (<kbd>Ctrl+Shift+Q</kbd>).</div>`;
   } else {
     left += `<div class="counts">`
       + `<div class="big-count"><span class="n due-c${d.due ? "" : " zero"}">${comma(d.due)}</span><span class="l">due</span></div>`
       + `<div class="big-count"><span class="n new-c${d.new ? "" : " zero"}">${comma(d.new)}</span><span class="l">new today</span></div></div>`
-      + `<div class="sub">${comma(d.total)} cards${d.new_total > d.new ? ` · ${comma(d.new_total)} new waiting` : ""}${d.suspended ? ` · ${comma(d.suspended)} suspended` : ""}</div>`;
+      + `<div class="sub">${comma(d.total)} question${d.total === 1 ? "" : "s"}${d.new_total > d.new ? ` · ${comma(d.new_total)} new waiting` : ""}${d.suspended ? ` · ${comma(d.suspended)} suspended` : ""}</div>`;
     if (d.ready) {
-      left += `<div class="actions"><button class="btn primary big" data-act="start">${ICON.play}Start review</button>`
-        + `<button class="btn" data-act="start" data-limit="cards" title="A short session: just ${d.quick.cards} cards">Just ${d.quick.cards} cards</button>`
-        + `<button class="btn" data-act="start" data-limit="time" title="As many cards as fit in ${d.quick.minutes} minutes">${d.quick.minutes} minutes</button></div>`
-        + `<div class="keys"><kbd>Space</kbd> to start · <kbd>5</kbd> for ${d.quick.cards} cards</div>`;
+      left += `<div class="actions"><button class="btn primary big" data-act="start">${ICON.play}Start practice</button>`
+        + `<button class="btn" data-act="start" data-limit="questions" title="A short session: just ${d.quick.questions} questions">Just ${d.quick.questions} questions</button>`
+        + `<button class="btn" data-act="start" data-limit="time" title="As many questions as fit in ${d.quick.minutes} minutes">${d.quick.minutes} minutes</button></div>`
+        + `<div class="keys"><kbd>Space</kbd> to start · <kbd>5</kbd> for ${d.quick.questions} questions</div>`;
     } else {
-      left += `<div class="done done-c">All caught up ✓</div><div class="muted">${d.next ? `The next card is due ${esc(d.next)}.` : ""}`
-        + `${d.new_total > d.new ? ` Today's ${d.new_per_day} new cards are done; more tomorrow.` : ""}</div>`;
+      left += `<div class="done done-c">All caught up ✓</div><div class="muted">${d.next ? `The next question is due ${esc(d.next)}.` : ""}`
+        + `${d.new_total > d.new ? ` Today's ${d.new_per_day} new questions are done; more tomorrow.` : ""}</div>`;
     }
   }
-  const side = g ? playerHtml(g) : `<div class="plain"><div><div class="n">${comma(d.heat.days.at(-1)?.date === d.heat.end ? d.heat.days.at(-1).count : 0)}</div><div class="l">reviewed today</div></div>`
-    + `<div><div class="n">${comma(d.total)}</div><div class="l">cards in all</div></div></div>`;
+  const side = g ? playerHtml(g) : `<div class="plain"><div><div class="n">${comma(d.heat.days.at(-1)?.date === d.heat.end ? d.heat.days.at(-1).count : 0)}</div><div class="l">attempted today</div></div>`
+    + `<div><div class="n">${comma(d.total)}</div><div class="l">questions in all</div></div></div>`;
   return `<div>${left}</div><div class="side">${side}</div>`;
 }
 
@@ -142,30 +142,30 @@ function readingHtml(d) {
   }
   return html + `<div class="books">` + d.reading.map(b => {
     const cover = b.cover ? `style="background-image:url('${b.cover}')"` : "";
-    const pills = [b.due ? `<span class="pill due" title="Cards due">${b.due} due</span>` : "",
-                   b.new ? `<span class="pill new" title="New cards today">${b.new} new</span>` : ""].join("");
-    const review = b.due + b.new ? `<button class="btn rev" data-act="book" data-book="${b.id}" title="Review this book's cards">${ICON.play}</button>` : "";
+    const pills = [b.due ? `<span class="pill due" title="Questions due">${b.due} due</span>` : "",
+                   b.new ? `<span class="pill new" title="New questions today">${b.new} new</span>` : ""].join("");
+    const practice = b.due + b.new ? `<button class="btn practice" data-act="book" data-book="${b.id}" title="Practice this book's questions">${ICON.play}</button>` : "";
     return `<div class="book" data-act="open" data-book="${b.id}" title="${esc(b.title)}">`
       + `<div class="cover" ${cover}>${b.cover ? "" : (b.web ? "WEB" : "")}</div>`
       + `<div class="info"><div class="title">${esc(b.title)}</div>`
       + `<div class="page">p. ${b.page} of ${b.pages}</div><div class="track"><i style="width:${(100 * b.progress).toFixed(1)}%"></i></div>`
-      + `<div class="foot">${pills}<span class="grow"></span>${review}</div></div></div>`;
+      + `<div class="foot">${pills}<span class="grow"></span>${practice}</div></div></div>`;
   }).join("") + `</div>`;
 }
 
 function decksHtml(d) {
-  let html = `<div class="panel-head"><h2>Decks</h2><span class="grow"></span><a href="#" data-act="go" data-page="cards">Browse cards →</a></div>`;
-  if (!d.decks.length) return html + `<div class="muted">Your decks show here once you have cards. Each book's cards also have a deck of their own.</div>`;
+  let html = `<div class="panel-head"><h2>Decks</h2><span class="grow"></span><a href="#" data-act="go" data-page="questions">Browse questions →</a></div>`;
+  if (!d.decks.length) return html + `<div class="muted">Your decks show here once you have questions. Each book's questions also have a deck of their own.</div>`;
   const byParent = {};
   for (const k of d.decks) (byParent[k.parent ?? 0] ||= []).push(k);
   const num = (n, cls) => `<span class="n ${n ? cls : "zero"}">${comma(n)}</span>`;
   const row = (k, depth) => {
     const kids = byParent[k.id] || [];
     const key = `d${k.id}`;
-    let r = `<div class="deck" data-act="deck" data-deck="${k.id}" title="${esc(k.path)} · ${plural(k.total, "card")}" style="padding-left:${8 + depth * 16}px">`
+    let r = `<div class="deck" data-act="deck" data-deck="${k.id}" title="${esc(k.path)} · ${plural(k.total, "question")}" style="padding-left:${8 + depth * 16}px">`
       + `<span class="tw" data-act="twist" data-key="${key}">${kids.length ? (OPEN.has(key) ? "▾" : "▸") : ""}</span>`
       + `<span class="name">${esc(k.name)}</span>${num(k.due, "due-c")}${num(k.new, "new-c")}`
-      + `<span class="go" data-act="deck-start" data-deck="${k.id}" title="Start reviewing this deck">${ICON.play}</span></div>`;
+      + `<span class="go" data-act="deck-start" data-deck="${k.id}" title="Practice this deck">${ICON.play}</span></div>`;
     if (OPEN.has(key)) for (const c of kids) r += row(c, depth + 1);
     return r;
   };
@@ -181,9 +181,9 @@ document.addEventListener("click", ev => {
   const act = t.dataset.act;
   if (act === "start") bridge.start(t.dataset.limit || "");
   else if (act === "open") bridge.open(+t.dataset.book);
-  else if (act === "book") bridge.reviewBook(+t.dataset.book);
-  else if (act === "deck") bridge.reviewDeck(+t.dataset.deck, false);
-  else if (act === "deck-start") bridge.reviewDeck(+t.dataset.deck, true);
+  else if (act === "book") bridge.practiceBook(+t.dataset.book);
+  else if (act === "deck") bridge.practiceDeck(+t.dataset.deck, false);
+  else if (act === "deck-start") bridge.practiceDeck(+t.dataset.deck, true);
   else if (act === "twist") { const k = t.dataset.key; OPEN.has(k) ? OPEN.delete(k) : OPEN.add(k); show(DATA); }
   else if (act === "go") bridge.go(t.dataset.page);
   else if (act === "file" || act === "web" || act === "make") bridge.add(act);
@@ -192,7 +192,7 @@ document.addEventListener("click", ev => {
 document.addEventListener("keydown", ev => {
   if (!bridge || !DATA || !DATA.ready || ev.ctrlKey || ev.altKey || ev.metaKey) return;
   if (ev.key === " " || ev.key === "Enter") { ev.preventDefault(); bridge.start(""); }
-  else if (ev.key === "5") { ev.preventDefault(); bridge.start("cards"); }
+  else if (ev.key === "5") { ev.preventDefault(); bridge.start("questions"); }
 });
 </script>
 </body>

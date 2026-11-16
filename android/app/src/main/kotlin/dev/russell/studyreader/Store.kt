@@ -6,20 +6,20 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
-import dev.russell.studyreader.core.Srs
+import dev.russell.studyreader.core.Practice
 import dev.russell.studyreader.core.SyncStore
 import java.io.File
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 /**
- * The phone's cards (cards.db: a copy of the desktop's snapshot plus what was done here) and
+ * The phone's questions (practice.db: a copy of the desktop's snapshot plus what was done here) and
  * syncing them through the shared folder (see phone_sync.py on the desktop for the format).
  * Everything touching the database runs on [worker], one task at a time.
  */
 class Store private constructor(private val context: Context) {
     companion object {
-        private const val TAG = "StudyReview"
+        private const val TAG = "StudyPractice"
         @Volatile private var instance: Store? = null
         fun get(context: Context): Store = instance ?: synchronized(this) {
             instance ?: Store(context.applicationContext).also { instance = it }
@@ -30,15 +30,43 @@ class Store private constructor(private val context: Context) {
         const val MEDIA = "media"
         const val PHONES = "phones"
         private const val TEMP_PREFIX = ".syncthing."
+        private const val DB_NAME = "practice.db"
+        /** What the database was called before the rename. */
+        private const val OLD_DB_NAME = "cards.db"
+        private val SIDE_FILES = listOf("-journal", "-wal", "-shm")
     }
 
     val worker: ExecutorService = Executors.newSingleThreadExecutor { r -> Thread(r, "store").apply { isDaemon = true } }
     val prefs: SharedPreferences = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
-    private val dbFile = File(context.filesDir, "cards.db")
+    private val dbFile = databaseFile()
     val mediaDir = File(context.filesDir, "media").apply { mkdirs() }
     val sql = SwappableSql(openDb(dbFile))
 
+    init {
+        // A copy of a snapshot from before the rename has none of today's tables: take the folder's
+        // snapshot in again (or say why it can't be) at the next sync.
+        if (SyncStore.schema(sql) < SyncStore.SCHEMA) {
+            SyncStore.setLocal(sql, "snapshot", "")
+            prefs.edit().putString("snapshot_stamp", "").apply()
+        }
+    }
+
     private fun openDb(file: File): AndroidSql = AndroidSql(file).also { SyncStore.prepare(it) }
+
+    /** practice.db, moving an older build's cards.db (and its journal) to it first. If the move
+     *  fails, the old file stays in use, so the queue of changes for the computer is never lost. */
+    private fun databaseFile(): File {
+        val file = File(context.filesDir, DB_NAME)
+        val old = File(context.filesDir, OLD_DB_NAME)
+        if (file.exists() || !old.exists()) return file
+        for (suffix in SIDE_FILES) {
+            val from = File(context.filesDir, OLD_DB_NAME + suffix)
+            if (from.exists()) from.renameTo(File(context.filesDir, DB_NAME + suffix))
+        }
+        if (old.renameTo(file)) return file
+        for (suffix in SIDE_FILES) File(context.filesDir, DB_NAME + suffix).renameTo(File(context.filesDir, OLD_DB_NAME + suffix))
+        return old
+    }
 
     var folder: Uri?
         get() = prefs.getString("folder", null)?.let(Uri::parse)
@@ -48,7 +76,7 @@ class Store private constructor(private val context: Context) {
     var lastError: String = ""
         private set
 
-    fun hasCards(): Boolean = sql.long("SELECT COUNT(*) FROM cards") > 0
+    fun hasQuestions(): Boolean = sql.long("SELECT COUNT(*) FROM questions") > 0
 
     /** A line for the overview about how syncing stands. */
     fun statusLine(): String {
@@ -56,14 +84,14 @@ class Store private constructor(private val context: Context) {
         if (lastError.isNotEmpty()) return "Sync problem: $lastError"
         val waiting = SyncStore.unacknowledged(sql)
         val seconds = (System.currentTimeMillis() - lastSync) / 1000.0
-        val ago = if (lastSync == 0L) "Not synced yet" else if (seconds < 60) "Synced just now" else "Synced ${Srs.formatInterval(seconds)} ago"
+        val ago = if (lastSync == 0L) "Not synced yet" else if (seconds < 60) "Synced just now" else "Synced ${Practice.formatInterval(seconds)} ago"
         return if (waiting > 0) "$ago · $waiting change${if (waiting == 1) "" else "s"} on the way to the computer" else ""
     }
 
     // -- syncing (on the worker) -------------------------------------------------------------
     private fun root(): DocumentFile? = folder?.let { DocumentFile.fromTreeUri(context, it) }?.takeIf { it.isDirectory }
 
-    /** Sends what was done here, and takes in a new snapshot if there is one. True if the cards changed. */
+    /** Sends what was done here, and takes in a new snapshot if there is one. True if the questions changed. */
     fun sync(): Boolean {
         val root = root()
         if (root == null) {
@@ -106,7 +134,8 @@ class Store private constructor(private val context: Context) {
     private fun child(dir: DocumentFile, name: String, create: Boolean = false): DocumentFile? =
         dir.findFile(name) ?: if (create) dir.createDirectory(name) else null
 
-    /** Takes in the desktop's snapshot if it changed since last time. */
+    /** Takes in the desktop's snapshot if it changed since last time. A snapshot from a desktop older
+     *  than this app is refused (and read again at every sync until the desktop writes a new one). */
     private fun takeSnapshot(root: DocumentFile): Boolean {
         val file = child(root, SNAPSHOT_DIR)?.findFile(SNAPSHOT) ?: return false
         val stamp = "${file.lastModified()}:${file.length()}"
@@ -115,6 +144,11 @@ class Store private constructor(private val context: Context) {
         incoming.delete()
         context.contentResolver.openInputStream(file.uri)!!.use { input -> incoming.outputStream().use { input.copyTo(it) } }
         val next = AndroidSql(incoming)
+        val refusal = try { SyncStore.refusal(next) } catch (e: Exception) { "can't read the computer's snapshot (${e.message})" }
+        if (refusal != null) {
+            next.close(); incoming.delete()
+            error(refusal)
+        }
         val id = SyncStore.meta(next, "id")
         if (id != null && id == SyncStore.local(sql, "snapshot")) {
             next.close(); incoming.delete()
@@ -124,8 +158,8 @@ class Store private constructor(private val context: Context) {
         val acked = SyncStore.adopt(next, sql)
         next.close()
         (sql.current as AndroidSql).close()
-        File(context.filesDir, "cards.db-journal").delete()
-        if (!incoming.renameTo(dbFile)) error("couldn't replace the cards")
+        File(context.filesDir, "${dbFile.name}-journal").delete()
+        if (!incoming.renameTo(dbFile)) error("couldn't replace the questions")
         sql.current = openDb(dbFile)
         prefs.edit().putString("snapshot_stamp", stamp).apply()
         // The desktop has these now; the phone's copies can go.
@@ -164,12 +198,12 @@ class Store private constructor(private val context: Context) {
     }
 
     // -- reminders ---------------------------------------------------------------------------
-    /** Cards waiting now: due, plus new ones within today's allowance. */
+    /** Questions waiting now: due, plus new ones within today's allowance. */
     fun waiting(): Int {
-        val srs = Srs(sql)
+        val practice = Practice(sql)
         val now = System.currentTimeMillis() / 1000.0
-        srs.unbury(now)
-        val c = srs.counts(null, now)
+        practice.unbury(now)
+        val c = practice.counts(null, now)
         return c["due"]!! + c["new"]!!
     }
 }

@@ -1,4 +1,4 @@
-"""Decides how each question reaches Claude (fork from the book session, resume
+"""Decides how each message reaches Claude (fork from the book session, resume
 the chat's own session, or fall back) and runs it off the GUI thread."""
 
 from __future__ import annotations
@@ -30,21 +30,21 @@ class BookRef:
 @dataclass
 class Job:
     chat_id: int
-    # None: not about a book (a chat about a review card from none, or a card's next version):
-    # a session of its own with no book in it.
+    # None: not about a book (a chat about a practice question from none, or a question's next
+    # version): a session of its own with no book in it.
     book: BookRef | None
     chat_session_id: str | None
-    question: str
+    message: str  # the user's message (or our own request, e.g. a grading prompt)
     snippets: list[cc.Snippet] = field(default_factory=list)
-    history: list[tuple[str, str]] = field(default_factory=list)  # (role, text) before this question
+    history: list[tuple[str, str]] = field(default_factory=list)  # (role, text) before this message
     page: int = 0
     model: str | None = None
     # Branch from an earlier reply (regenerate / edit): chat_session_id is that reply's
     # session and this its message uuid; the turn forks from there.
     resume_at: str | None = None
-    # Sent with the question but not part of it (e.g. the user's quiz answers).
+    # Sent with the message but not part of it (e.g. the user's quiz answers).
     context: str = ""
-    # A side question (grading a quiz answer): always fork, so the chat's session doesn't continue it.
+    # A side request (grading a quiz answer): always fork, so the chat's session doesn't continue it.
     detached: bool = False
 
 
@@ -79,8 +79,8 @@ class ChatService:
     status(book_id, text), base(book_id, session_id, mode), delta(chat_id, text),
     done(chat_id, session_id, text, message_uuid), failed(chat_id, message),
     for quiz grading graded(answer_id, text), gradeFailed(answer_id, message),
-    titled(chat_id, title) when a chat's auto-title is ready, varied(card_id, text) and
-    variantFailed(card_id, message) for a card's next version (variants.py), and for Make with Claude
+    titled(chat_id, title) when a chat's auto-title is ready, varied(question_id, text) and
+    variantFailed(question_id, message) for a question's next version (variants.py), and for Make with Claude
     (deck_maker.py) made(batch_id, session_id, text) and makeFailed(batch_id, message)."""
 
     def __init__(self, emit: Callable[..., None], sessions_dir: str | Path):
@@ -96,7 +96,8 @@ class ChatService:
         self._base.pop(book_id, None)
 
     def cwd(self, book_id: int | None) -> Path:
-        """Where a book's sessions are (None: bookless ones)."""
+        """Where a book's sessions are (None: bookless ones). The bookless folder keeps its old
+        name, "cards", so existing sessions there aren't orphaned."""
         return self.sessions_dir / (f"book-{book_id}" if book_id is not None else "cards")
 
     async def ensure_base(self, job: Job) -> tuple[str | None, str]:
@@ -151,9 +152,9 @@ class ChatService:
         """Ask Claude to grade a quiz answer, as a detached turn from the quiz's reply."""
         await self._side_turn(job, answer_id, "graded", "gradeFailed")
 
-    async def vary(self, job: Job, card_id: int) -> None:
-        """Ask Claude for a review card's next version with new numbers, as a detached turn like grading."""
-        await self._side_turn(job, card_id, "varied", "variantFailed")
+    async def vary(self, job: Job, question_id: int) -> None:
+        """Ask Claude for a practice question's next version with new numbers, as a detached turn like grading."""
+        await self._side_turn(job, question_id, "varied", "variantFailed")
 
     async def _side_turn(self, job: Job, id: int, done: str, failed: str) -> None:
         """A detached turn whose reply is reported as done(id, text), or failed(id, message)."""
@@ -168,10 +169,10 @@ class ChatService:
         except Exception as e:
             self.emit(failed, id, str(e) or type(e).__name__)
 
-    async def title(self, chat_id: int, question: str, passage: str, reply: str) -> None:
+    async def title(self, chat_id: int, message: str, passage: str, reply: str) -> None:
         """Name a chat from its first exchange. Failures are ignored: the chat keeps its title."""
         try:
-            title = await cc.chat_title(question, passage, reply, cwd=self.sessions_dir / "titles")
+            title = await cc.chat_title(message, passage, reply, cwd=self.sessions_dir / "titles")
         except Exception:
             return
         if title:
@@ -231,7 +232,7 @@ class ChatService:
                 extra.append(_replay(job.history))
         if job.context:
             extra.append(job.context)
-        blocks = cc.build_blocks(job.question, job.snippets, "\n\n".join(extra))
+        blocks = cc.build_blocks(job.message, job.snippets, "\n\n".join(extra))
         return await cc.run_turn(
             blocks, cwd=cwd, model=job.model, resume=resume, fork=fork, resume_at=resume_at, on_delta=on_delta,
         )
@@ -297,11 +298,11 @@ class ChatWorker(QObject):
     def submit_grade(self, job: Job, answer_id: int) -> None:
         asyncio.run_coroutine_threadsafe(self.service.grade(job, answer_id), self.loop)
 
-    def submit_variant(self, job: Job, card_id: int) -> None:
-        asyncio.run_coroutine_threadsafe(self.service.vary(job, card_id), self.loop)
+    def submit_variant(self, job: Job, question_id: int) -> None:
+        asyncio.run_coroutine_threadsafe(self.service.vary(job, question_id), self.loop)
 
-    def submit_title(self, chat_id: int, question: str, passage: str, reply: str) -> None:
-        asyncio.run_coroutine_threadsafe(self.service.title(chat_id, question, passage, reply), self.loop)
+    def submit_title(self, chat_id: int, message: str, passage: str, reply: str) -> None:
+        asyncio.run_coroutine_threadsafe(self.service.title(chat_id, message, passage, reply), self.loop)
 
     def submit_make(self, batch_id: int, blocks: list[dict], fresh_blocks: list[dict] | None,
                     session_id: str | None, model: str) -> None:

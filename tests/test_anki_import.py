@@ -4,7 +4,7 @@ import struct
 
 import pytest
 
-from study_reader import anki_import, cardmodel, srs
+from study_reader import anki_import, question_model, practice
 from study_reader.anki_import import Collection, migrate, to_markdown
 
 CRT = 1_600_000_000 - (1_600_000_000 % 86400) + 4 * 3600  # an Anki collection created at 4 am
@@ -51,7 +51,7 @@ NOTETYPES = {
     6: ("BasicSource", ["Front", "Back", "Source"], ["{{Front}}"], 0),
 }
 DECKS = {1: "Default", 10: "Physics", 11: "Physics\x1fLesson 1", 12: "Physics\x1fLesson 2", 20: "Japanese"}
-CLOZE = r"In {{c1::equilibrium::where}}, \(\rho = {{c2::0}}\) and {{c3::<b>surface</b>}}"
+FILL_IN = r"In {{c1::equilibrium::where}}, \(\rho = {{c2::0}}\) and {{c3::<b>surface</b>}}"
 OCC = ("{{c1::image-occlusion:rect:left=.1:top=.2:width=.3:height=.1:oi=1}}<br>"
        "{{c2::image-occlusion:ellipse:left=.5:top=.5:width=.2:height=.2:oi=1}}")
 
@@ -114,7 +114,7 @@ def make_collection(tmp_path):
     card(t0 + 201, t0 + 2, 11, 0)
     card(t0 + 202, t0 + 2, 11, 1, queue=-1, flags=3)
     # Cloze with three deletions: c1 new, c2 learning (epoch due), c3 in another deck.
-    note(t0 + 3, 3, [CLOZE, "Gauss"], "physics")
+    note(t0 + 3, 3, [FILL_IN, "Gauss"], "physics")
     card(t0 + 301, t0 + 3, 11, 0)
     card(t0 + 302, t0 + 3, 11, 1, type=1, queue=1, due=int(NOW) + 600, reps=1,
          data=json.dumps({"s": 0.4, "d": 6.0, "lrt": int(NOW) - 60}))
@@ -164,14 +164,14 @@ def test_reading_a_collection_copy(anki, tmp_path, monkeypatch):
         assert presets[1]["parameters"] == pytest.approx(W6, abs=1e-4) and presets[1]["desired_retention"] == 0.85
         assert len(presets[2]["parameters"]) == 19
         kinds = {nt.name: nt.kind for nt in col.note_types().values()}
-        assert kinds == {"Basic": "flashcard", "Reversible": "reversed", "Cloze": "cloze", "Image Occlusion": "occlusion",
-                         "Japanese sentences": "flashcard", "BasicSource": "flashcard"}
+        assert kinds == {"Basic": "self_check", "Reversible": "both_ways", "Cloze": "fill_in", "Image Occlusion": "image_labels",
+                         "Japanese sentences": "self_check", "BasicSource": "self_check"}
         tmp = col._tmp
     assert not tmp.exists()
 
 
 # -- migrating -------------------------------------------------------------------------------
-def test_migrating_notes_cards_and_schedules(anki, db, tmp_path):
+def test_migrating_notes_cards_and_schedules_into_questions(anki, db, tmp_path):
     with Collection(anki) as col:
         report = run(db, col, ["Physics::Lesson 1", "Physics::Lesson 2", "Japanese"], tmp_path)
     assert report.notes == 6 and report.cards == 10 and report.skipped == 0 and not report.errors
@@ -180,24 +180,24 @@ def test_migrating_notes_cards_and_schedules(anki, db, tmp_path):
     assert report.missing_media == ["missing.png"] and report.media_copied == 2
     assert (tmp_path / "media" / "diagram 2.png").read_bytes() == b"\x89PNG fake"
 
-    basic = db.card_by_anki_id(1_700_000_000_101)
-    note = db.card_note(basic["note_id"])
-    assert note["kind"] == "flashcard" and note["tags"] == " math::arith marked "
-    assert json.loads(note["fields"])["front"] == "What is **2+2**?"
+    basic = db.question_by_anki_id(1_700_000_000_101)
+    group = db.question_group(basic["group_id"])
+    assert group["kind"] == "self_check" and group["tags"] == " math::arith marked "
+    assert json.loads(group["fields"])["front"] == "What is **2+2**?"
     assert db.deck(basic["deck_id"])["name"] == "Physics::Lesson 1"
     assert basic["stage"] == 2 and basic["stability"] == 12.5 and basic["difficulty"] == 4.2
-    assert basic["last_review"] == NOW - 7 * 86400 and basic["reps"] == 2
-    assert srs.day_start(basic["due"]) == srs.day_start(NOW + 3 * 86400)  # due on Anki's day
-    logs = db.reviews(basic["id"])
+    assert basic["last_attempt"] == NOW - 7 * 86400 and basic["reps"] == 2
+    assert practice.day_start(basic["due"]) == practice.day_start(NOW + 3 * 86400)  # due on Anki's day
+    logs = db.attempts(basic["id"])
     assert [(r["rating"], r["source"], r["duration"]) for r in logs] == [(3, "anki", 8000), (4, "anki", 120000)]
 
-    rev = [db.card_by_anki_id(1_700_000_000_000 + i) for i in (201, 202)]
-    assert rev[0]["note_id"] == rev[1]["note_id"] and [c["ord"] for c in rev] == [0, 1]
+    rev = [db.question_by_anki_id(1_700_000_000_000 + i) for i in (201, 202)]
+    assert rev[0]["group_id"] == rev[1]["group_id"] and [c["ord"] for c in rev] == [0, 1]
     assert rev[1]["suspended"] == 1 and rev[1]["flag"] == 3 and rev[0]["stage"] == 0
     assert json.loads(rev[1]["data"])["question"] == "False positive"
 
-    cl = [db.card_by_anki_id(1_700_000_000_000 + i) for i in (301, 302, 303)]
-    fields = json.loads(db.card_note(cl[0]["note_id"])["fields"])
+    cl = [db.question_by_anki_id(1_700_000_000_000 + i) for i in (301, 302, 303)]
+    fields = json.loads(db.question_group(cl[0]["group_id"])["fields"])
     assert fields == {"text": r"In {{c1::equilibrium::where}}, \(\rho = {{c2::0}}\) and {{c3::**surface**}}",
                       "extra": "Gauss"}
     assert cl[1]["stage"] == 1 and cl[1]["due"] == NOW + 600
@@ -205,40 +205,40 @@ def test_migrating_notes_cards_and_schedules(anki, db, tmp_path):
     assert db.deck(cl[2]["deck_id"])["name"] == "Physics::Lesson 2"
     assert r"\htmlClass{cloze}" in json.loads(cl[1]["data"])["question"]
 
-    occ = db.card_by_anki_id(1_700_000_000_401)
-    occ_fields = json.loads(db.card_note(occ["note_id"])["fields"])
+    occ = db.question_by_anki_id(1_700_000_000_401)
+    occ_fields = json.loads(db.question_group(occ["group_id"])["fields"])
     assert occ_fields["image"] == "diagram 2.png" and occ_fields["header"] == "Circuit"
     assert [s["shape"] for s in occ_fields["shapes"]] == ["rect", "ellipse"] and occ_fields["shapes"][0]["oi"]
-    assert json.loads(db.card_by_anki_id(1_700_000_000_402)["data"])["active"] == 2
+    assert json.loads(db.question_by_anki_id(1_700_000_000_402)["data"])["active"] == 2
 
-    src = db.card_by_anki_id(1_700_000_000_601)
+    src = db.question_by_anki_id(1_700_000_000_601)
     assert db.deck(src["deck_id"])["name"] == "Physics::Lesson 1"  # back home from the filtered deck
-    assert json.loads(db.card_note(src["note_id"])["fields"])["extra"] == "Source: OWID"
+    assert json.loads(db.question_group(src["group_id"])["fields"])["extra"] == "Source: OWID"
 
-    # New cards come in the order Anki made them; the parameters of the main preset are used.
-    new = srs.next_card(db, None, NOW, deck=db.deck_by_name("Physics")["id"])
-    assert new["anki_id"] in (1_700_000_000_302, 1_700_000_000_303)  # due learning/review cards first
+    # New questions come in the order Anki made the cards; the parameters of the main preset are used.
+    new = practice.next_question(db, None, NOW, deck=db.deck_by_name("Physics")["id"])
+    assert new["anki_id"] in (1_700_000_000_302, 1_700_000_000_303)  # due learning/learned questions first
     assert report.parameters == pytest.approx(W6, abs=1e-4) and report.retention == 0.85
-    assert srs.parameters(db) == pytest.approx(W6, abs=1e-4) and srs.desired_retention(db) == 0.85
+    assert practice.parameters(db) == pytest.approx(W6, abs=1e-4) and practice.desired_retention(db) == 0.85
 
     # Running it again changes nothing.
     with Collection(anki) as col:
         again = run(db, col, ["Physics::Lesson 1", "Physics::Lesson 2", "Japanese"], tmp_path)
     assert (again.notes, again.cards, again.reviews, again.skipped) == (0, 0, 0, 10)
-    assert db.count_cards() == 10
+    assert db.count_questions() == 10
 
 
 def test_subset_then_the_rest(anki, db, tmp_path):
     with Collection(anki) as col:
         first = run(db, col, ["Physics::Lesson 1"], tmp_path, prefix="Anki")
         assert first.cards == 8
-        cloze = db.card_by_anki_id(1_700_000_000_301)
-        assert [c["ord"] for c in db.note_cards(cloze["note_id"])] == [0, 1]  # c3 lives in Lesson 2
+        cloze = db.question_by_anki_id(1_700_000_000_301)
+        assert [c["ord"] for c in db.group_questions(cloze["group_id"])] == [0, 1]  # c3 lives in Lesson 2
         assert db.deck(cloze["deck_id"])["name"] == "Anki::Physics::Lesson 1"
         second = run(db, col, ["Physics::Lesson 2"], tmp_path, prefix="Anki")
     assert (second.notes, second.cards, second.reviews) == (0, 1, 3)
-    c3 = db.card_by_anki_id(1_700_000_000_303)
-    assert c3["note_id"] == cloze["note_id"] and c3["ord"] == 2 and c3["stage"] == 2
+    c3 = db.question_by_anki_id(1_700_000_000_303)
+    assert c3["group_id"] == cloze["group_id"] and c3["ord"] == 2 and c3["stage"] == 2
     assert db.deck(c3["deck_id"])["name"] == "Anki::Physics::Lesson 2"
 
 
@@ -246,9 +246,9 @@ def test_content_only(anki, db, tmp_path):
     with Collection(anki) as col:
         report = run(db, col, ["Physics::Lesson 1"], tmp_path, scheduling=False, parameters=False)
     assert report.reviews == 0 and report.parameters is None
-    assert all(c["stage"] == 0 and c["reps"] == 0 for c in db.cards())
-    assert db.count_cards(where="suspended=1") == 1  # suspension is content, not schedule
-    assert srs.parameters(db) == tuple(srs.Scheduler().parameters)
+    assert all(c["stage"] == 0 and c["reps"] == 0 for c in db.questions())
+    assert db.count_questions(where="suspended=1") == 1  # suspension is content, not schedule
+    assert practice.parameters(db) == tuple(practice.Scheduler().parameters)
 
 
 # -- HTML to Markdown ------------------------------------------------------------------------
@@ -281,10 +281,10 @@ def test_to_markdown(html, md):
 def test_cloze_overlapping_rows_are_unwrapped():
     nt = anki_import.NoteType(1, "Cloze Overlapping", ["Text", "Back Extra"], ["{{cloze:Text}}"], is_cloze=True)
     kind, fields = anki_import.note_fields(nt, ["[[r::{{c1::x}} = 1]]<br>[[r::{{c2::y}}]]", ""])
-    assert kind == "cloze" and fields["text"] == "{{c1::x}} = 1\n{{c2::y}}"
+    assert kind == "fill_in" and fields["text"] == "{{c1::x}} = 1\n{{c2::y}}"
 
 
-def test_converted_text_keeps_making_the_same_cards():
+def test_converted_text_keeps_making_the_same_questions():
     text = to_markdown(r'<div>{{c2::The <b>surface&nbsp;<u>\(z=f(x,y)\)</u></b>::what}} is {{c1::<u>\(x,y\)</u>::inputs}}</div>')
-    assert cardmodel.card_ords("cloze", {"text": text}) == [0, 1]
-    assert "[what]" in cardmodel.cloze_side(text, 2, False)
+    assert question_model.question_ords("fill_in", {"text": text}) == [0, 1]
+    assert "[what]" in question_model.fill_in_side(text, 2, False)

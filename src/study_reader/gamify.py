@@ -1,9 +1,9 @@
-"""Rewards for reviewing, to make a daily review something to look forward to: XP and levels, a
+"""Rewards for practicing, to make daily practice something to look forward to: XP and levels, a
 combo that raises the XP multiplier, a daily goal, a streak that streak freezes can carry over a
 missed day, achievements, and a summary of each session. Nothing here touches scheduling, and XP
-never depends on the rating, so it never pays to rate a card better than it went.
+never depends on the rating, so it never pays to rate a question better than it went.
 
-The review log gives the streak, the calendar and today's count; XP, freezes and what was
+The attempt log gives the streak, the calendar and today's count; XP, freezes and what was
 unlocked live in one JSON setting (STATE_SETTING), made from the log the first time. Qt-free."""
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
-from . import srs
+from . import practice
 from .db import Database
 from .stats import MATURE_DAYS, day_of
 
@@ -21,18 +21,18 @@ ENABLED_SETTING = "gamify"  # "0" hides the rewards (they are still kept)
 GOAL_SETTING = "daily_goal"
 STATE_SETTING = "gamify_state"
 DEFAULT_GOAL = 20
-BASE_XP = 10  # per review, whatever its rating
-NEW_XP = 5  # extra for a card's first review
-COMBO_STEP = 5  # every this many cards in a row add 0.1 to the XP multiplier …
+BASE_XP = 10  # per attempt, whatever its rating
+NEW_XP = 5  # extra for a question's first attempt
+COMBO_STEP = 5  # every this many questions in a row add 0.1 to the XP multiplier …
 MAX_MULTIPLIER = 2.0  # … up to this
-COMBO_PAUSE = 120  # seconds on one card that break the combo (the reviewer probably stepped away)
-MILESTONE_EVERY = 25  # cards in a session
-QUICK_CARDS = 5  # a quick session: this many cards …
+COMBO_PAUSE = 120  # seconds on one question that break the combo (the user probably stepped away)
+MILESTONE_EVERY = 25  # questions in a session
+QUICK_QUESTIONS = 5  # a quick session: this many questions …
 QUICK_SECONDS = 5 * 60  # … or this long
 FREEZE_EVERY = 7  # streak days that earn a streak freeze
 MAX_FREEZES = 2
 START_FREEZES = 1
-COMEBACK_DAYS = 3  # days away after which a review is a comeback
+COMEBACK_DAYS = 3  # days away after which practice is a comeback
 HEAT_WEEKS = 18
 
 LEVEL_TITLES = (
@@ -40,12 +40,12 @@ LEVEL_TITLES = (
     (75, "Luminary"), (100, "Grandmaster"),
 )
 
-# id, icon, name, what it takes, and the context value (see reviewed()) that must reach the threshold.
+# id, icon, name, what it takes, and the context value (see attempted()) that must reach the threshold.
 ACHIEVEMENTS = (
-    ("first", "🌱", "First steps", "Review your first card", "reviews", 1),
-    ("reviews_100", "💯", "Centurion", "Review 100 cards", "reviews", 100),
-    ("reviews_1000", "📚", "Bookworm", "Review 1,000 cards", "reviews", 1000),
-    ("reviews_10000", "🏛️", "Library of Alexandria", "Review 10,000 cards", "reviews", 10000),
+    ("first", "🌱", "First steps", "Answer your first question", "attempts", 1),
+    ("attempts_100", "💯", "Centurion", "Answer 100 questions", "attempts", 100),
+    ("attempts_1000", "📚", "Bookworm", "Answer 1,000 questions", "attempts", 1000),
+    ("attempts_10000", "🏛️", "Library of Alexandria", "Answer 10,000 questions", "attempts", 10000),
     ("streak_3", "🔥", "Warming up", "Reach a 3-day streak", "streak", 3),
     ("streak_7", "🗓️", "A week of it", "Reach a 7-day streak", "streak", 7),
     ("streak_30", "🌙", "Month of memory", "Reach a 30-day streak", "streak", 30),
@@ -53,19 +53,27 @@ ACHIEVEMENTS = (
     ("streak_365", "👑", "Year of learning", "Reach a 365-day streak", "streak", 365),
     ("goal_1", "🎯", "On target", "Meet your daily goal", "goals", 1),
     ("goal_30", "🏹", "Sharpshooter", "Meet your daily goal on 30 days", "goals", 30),
-    ("combo_25", "⚡", "In the flow", "Review 25 cards in a row without a long pause", "combo", 25),
-    ("combo_100", "🌊", "Deep focus", "Review 100 cards in a row without a long pause", "combo", 100),
-    ("marathon", "🏃", "Marathon", "Review 100 cards in one session", "session", 100),
-    ("caught_up", "🧹", "Inbox zero", "Review every card that's due", "caught_up", 1),
+    ("combo_25", "⚡", "In the flow", "Answer 25 questions in a row without a long pause", "combo", 25),
+    ("combo_100", "🌊", "Deep focus", "Answer 100 questions in a row without a long pause", "combo", 100),
+    ("marathon", "🏃", "Marathon", "Answer 100 questions in one session", "session", 100),
+    ("caught_up", "🧹", "Inbox zero", "Practice every question that's due", "caught_up", 1),
     ("quick", "🍪", "Snack-sized", "Finish a quick session", "quick", 1),
-    ("mature_1", "🌳", "Taking root", "Get a card to a 3-week interval", "mature", 1),
-    ("mature_100", "🌲", "Forest", "Have 100 cards at 3-week intervals or longer", "mature", 100),
+    ("mature_1", "🌳", "Taking root", "Get a question to a 3-week interval", "mature", 1),
+    ("mature_100", "🌲", "Forest", "Have 100 questions at 3-week intervals or longer", "mature", 100),
     ("level_10", "⭐", "Rising star", "Reach level 10", "level", 10),
     ("level_25", "🌟", "Shining", "Reach level 25", "level", 25),
-    ("night_owl", "🦉", "Night owl", "Review after midnight", "night_owl", 1),
-    ("early_bird", "🐦", "Early bird", "Review before 7 am", "early_bird", 1),
+    ("night_owl", "🦉", "Night owl", "Practice after midnight", "night_owl", 1),
+    ("early_bird", "🐦", "Early bird", "Practice before 7 am", "early_bird", 1),
     ("comeback", "🤝", "Welcome back", f"Come back after {COMEBACK_DAYS} or more days away", "comeback", 1),
 )
+# Achievement ids as they were once stored (in gamify_state, and in phone achievement events).
+ACHIEVEMENT_ALIASES = {"reviews_100": "attempts_100", "reviews_1000": "attempts_1000",
+                       "reviews_10000": "attempts_10000"}
+
+
+def achievement_key(key: str) -> str:
+    """An achievement id as it is now, from one perhaps stored under an older name."""
+    return ACHIEVEMENT_ALIASES.get(key, key)
 
 
 def enabled(db: Database) -> bool:
@@ -104,23 +112,32 @@ def _defaults() -> dict:
 
 
 def load(db: Database, now: float | None = None, logged: bool = False) -> dict:
-    """The stored state, made from the review log the first time (achievements earned before
-    then are unlocked quietly). logged: the last review in the log is one about to be counted."""
+    """The stored state, made from the attempt log the first time (achievements earned before
+    then are unlocked quietly). logged: the last attempt in the log is one about to be counted."""
     raw = db.get_setting(STATE_SETTING)
     if raw:
         try:
-            return {**_defaults(), **json.loads(raw)}
+            state = {**_defaults(), **json.loads(raw)}
         except ValueError:
             pass
+        else:
+            unlocked = state["achievements"]
+            if any(k in ACHIEVEMENT_ALIASES for k in unlocked):
+                renamed: dict = {}
+                for k, at in unlocked.items():
+                    k = achievement_key(k)
+                    renamed[k] = min(at, renamed.get(k, at))
+                state["achievements"] = renamed
+            return state
     now = time.time() if now is None else now
     state = _defaults()
     n, new = db.conn.execute(
-        "SELECT COUNT(*), COALESCE(SUM(was_new), 0) FROM reviews WHERE id<?",
-        ((db.conn.execute("SELECT MAX(id) FROM reviews").fetchone()[0] or 0) + (not logged),),
+        "SELECT COUNT(*), COALESCE(SUM(was_new), 0) FROM attempts WHERE id<?",
+        ((db.conn.execute("SELECT MAX(id) FROM attempts").fetchone()[0] or 0) + (not logged),),
     ).fetchone()
     state["xp"] = BASE_XP * n + NEW_XP * new
-    days = review_days(db)
-    _unlock(state, {"reviews": n, "streak": _longest(days), "level": level(state["xp"])["level"],
+    days = practice_days(db)
+    _unlock(state, {"attempts": n, "streak": _longest(days), "level": level(state["xp"])["level"],
                     "mature": _mature(db)}, now)
     _save(db, state)
     return state
@@ -130,27 +147,27 @@ def _save(db: Database, state: dict) -> None:
     db.set_setting(STATE_SETTING, json.dumps(state))
 
 
-def review_days(db: Database) -> dict[date, int]:
-    """Reviews per review day (days roll over at 4 am, as in srs.py)."""
+def practice_days(db: Database) -> dict[date, int]:
+    """Attempts per practice day (days roll over at 4 am, as in practice.py)."""
     rows = db.conn.execute(
-        "SELECT date(reviewed_at, 'unixepoch', 'localtime', ?) AS d, COUNT(*) AS n FROM reviews GROUP BY d",
-        (f"-{srs.DAY_STARTS_AT_HOUR} hours",),
+        "SELECT date(attempted_at, 'unixepoch', 'localtime', ?) AS d, COUNT(*) AS n FROM attempts GROUP BY d",
+        (f"-{practice.DAY_STARTS_AT_HOUR} hours",),
     )
     return {date.fromisoformat(r["d"]): r["n"] for r in rows}
 
 
 def _mature(db: Database) -> int:
     return db.conn.execute(
-        "SELECT COUNT(*) FROM cards WHERE stage=2 AND last_review IS NOT NULL AND due-last_review>=?",
+        "SELECT COUNT(*) FROM questions WHERE stage=2 AND last_attempt IS NOT NULL AND due-last_attempt>=?",
         (MATURE_DAYS * 86400,),
     ).fetchone()[0]
 
 
-def _interval(card) -> float:
-    """A card's interval in days (0 unless it is in review)."""
-    if card["stage"] != 2 or card["last_review"] is None:
+def _interval(question) -> float:
+    """A question's interval in days (0 unless it is learned)."""
+    if question["stage"] != 2 or question["last_attempt"] is None:
         return 0
-    return (card["due"] - card["last_review"]) / 86400
+    return (question["due"] - question["last_attempt"]) / 86400
 
 
 # -- streaks ---------------------------------------------------------------------------------
@@ -159,7 +176,7 @@ def _frozen(state: dict) -> set[date]:
 
 
 def streak(days: dict[date, int], frozen: set[date], today: date) -> int:
-    """Days reviewed in a row up to today (or yesterday, if today has none yet). Frozen days
+    """Days practiced in a row up to today (or yesterday, if today has none yet). Frozen days
     bridge the run without adding to it."""
     covered = days.keys() | frozen
     d = today if today in days else today - timedelta(days=1)
@@ -207,13 +224,13 @@ def _unlock(state: dict, ctx: dict, now: float) -> list[dict]:
 
 
 # -- events ----------------------------------------------------------------------------------
-def reviewed(db: Database, new: bool, combo_multiplier: float = 1.0, now: float | None = None, **ctx) -> list[dict]:
-    """After a review was logged: its XP, and what it earned (a level, a streak freeze, the
+def attempted(db: Database, new: bool, combo_multiplier: float = 1.0, now: float | None = None, **ctx) -> list[dict]:
+    """After an attempt was logged: its XP, and what it earned (a level, a streak freeze, the
     daily goal, achievements), as events for the page. ctx: the session's "combo" and "session"
-    (cards reviewed)."""
+    (questions answered)."""
     now = time.time() if now is None else now
     state = load(db, now, logged=True)
-    days = review_days(db)
+    days = practice_days(db)
     today = day_of(now)
     _settle(state, days, today)
     events = []
@@ -240,9 +257,9 @@ def reviewed(db: Database, new: bool, combo_multiplier: float = 1.0, now: float 
         events.append({"kind": "welcome", "days": (today - max(earlier)).days})
     hour = datetime.fromtimestamp(now).hour
     events += _unlock(state, {
-        **ctx, "reviews": sum(days.values()), "streak": current, "level": after["level"], "mature": _mature(db),
-        "goals": state["goals"], "comeback": comeback, "night_owl": hour < srs.DAY_STARTS_AT_HOUR,
-        "early_bird": srs.DAY_STARTS_AT_HOUR <= hour < 7,
+        **ctx, "attempts": sum(days.values()), "streak": current, "level": after["level"], "mature": _mature(db),
+        "goals": state["goals"], "comeback": comeback, "night_owl": hour < practice.DAY_STARTS_AT_HOUR,
+        "early_bird": practice.DAY_STARTS_AT_HOUR <= hour < 7,
     }, now)
     _save(db, state)
     return events
@@ -257,13 +274,13 @@ def _goal_met(state: dict, today: date) -> list[dict]:
 
 
 def finished(db: Database, caught_up: bool, quick: bool, now: float | None = None) -> list[dict]:
-    """A session ended: by reviewing everything there was (which meets the daily goal too), or
+    """A session ended: by practicing everything there was (which meets the daily goal too), or
     by finishing a quick session."""
     now = time.time() if now is None else now
     state = load(db, now)
     events = []
     today = day_of(now)
-    if caught_up and review_days(db).get(today, 0):
+    if caught_up and practice_days(db).get(today, 0):
         events += _goal_met(state, today)
     events += _unlock(state, {"caught_up": caught_up, "quick": quick, "goals": state["goals"]}, now)
     _save(db, state)
@@ -271,11 +288,11 @@ def finished(db: Database, caught_up: bool, quick: bool, now: float | None = Non
 
 
 def status(db: Database, now: float | None = None) -> dict:
-    """For the review overview: level and XP, the streak and freezes, today against the goal,
+    """For the practice overview: level and XP, the streak and freezes, today against the goal,
     the calendar of recent weeks, and the achievements."""
     now = time.time() if now is None else now
     state = load(db, now)
-    days = review_days(db)
+    days = practice_days(db)
     today = day_of(now)
     if _settle(state, days, today):
         _save(db, state)
@@ -304,13 +321,13 @@ def status(db: Database, now: float | None = None) -> dict:
 # -- sessions --------------------------------------------------------------------------------
 @dataclass
 class Session:
-    """One sitting on the Review page: its combo, what it achieved, and how long it runs (limit
-    "cards": QUICK_CARDS cards; "time": QUICK_SECONDS; "": until nothing is left). Times are
-    time.monotonic()."""
+    """One sitting on the Practice page: its combo, what it achieved, and how long it runs (limit
+    "questions": QUICK_QUESTIONS questions; "time": QUICK_SECONDS; "": until nothing is left; the
+    limit names are the page's). Times are time.monotonic()."""
 
     limit: str = ""
     started: float = field(default_factory=time.monotonic)
-    reviewed: int = 0
+    attempted: int = 0
     passed: int = 0
     combo: int = 0
     best: int = 0
@@ -323,8 +340,8 @@ class Session:
         return multiplier(self.combo)
 
     def record(self, before, after, rating: int, seconds: float) -> list[dict]:
-        """A card rated (its rows before and after the review), seconds after it was shown."""
-        self.reviewed += 1
+        """A question rated (its rows before and after the attempt), seconds after it was shown."""
+        self.attempted += 1
         self.passed += rating > 1
         self.combo = 1 if seconds >= COMBO_PAUSE else self.combo + 1
         self.best = max(self.best, self.combo)
@@ -333,24 +350,24 @@ class Session:
         events = []
         if self.combo % COMBO_STEP == 0 and self.multiplier > multiplier(self.combo - 1):
             events.append({"kind": "combo", "combo": self.combo, "multiplier": self.multiplier})
-        if self.reviewed % MILESTONE_EVERY == 0:
-            events.append({"kind": "milestone", "n": self.reviewed})
+        if self.attempted % MILESTONE_EVERY == 0:
+            events.append({"kind": "milestone", "n": self.attempted})
         return events
 
     def over(self, now: float | None = None) -> bool:
         now = time.monotonic() if now is None else now
-        if self.limit == "cards":
-            return self.reviewed >= QUICK_CARDS
+        if self.limit == "questions":
+            return self.attempted >= QUICK_QUESTIONS
         if self.limit == "time":
             return now - self.started >= QUICK_SECONDS
         return False
 
     def progress(self, remaining: int, now: float | None = None) -> dict:
-        """For the progress bar: cards done of the total, or (timed) the seconds left."""
+        """For the progress bar: questions done of the total, or (timed) the seconds left."""
         now = time.monotonic() if now is None else now
-        total = QUICK_CARDS if self.limit == "cards" else self.reviewed + remaining
+        total = QUICK_QUESTIONS if self.limit == "questions" else self.attempted + remaining
         return {
-            "limit": self.limit, "done": self.reviewed, "total": total,
+            "limit": self.limit, "done": self.attempted, "total": total,
             "left": max(QUICK_SECONDS - (now - self.started), 0), "seconds": QUICK_SECONDS,
             "combo": self.combo, "multiplier": self.multiplier,
         }
@@ -358,7 +375,7 @@ class Session:
     def summary(self, caught_up: bool, now: float | None = None) -> dict:
         now = time.monotonic() if now is None else now
         return {
-            "reviewed": self.reviewed, "passed": self.passed, "seconds": round(now - self.started),
+            "attempted": self.attempted, "passed": self.passed, "seconds": round(now - self.started),
             "xp": self.xp, "best": self.best, "matured": self.matured, "stability": round(self.stability),
             "caught_up": caught_up, "quick": bool(self.limit) and self.over(now), "limit": self.limit,
         }

@@ -70,7 +70,7 @@ const shortDate = iso => new Date(iso + "T12:00").toLocaleDateString(undefined, 
 function palette() {
   return {
     new: css("new") || "#5b8def", learning: css("warning"), relearning: css("error"), young: "#7cc49a",
-    mature: css("success"), suspended: css("faint"), again: css("error"), passed: css("success"),
+    mature: css("success"), suspended: css("faint"), missed: css("error"), passed: css("success"),
     first: css("new") || "#5b8def", accent: css("accent"), muted: css("muted"), border: css("border"), fg: css("fg"),
   };
 }
@@ -83,65 +83,65 @@ function showStats(data) {
   const root = document.getElementById("root");
   const c = data.counts;
   if (!c.total) {
-    root.innerHTML = `<div class="empty">No cards here yet.</div>`;
+    root.innerHTML = `<div class="empty">No questions here yet.</div>`;
     return;
   }
   const P = palette(), t = data.today;
   let html = `<div class="grid">`;
 
   html += `<div class="card"><h2>Today</h2><div class="tiles">`
-    + tile(num(t.reviews), t.reviews === 1 ? "review" : "reviews", "accent")
+    + tile(num(t.attempts), t.attempts === 1 ? "attempt" : "attempts", "accent")
     + tile(t.minutes ? `${t.minutes}` : "0", "minutes")
-    + tile(num(t.new), "new cards", "good")
-    + tile(num(t.again), "again", t.again ? "bad" : "")
+    + tile(num(t.new), "new questions", "good")
+    + tile(num(t.missed), "missed", t.missed ? "bad" : "")
     + tile(pct(t.pass_rate), "passed") + `</div></div>`;
 
   const est = data.estimated, s = data.settings;
   html += `<div class="card"><h2>Memory</h2><div class="tiles">`
     + tile(pct(est.average_retrievability), "average retrievability now", "accent")
-    + tile(`${num(est.remembered)}<span class="muted" style="font-size:.55em"> / ${num(est.scheduled)}</span>`, "cards you'd recall now")
+    + tile(`${num(est.remembered)}<span class="muted" style="font-size:.55em"> / ${num(est.scheduled)}</span>`, "questions you'd recall now")
     + tile(pct(s.desired_retention), "desired retention")
     + `</div><div class="sub" style="margin:8px 0 0">${s.custom_parameters ? "Using custom FSRS parameters" : "Using FSRS's default parameters"}`
-    + ` · ${num(s.total_reviews)} reviews here, ${num(s.optimizable_reviews)} usable for optimizing (${num(s.min_optimize_reviews)} needed)</div></div>`;
+    + ` · ${num(s.total_attempts)} attempts here, ${num(s.optimizable_attempts)} usable for optimizing (${num(s.min_optimize_attempts)} needed)</div></div>`;
 
   const parts = [["new", "New"], ["learning", "Learning"], ["relearning", "Relearning"], ["young", "Young"], ["mature", "Mature"], ["suspended", "Suspended"]];
-  html += `<div class="card wide"><h2>Cards</h2><div class="sub">${num(c.total)} in all · young: interval under 21 days</div><div class="bar">`
+  html += `<div class="card wide"><h2>Questions</h2><div class="sub">${num(c.total)} in all · learned ones are young (interval under 21 days) or mature</div><div class="bar">`
     + parts.map(([k]) => c[k] ? `<span style="width:${100 * c[k] / c.total}%;background:${P[k]}" title="${k}: ${c[k]}"></span>` : "").join("")
     + `</div><div class="legend">` + parts.map(([k, l]) => `<span><i style="background:${P[k]}"></i>${l} <b>${num(c[k])}</b></span>`).join("") + `</div></div>`;
 
   const cal = data.calendar;
-  html += `<div class="card wide"><h2>Review calendar</h2><div class="heat" id="heat"></div><div class="heat-meta">`
+  html += `<div class="card wide"><h2>Practice calendar</h2><div class="heat" id="heat"></div><div class="heat-meta">`
     + `<span>Current streak <b>${cal.streak} day${cal.streak === 1 ? "" : "s"}</b></span>`
     + `<span>Longest <b>${cal.longest} day${cal.longest === 1 ? "" : "s"}</b></span>`
     + `<span>Studied <b>${cal.studied}</b> of ${cal.span} days (${pct(cal.studied_pct)})</span></div></div>`;
 
-  html += `<div class="card"><h2>Reviews</h2><div class="sub">Last 30 days</div><div class="chart"><canvas id="reviews"></canvas></div></div>`;
-  html += `<div class="card"><h2>Forecast</h2><div class="sub">Cards due over the next 30 days (overdue counted today)</div><div class="chart"><canvas id="forecast"></canvas></div></div>`;
+  html += `<div class="card"><h2>Attempts</h2><div class="sub">Last 30 days</div><div class="chart"><canvas id="attempts"></canvas></div></div>`;
+  html += `<div class="card"><h2>Forecast</h2><div class="sub">Questions due over the next 30 days (overdue counted today)</div><div class="chart"><canvas id="forecast"></canvas></div></div>`;
 
   const r = data.retention, periods = [["today", "Today"], ["week", "Last 7 days"], ["month", "Last 30 days"], ["year", "Last year"]];
   const cell = x => x.total ? `${pct(x.rate)}<span class="of">${x.passed}/${x.total}</span>` : `<span class="muted">—</span>`;
-  html += `<div class="card"><h2>True retention</h2><div class="sub">Reviews passed (Hard, Good or Easy) among cards last seen on an earlier day</div>`
+  html += `<div class="card"><h2>True retention</h2><div class="sub">Attempts passed (Shaky, Got it or Easy) among questions last seen on an earlier day</div>`
     + `<table><tr><th></th><th>Young</th><th>Mature</th><th>All</th></tr>`
     + periods.map(([k, l]) => `<tr><td>${l}</td><td>${cell(r[k].young)}</td><td>${cell(r[k].mature)}</td><td>${cell(r[k].all)}</td></tr>`).join("")
     + `</table></div>`;
-  html += `<div class="card"><h2>Added</h2><div class="sub">New cards, last 30 days</div><div class="chart"><canvas id="added"></canvas></div></div>`;
+  html += `<div class="card"><h2>Added</h2><div class="sub">New questions, last 30 days</div><div class="chart"><canvas id="added"></canvas></div></div>`;
 
-  const dists = [["interval", "Intervals", "Days between a card's last review and when it's due"],
+  const dists = [["interval", "Intervals", "Days between a question's last attempt and when it's due"],
     ["stability", "Stability", "Days until recall falls to 90%"],
     ["difficulty", "Difficulty", "FSRS difficulty, 1 (easy) to 10 (hard)"],
-    ["retrievability", "Retrievability", "Chance of recalling each scheduled card now"]];
+    ["retrievability", "Retrievability", "Chance of recalling each scheduled question now"]];
   for (const [k, title, sub] of dists) html += `<div class="card"><h2>${title}</h2><div class="sub">${sub}</div><div class="chart"><canvas id="d-${k}"></canvas></div></div>`;
   html += `</div>`;
   root.innerHTML = html;
 
   heatmap(document.getElementById("heat"), cal, P);
-  const labels30 = data.reviews.map(d => shortDate(d.date));
-  bars("reviews", labels30, [
-    { label: "New", data: data.reviews.map(d => d.first), backgroundColor: P.first },
-    { label: "Passed", data: data.reviews.map(d => d.passed), backgroundColor: P.passed },
-    { label: "Again", data: data.reviews.map(d => d.again), backgroundColor: P.again },
+  const labels30 = data.attempts.map(d => shortDate(d.date));
+  bars("attempts", labels30, [
+    { label: "New", data: data.attempts.map(d => d.first), backgroundColor: P.first },
+    { label: "Passed", data: data.attempts.map(d => d.passed), backgroundColor: P.passed },
+    { label: "Missed", data: data.attempts.map(d => d.missed), backgroundColor: P.missed },
   ], { stacked: true, legend: true, footer: items => {
-    const m = data.reviews[items[0].dataIndex].minutes;
+    const m = data.attempts[items[0].dataIndex].minutes;
     return m ? `${m} min` : "";
   } });
   bars("forecast", data.forecast.map(d => d.day === 0 ? "Today" : shortDate(d.date)), [
@@ -150,7 +150,7 @@ function showStats(data) {
     { label: "Added", data: data.added.map(d => d.count), backgroundColor: P.first }]);
   for (const [k] of dists) {
     const rows = data.distributions[k];
-    bars(`d-${k}`, rows.map(x => x.label), [{ label: "Cards", data: rows.map(x => x.count), backgroundColor: P.accent }]);
+    bars(`d-${k}`, rows.map(x => x.label), [{ label: "Questions", data: rows.map(x => x.count), backgroundColor: P.accent }]);
   }
 }
 
@@ -175,7 +175,7 @@ function bars(id, labels, datasets, opts = {}) {
   }));
 }
 
-// A year of days as weekly columns, shaded by how many reviews each had.
+// A year of days as weekly columns, shaded by how many attempts each had.
 function heatmap(el, cal, P) {
   const counts = Object.fromEntries(cal.days.map(d => [d.date, d.count]));
   const max = Math.max(1, ...cal.days.map(d => d.count));
@@ -196,7 +196,7 @@ function heatmap(el, cal, P) {
       const fill = n ? P.accent : P.border;
       const opacity = n ? (0.25 + 0.75 * Math.sqrt(n / max)).toFixed(2) : 0.55;
       cells += `<rect x="${left + x * (size + gap)}" y="${top + d * (size + gap)}" width="${size}" height="${size}" fill="${fill}"`
-        + ` fill-opacity="${opacity}" data-tip="${esc(day.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" }))}: ${n} review${n === 1 ? "" : "s"}"/>`;
+        + ` fill-opacity="${opacity}" data-tip="${esc(day.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" }))}: ${n} attempt${n === 1 ? "" : "s"}"/>`;
     }
   }
   const days = ["", "Mon", "", "Wed", "", "Fri", ""].map((l, d) => l ? `<text x="0" y="${top + d * (size + gap) + 10}" font-size="10" fill="${P.muted}">${l}</text>` : "").join("");

@@ -1,6 +1,6 @@
 [workspace]
 name = "study-reader-android"
-description = "Android companion to Study Reader: review cards on the phone, synced through a Syncthing folder"
+description = "Android companion to Study Reader: practice its questions on the phone, synced through a Syncthing folder"
 channels = ["conda-forge"]
 platforms = ["linux-64"]
 

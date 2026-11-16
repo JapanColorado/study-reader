@@ -6,13 +6,13 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
-// The desktop app's review page and what it loads (card rendering, KaTeX, MathLive, confetti),
-// copied in at build time so the phone draws cards exactly as the desktop does.
+// The desktop app's practice page and what it loads (question rendering, KaTeX, MathLive, confetti),
+// copied in at build time so the phone draws questions exactly as the desktop does.
 val desktopAssets = rootProject.file("../src/study_reader/assets")
 val webAssets = layout.buildDirectory.dir("generated/webassets")
 val copyWebAssets by tasks.registering(Sync::class) {
     from(desktopAssets) {
-        include("review.html", "app.css", "progress.js", "quiz.js", "quiz.css", "markdown.js", "markdown-it.min.js",
+        include("practice.html", "app.css", "progress.js", "quiz.js", "quiz.css", "markdown.js", "markdown-it.min.js",
             "mathfield.js", "confetti.js")
         include("katex/**", "mathlive/**")
         exclude("mathlive/mathlive-static.css")

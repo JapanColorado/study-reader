@@ -1,4 +1,4 @@
-// Platform-free logic the app runs on: FSRS, numeric grading, the review queue, rewards and the
+// Platform-free logic the app runs on: FSRS, calculation grading, the practice queue, rewards and the
 // sync format. It talks to SQLite through the small Sql interface, so tests run on the JVM over
 // sqlite-jdbc.
 plugins {

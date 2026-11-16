@@ -1,16 +1,16 @@
-// Markdown with $math$ (KaTeX), shared by transcript.html, notes.html and the card pages.
+// Markdown with $math$ (KaTeX), shared by transcript.html, notes.html and the question pages.
 // Needs katex and markdown-it loaded first.
 
 const md = markdownit({ html: false, linkify: true });
-// Card text (made in the browser or migrated from Anki) may hold inline HTML, and a line break
+// Question text (made in the browser or migrated from Anki) may hold inline HTML, and a line break
 // is a break, as in Anki.
 const mdRich = markdownit({ html: true, linkify: true, breaks: true });
-// Where card images live: a file:// URL ending in "/", set by the page's app side (setMedia).
+// Where question images live: a file:// URL ending in "/", set by the page's app side (setMedia).
 let MEDIA_URL = "";
 
 const MATH = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|(?<!\\)\$(?!\s)((?:\\.|[^$\\\n])+?)(?<![\s\\])\$(?!\d)/g;
 const CODE = /(```[\s\S]*?(?:```|$)|`[^`\n]*`)/;
-// Cloze deletions inside math are marked with \htmlClass{cloze}{...}; nothing else is trusted.
+// Fill-in blanks inside math are marked with \htmlClass{cloze}{...}; nothing else is trusted.
 const KATEX_RICH = { throwOnError: false, strict: false, trust: ctx => ctx.command === "\\htmlClass" };
 
 function esc(s) { return s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
@@ -98,7 +98,7 @@ function mathjaxCompat(tex, display) {
   return s;
 }
 
-// Entities typed inside math in HTML-ish card text (&lt; for <) mean the character.
+// Entities typed inside math in HTML-ish question text (&lt; for <) mean the character.
 const ENTITIES = { lt: "<", gt: ">", amp: "&", quot: '"', apos: "'", nbsp: " " };
 function unescapeHtml(s) {
   return s.replace(/&(lt|gt|amp|quot|apos|nbsp|#\d+|#x[0-9a-f]+);/gi, (m, e) => {
@@ -108,7 +108,7 @@ function unescapeHtml(s) {
   });
 }
 
-// Card HTML can come from shared Anki decks: keep formatting, drop anything that could run
+// Question HTML can come from shared Anki decks: keep formatting, drop anything that could run
 // code. An allowlist, rebuilt into fresh elements, so nothing parsed one way in the inert
 // template can be read another way in the page.
 const ALLOWED = new Set(("a b i u s em strong small big mark sub sup code kbd samp var pre span div p br hr wbr "

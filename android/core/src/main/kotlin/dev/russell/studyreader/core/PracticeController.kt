@@ -14,14 +14,14 @@ import kotlinx.serialization.json.put
 import kotlin.math.min
 
 /**
- * The phone's review panel: the desktop's ReviewPanel (review.py), driving the same review.html.
- * The page calls the bridge methods (start, stop, check, rate, act, choose, refresh, open); this answers with JavaScript to run (showOverview, showCard,
+ * The phone's practice panel: the desktop's PracticePanel (practice_view.py), driving the same practice.html.
+ * The page calls the bridge methods (start, stop, check, rate, act, choose, refresh, open); this answers with JavaScript to run (showOverview, showQuestion,
  * celebrate, inputError) through [js]. Every change for the desktop is
  * queued with SyncStore.record.
  *
- * [now] is wall-clock epoch seconds; [mono] a monotonic clock in seconds (review durations).
+ * [now] is wall-clock epoch seconds; [mono] a monotonic clock in seconds (attempt durations).
  */
-class ReviewController(
+class PracticeController(
     val db: Sql,
     val js: (String) -> Unit,
     val now: () -> Double = { System.currentTimeMillis() / 1000.0 },
@@ -30,41 +30,43 @@ class ReviewController(
     val onChanged: () -> Unit = {},
 ) {
     companion object {
-        const val MAX_REVIEW_SECONDS = 120.0
-        val SELF_RATED = setOf("flashcard", "cloze", "occlusion")
-        val CARD_ACTIONS = listOf(
-            listOf("skip", "Skip", "Show another card first"),
-            listOf("flag", "Flag", "Flag this card (as in Anki)"),
-            listOf("bury", "Bury", "Leave this card until tomorrow"),
-            listOf("suspend", "Suspend", "Leave this card out of review"),
+        const val MAX_ATTEMPT_SECONDS = 120.0
+        /** Kinds the user rates themselves (short answers too, in practice: Claude grades them only in the chat). */
+        val SELF_RATED = setOf("self_check", "both_ways", "fill_in", "image_labels", "short_answer")
+        val QUESTION_ACTIONS = listOf(
+            listOf("skip", "Skip", "Show another question first"),
+            listOf("flag", "Flag", "Flag this question"),
+            listOf("bury", "Bury", "Leave this question until tomorrow"),
+            listOf("suspend", "Suspend", "Leave this question out of practice"),
         )
     }
 
-    val srs = Srs(db)
-    val gamify = Gamify(srs) { SyncStore.record(db, it) }
+    val practice = Practice(db)
+    val gamify = Gamify(practice) { SyncStore.record(db, it) }
 
-    /** What to review: any of these decks, books and sections of books; none for every card. */
-    var picks: List<Srs.Pick> = emptyList()
-    var cardId: Long? = null
+    /** What to practice: any of these decks, books and sections of books; none for every question. */
+    var picks: List<Practice.Pick> = emptyList()
+    var questionId: Long? = null
     private var shownAt = 0.0
-    private var question: JsonObject? = null
+    /** The shown question's content (its variant, if any). */
+    private var content: JsonObject? = null
     private var shownData = ""
     private var answer: JsonObject? = null
-    /** The card just answered, not to be shown again right away. */
+    /** The question just answered, not to be shown again right away. */
     private var just = listOf<Long>()
-    /** Cards skipped this session, not to be shown again until the next one. */
+    /** Questions skipped this session, not to be shown again until the next one. */
     private val skipped = mutableListOf<Long>()
     private var session: Gamify.Session? = null
     private var summary: JsonObject? = null
     /** A line about syncing for the overview, set by the app. */
     var status: String = ""
-    /** What the overview says with no cards at all, set by the app. */
-    var emptyMessage: String = "No review cards yet."
+    /** What the overview says with no questions at all, set by the app. */
+    var emptyMessage: String = "No questions yet."
 
     private fun call(function: String, vararg args: JsonElement) = js("$function(${args.joinToString(", ")})")
 
     // -- scope ----------------------------------------------------------------------------
-    /** Review the cards in any of picks, as the page sends them: JSON [{deck} or {book, section}]. */
+    /** Practice the questions in any of picks, as the page sends them: JSON [{deck} or {book, section}]. */
     fun choose(picksJson: String) {
         val list = try { Json.parseToJsonElement(picksJson) as? JsonArray } catch (_: Exception) { null }
         choose(list.orEmpty().mapNotNull { e ->
@@ -73,52 +75,52 @@ class ReviewController(
             val deck = long("deck")
             val book = long("book")
             when {
-                deck != null -> Srs.Pick(deck = deck)
-                book != null -> Srs.Pick(book = book, section = (o["section"] as? JsonPrimitive)?.contentOrNull?.ifEmpty { null })
+                deck != null -> Practice.Pick(deck = deck)
+                book != null -> Practice.Pick(book = book, section = (o["section"] as? JsonPrimitive)?.contentOrNull?.ifEmpty { null })
                 else -> null
             }
         })
     }
 
-    fun choose(picks: List<Srs.Pick>) { this.picks = picks.distinct(); stop() }
+    fun choose(picks: List<Practice.Pick>) { this.picks = picks.distinct(); stop() }
 
-    /** pick, or (a section whose cards are gone or retagged) its book, or null if it is gone. */
-    private fun stillThere(p: Srs.Pick): Srs.Pick? = when {
+    /** pick, or (a section whose questions are gone or retagged) its book, or null if it is gone. */
+    private fun stillThere(p: Practice.Pick): Practice.Pick? = when {
         p.deck != null -> p.takeIf { db.one("SELECT id FROM decks WHERE id=?", p.deck) != null }
         db.one("SELECT id FROM books WHERE id=?", p.book) == null -> null
-        p.section != null && srs.countCards(p.book, tag = p.section) == 0 -> Srs.Pick(book = p.book)
+        p.section != null && practice.countQuestions(p.book, tag = p.section) == 0 -> Practice.Pick(book = p.book)
         else -> p
     }
 
-    private fun pickJson(p: Srs.Pick) = buildJsonObject {
+    private fun pickJson(p: Practice.Pick) = buildJsonObject {
         if (p.deck != null) put("deck", p.deck) else { put("book", p.book); put("section", p.section) }
     }
 
     fun refresh() {
-        val id = cardId
-        if (id != null && srs.card(id) != null) showCard() else { cardId = null; showOverview() }
+        val id = questionId
+        if (id != null && practice.question(id) != null) showQuestion() else { questionId = null; showOverview() }
     }
 
-    private fun counts(t: Double) = srs.counts(null, t, picks = picks)
+    private fun counts(t: Double) = practice.counts(null, t, picks = picks)
 
     fun showOverview() {
         val t = now()
-        srs.unbury(t)
+        practice.unbury(t)
         picks = picks.mapNotNull(::stillThere).distinct()
         val c = counts(t)
-        val upcoming = srs.nextDue(null, t, picks = picks)
+        val upcoming = practice.nextDue(null, t, picks = picks)
         val o = buildJsonObject {
             c.forEach { (k, v) -> put(k, v) }
             put("all", true)
             put("title", scopeTitle())
             put("picks", JsonArray(picks.map(::pickJson)))
-            put("ready", srs.nextCard(null, t, picks = picks) != null)
-            put("next", if (upcoming != null) "in ${Srs.formatInterval(upcoming - t)}" else "")
-            put("reviewed", summary?.get("reviewed") ?: JsonPrimitive(0))
+            put("ready", practice.nextQuestion(null, t, picks = picks) != null)
+            put("next", if (upcoming != null) "in ${Practice.formatInterval(upcoming - t)}" else "")
+            put("attempted", summary?.get("attempted") ?: JsonPrimitive(0))
             put("summary", summary ?: JsonNull)
-            put("new_per_day", srs.newPerDay())
+            put("new_per_day", practice.newPerDay())
             put("game", if (gamify.enabled()) gamify.status(t) else JsonNull)
-            put("quick", buildJsonObject { put("cards", Gamify.QUICK_CARDS); put("minutes", Gamify.QUICK_SECONDS / 60) })
+            put("quick", buildJsonObject { put("questions", Gamify.QUICK_QUESTIONS); put("minutes", Gamify.QUICK_SECONDS / 60) })
             put("links", JsonArray(emptyList()))
             put("status", status)
             put("empty", emptyMessage)
@@ -134,14 +136,14 @@ class ReviewController(
         return if (names.size < 2) names.firstOrNull() ?: "" else names.dropLast(1).joinToString(", ") + " and " + names.last()
     }
 
-    private fun pickTitle(p: Srs.Pick): String {
+    private fun pickTitle(p: Practice.Pick): String {
         if (p.deck != null) return db.one("SELECT name FROM decks WHERE id=?", p.deck)?.str("name")?.replace("::", " › ") ?: ""
         val sec = p.section?.split("::")?.drop(1)?.joinToString(" › ") { it.replace("_", " ") } ?: ""
         val book = db.one("SELECT title FROM books WHERE id=?", p.book)?.str("title") ?: ""
         return listOf(book, sec).filter { it.isNotEmpty() }.joinToString(" › ")
     }
 
-    private fun sectionsJson(list: List<Srs.Section>, left: Int) = buildJsonArray {
+    private fun sectionsJson(list: List<Practice.Section>, left: Int) = buildJsonArray {
         list.forEach { n ->
             add(buildJsonObject {
                 put("tag", n.tag); put("name", n.name); put("parent", n.parent); put("due", n.due)
@@ -151,13 +153,13 @@ class ReviewController(
     }
 
     private fun booksOverview(t: Double): Map<String, JsonElement> {
-        val left = srs.newLeftToday(t)
+        val left = practice.newLeftToday(t)
         val rows = db.query(
-            "SELECT c.book_id, b.title, SUM(${Srs.dueSql("c.")}) AS due, SUM(c.suspended=0 AND c.stage=0) AS new " +
-                "FROM cards c JOIN books b ON b.id=c.book_id WHERE c.id NOT IN (SELECT card_id FROM buried) " +
-                "GROUP BY c.book_id ORDER BY b.title COLLATE NOCASE", srs.nextDay(t), t,
+            "SELECT q.book_id, b.title, SUM(${Practice.dueSql("q.")}) AS due, SUM(q.suspended=0 AND q.stage=0) AS new " +
+                "FROM questions q JOIN books b ON b.id=q.book_id WHERE q.id NOT IN (SELECT question_id FROM buried) " +
+                "GROUP BY q.book_id ORDER BY b.title COLLATE NOCASE", practice.nextDay(t), t,
         )
-        val sections = srs.sections(null, t)
+        val sections = practice.sections(null, t)
         return mapOf(
             "books" to buildJsonArray {
                 rows.forEach { r ->
@@ -173,15 +175,15 @@ class ReviewController(
     }
 
     private fun decksOverview(t: Double, everything: Map<String, Int>?): Map<String, JsonElement> {
-        val counts = srs.deckCounts(t)
+        val counts = practice.deckCounts(t)
         val bookDecks = db.query("SELECT deck_id FROM books WHERE deck_id IS NOT NULL").map { it.long("deck_id") }.toSet()
-        val all = srs.decks().filter { (counts[it.long("id")]?.get("total") ?: 0) > 0 }
+        val all = practice.decks().filter { (counts[it.long("id")]?.get("total") ?: 0) > 0 }
         val shown = all.filter { it.long("id") !in bookDecks }.map { it.str("name") }
         val keep = shown.flatMap { n -> val p = n.split("::"); (1..p.size).map { p.take(it).joinToString("::") } }.toSet()
         val decks = all.filter { it.str("name") in keep }
         val byName = decks.associate { it.str("name") to it.long("id") }
-        val left = srs.newLeftToday(t)
-        val e = everything ?: srs.counts(null, t)
+        val left = practice.newLeftToday(t)
+        val e = everything ?: practice.counts(null, t)
         return mapOf(
             "decks" to buildJsonArray {
                 decks.forEach { d ->
@@ -200,16 +202,16 @@ class ReviewController(
 
     // -- the session ------------------------------------------------------------------------
     fun start(limit: String) {
-        session = Gamify.Session(if (limit == "cards" || limit == "time") limit else "", mono())
+        session = Gamify.Session(if (limit == Gamify.Session.QUESTIONS || limit == Gamify.Session.TIME) limit else "", mono())
         summary = null
         just = emptyList(); skipped.clear()
         next()
     }
 
     fun stop() {
-        session?.let { if (it.reviewed > 0) summary = it.summary(false, mono()) }
+        session?.let { if (it.attempted > 0) summary = it.summary(false, mono()) }
         session = null
-        cardId = null; answer = null
+        questionId = null; answer = null
         showOverview()
     }
 
@@ -217,22 +219,22 @@ class ReviewController(
         val s = session
         if (s != null && s.over(mono())) { finish(false); return }
         val t = now()
-        srs.unbury(t)
-        val card = srs.nextCard(null, t, just, exclude = skipped, picks = picks)
-        cardId = card?.long("id")
+        practice.unbury(t)
+        val question = practice.nextQuestion(null, t, just, exclude = skipped, picks = picks)
+        questionId = question?.long("id")
         answer = null
         shownAt = mono()
         shownData = ""
-        // Only skipped cards left (if any): not caught up while they are still to review.
-        if (card == null) finish(skipped.isEmpty() || srs.nextCard(null, t, picks = picks) == null)
-        else showCard()
+        // Only skipped questions left (if any): not caught up while they are still to practice.
+        if (question == null) finish(skipped.isEmpty() || practice.nextQuestion(null, t, picks = picks) == null)
+        else showQuestion()
     }
 
     private fun finish(caughtUp: Boolean) {
         val s = session
         session = null
-        cardId = null; answer = null
-        if (s == null || s.reviewed == 0) { showOverview(); return }
+        questionId = null; answer = null
+        if (s == null || s.attempted == 0) { showOverview(); return }
         val sum = s.summary(caughtUp, mono())
         summary = sum
         val events = gamify.finished(caughtUp, (sum["quick"] as JsonPrimitive).content == "true", now())
@@ -245,46 +247,46 @@ class ReviewController(
         if (events.isNotEmpty() && gamify.enabled()) call("celebrate", JsonArray(events))
     }
 
-    fun showCard() {
-        val card = srs.card(cardId ?: return) ?: return
-        if (card.str("data") != shownData) { question = srs.question(card); shownData = card.str("data") }
+    fun showQuestion() {
+        val question = practice.question(questionId ?: return) ?: return
+        if (question.str("data") != shownData) { content = practice.content(question); shownData = question.str("data") }
         val t = now()
         val a = answer
         val c = counts(t)
-        // The session's progress leaves out cards skipped in it, which won't come back in it.
-        val left = if (skipped.isEmpty()) c["due"]!! + c["new"]!! else srs.leftToReview(null, t, exclude = skipped, picks = picks)
-        val book = card.longOrNull("book_id")?.let { db.one("SELECT title FROM books WHERE id=?", it) }
-        val deck = db.one("SELECT name FROM decks WHERE id=?", card.long("deck_id"))
-        val q = question!!
-        call("showCard", buildJsonObject {
-            put("id", card.long("id"))
+        // The session's progress leaves out questions skipped in it, which won't come back in it.
+        val left = if (skipped.isEmpty()) c["due"]!! + c["new"]!! else practice.leftToPractice(null, t, exclude = skipped, picks = picks)
+        val book = question.longOrNull("book_id")?.let { db.one("SELECT title FROM books WHERE id=?", it) }
+        val deck = db.one("SELECT name FROM decks WHERE id=?", question.long("deck_id"))
+        val q = content!!
+        call("showQuestion", buildJsonObject {
+            put("id", question.long("id"))
             put("question", q)
-            put("varied", q != srs.ownQuestion(card))
-            put("title", card.str("title"))
+            put("varied", q != practice.ownContent(question))
+            put("title", question.str("title"))
             put("deck", deck?.str("name") ?: "")
             put("book", book?.str("title") ?: "")
             put("page", JsonNull)
             put("chat", false)
-            put("new", srs.isNew(card))
-            put("flag", card.long("flag"))
+            put("new", practice.isNew(question))
+            put("flag", question.long("flag"))
             put("answer", a ?: JsonNull)
-            put("previews", if (a != null) buildJsonObject { srs.previews(card, t).forEach { (k, v) -> put("$k", v) } } else JsonNull)
-            put("suggested", a?.let { (it["verdict"] as? JsonPrimitive)?.contentOrNull }?.let { Srs.VERDICT_RATINGS[it] })
+            put("previews", if (a != null) buildJsonObject { practice.previews(question, t).forEach { (k, v) -> put("$k", v) } } else JsonNull)
+            put("suggested", a?.let { (it["verdict"] as? JsonPrimitive)?.contentOrNull }?.let { Practice.VERDICT_RATINGS[it] })
             put("remaining", buildJsonObject { put("due", c["due"]); put("new", c["new"]) })
             put("session", session?.progress(left, mono()) ?: JsonNull)
             put("rewards", gamify.enabled())
-            put("actions", buildJsonArray { CARD_ACTIONS.forEach { add(buildJsonArray { it.forEach { s -> add(JsonPrimitive(s)) } }) } })
+            put("actions", buildJsonArray { QUESTION_ACTIONS.forEach { add(buildJsonArray { it.forEach { s -> add(JsonPrimitive(s)) } }) } })
         })
     }
 
-    /** An answer, or a request to see the answer (self-rated cards and written answers). */
+    /** An answer, or a request to see the answer (self-rated questions and short answers). */
     fun check(id: Long, responseJson: String) {
-        if (id != cardId || answer != null || srs.card(id) == null) return
-        val q = question ?: return
+        if (id != questionId || answer != null || practice.question(id) == null) return
+        val q = content ?: return
         val response = try { Json.parseToJsonElement(responseJson).jsonObject } catch (_: Exception) { JsonObject(emptyMap()) }
-        val type = (q["type"] as? JsonPrimitive)?.content
+        val type = Practice.kind((q["type"] as? JsonPrimitive)?.content)
         var verdict: String? = null
-        if (type !in SELF_RATED && type != "written") {
+        if (type !in SELF_RATED) {
             try {
                 verdict = Grading.grade(q, response)
             } catch (e: AnswerError) {
@@ -296,25 +298,25 @@ class ReviewController(
             }
         }
         answer = buildJsonObject { put("response", response); put("status", "done"); put("verdict", verdict); put("feedback", "") }
-        showCard()
+        showQuestion()
     }
 
     fun rate(id: Long, rating: Int) {
-        if (id != cardId || rating !in 1..4) return
+        if (id != questionId || rating !in 1..4) return
         val a = answer
         val seconds = mono() - shownAt
-        val duration = (min(seconds, MAX_REVIEW_SECONDS) * 1000).toLong()
-        val before = srs.card(id) ?: return
+        val duration = (min(seconds, MAX_ATTEMPT_SECONDS) * 1000).toLong()
+        val before = practice.question(id) ?: return
         val t = now()
         val response = a?.get("response") as? JsonObject
         val verdict = (a?.get("verdict") as? JsonPrimitive)?.contentOrNull
         val wasNew = before.long("stage") == 0L
         val events = db.transaction {
-            val after = srs.review(id, rating, t, response, verdict, duration) ?: return@transaction emptyList()
-            SyncStore.record(db, SyncStore.reviewEvent(id, t, rating, duration, response, verdict, wasNew))
+            val after = practice.attempt(id, rating, t, response, verdict, duration) ?: return@transaction emptyList()
+            SyncStore.record(db, SyncStore.attemptEvent(id, t, rating, duration, response, verdict, wasNew))
             val s = session ?: Gamify.Session(started = mono()).also { session = it }
             val sessionEvents = s.record(before, after, rating, seconds)
-            val all = gamify.reviewed(srs.isNew(before), s.multiplier, t, s.best, s.reviewed) + sessionEvents
+            val all = gamify.attempted(practice.isNew(before), s.multiplier, t, s.best, s.attempted) + sessionEvents
             s.xp += all.filter { (it["kind"] as JsonPrimitive).content == "xp" }.sumOf { (it["xp"] as JsonPrimitive).content.toInt() }
             all
         }
@@ -325,34 +327,34 @@ class ReviewController(
     }
 
     fun act(id: Long, action: String) {
-        val card = srs.card(id) ?: return
+        val question = practice.question(id) ?: return
         val t = now()
         when {
             action == "skip" -> { skipped.add(id); next() }
             action == "suspend" -> {
                 db.transaction {
-                    srs.update(id, mapOf("suspended" to 1L))
-                    SyncStore.record(db, SyncStore.cardEvent("suspend", id, t) { put("suspended", 1) })
+                    practice.update(id, mapOf("suspended" to 1L))
+                    SyncStore.record(db, SyncStore.questionEvent("suspend", id, t) { put("suspended", 1) })
                 }
                 onChanged(); next()
             }
             action == "bury" -> {
                 db.transaction {
-                    srs.bury(id, t)
-                    SyncStore.record(db, SyncStore.cardEvent("bury", id, t))
+                    practice.bury(id, t)
+                    SyncStore.record(db, SyncStore.questionEvent("bury", id, t))
                 }
                 onChanged(); next()
             }
             action.startsWith("flag:") -> {
                 val flag = action.removePrefix("flag:").toIntOrNull()?.coerceIn(0, 7) ?: return
-                // The same flag again takes it off, as in Anki.
-                val value = if (flag != 0 && card.long("flag") == flag.toLong()) 0 else flag
+                // The same flag again takes it off.
+                val value = if (flag != 0 && question.long("flag") == flag.toLong()) 0 else flag
                 db.transaction {
-                    srs.update(id, mapOf("flag" to value.toLong()))
-                    SyncStore.record(db, SyncStore.cardEvent("flag", id, t) { put("flag", value) })
+                    practice.update(id, mapOf("flag" to value.toLong()))
+                    SyncStore.record(db, SyncStore.questionEvent("flag", id, t) { put("flag", value) })
                 }
                 onChanged()
-                if (id == cardId) showCard()
+                if (id == questionId) showQuestion()
             }
         }
     }

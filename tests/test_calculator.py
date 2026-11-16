@@ -167,7 +167,7 @@ def test_calculations_gain_latex_column(tmp_path):
 
 
 def test_shared_history_has_no_book(tmp_path):
-    """The Review page keeps one history for cards with no book (book_id NULL)."""
+    """The Practice page keeps one history for questions with no book (book_id NULL)."""
     db = Database(tmp_path / "t.db")
     book = db.upsert_book("h", "/a.pdf", "A", 1)["id"]
     db.add_calculation(None, "1 + 1", "2", "2")
@@ -203,7 +203,7 @@ def test_calculations_book_becomes_optional(tmp_path):
     Database(path)  # and opens again without rebuilding
 
 
-def test_review_calculator_shares_a_history_without_a_book(tmp_path, monkeypatch):
+def test_practice_calculator_shares_a_history_without_a_book(tmp_path, monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
     from study_reader.calculator import CalculatorPanel

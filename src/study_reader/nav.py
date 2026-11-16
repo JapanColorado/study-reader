@@ -1,4 +1,4 @@
-"""The navigation rail down the left of the main window: Home, Library, Review, Cards and
+"""The navigation rail down the left of the main window: Home, Library, Practice, Questions and
 Statistics, the open book, and Settings."""
 
 from __future__ import annotations
@@ -13,11 +13,11 @@ RAIL_WIDTH = 76
 
 # (page name, label, icon, tooltip)
 PAGES = [
-    ("home", "Home", "home", "Home: today's review, what you're reading, your decks (Alt+1)"),
+    ("home", "Home", "home", "Home: today's practice, what you're reading, your decks (Alt+1)"),
     ("library", "Library", "library", "Every book and web page (Alt+2)"),
-    ("review", "Review", "cards", "Review cards from every deck and book (Alt+3)"),
-    ("cards", "Cards", "search", "Browse, search and edit cards (Alt+4)"),
-    ("stats", "Stats", "chart", "Review statistics (Alt+5)"),
+    ("practice", "Practice", "questions", "Practice questions from every deck and book (Alt+3)"),
+    ("questions", "Questions", "search", "Browse, search and edit questions (Alt+4)"),
+    ("stats", "Stats", "chart", "Practice statistics (Alt+5)"),
 ]
 
 
@@ -115,5 +115,5 @@ class NavRail(QWidget):
         if title is not None:
             self.book.setToolTip(f"Back to {title} (Alt+6)")
 
-    def set_review_badge(self, waiting: int) -> None:
-        self.buttons["review"].set_badge("" if not waiting else "99+" if waiting > 99 else str(waiting))
+    def set_practice_badge(self, waiting: int) -> None:
+        self.buttons["practice"].set_badge("" if not waiting else "99+" if waiting > 99 else str(waiting))

@@ -22,7 +22,14 @@ import java.util.UUID
  * over, drops the events it acknowledges, and replays the rest on top of it.
  */
 object SyncStore {
-    const val FORMAT = 1
+    /** The batch format the phone writes. The desktop still reads format 1 (events "review" with "card"). */
+    const val FORMAT = 2
+
+    /** The oldest snapshot schema the phone reads (meta 'schema'; snapshots before it have none). */
+    const val SCHEMA = 2
+
+    /** Why a snapshot can't be used, for the sync status line. */
+    const val TOO_OLD = "the computer's Study Reader is older than this app. Update Study Reader on the computer, then sync again."
 
     /** The desktop's snapshot schema (phone_sync.SNAPSHOT_SCHEMA), for an empty start. */
     val SNAPSHOT_SCHEMA = listOf(
@@ -30,14 +37,14 @@ object SyncStore {
         "CREATE TABLE IF NOT EXISTS decks (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
         "CREATE TABLE IF NOT EXISTS books (id INTEGER PRIMARY KEY, title TEXT NOT NULL, root TEXT NOT NULL, deck_id INTEGER)",
         "CREATE TABLE IF NOT EXISTS section_starts (book_id INTEGER NOT NULL, tag TEXT NOT NULL, page INTEGER NOT NULL)",
-        "CREATE TABLE IF NOT EXISTS card_notes (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, tags TEXT NOT NULL)",
-        "CREATE TABLE IF NOT EXISTS cards (id INTEGER PRIMARY KEY, note_id INTEGER NOT NULL, ord INTEGER NOT NULL, " +
-            "deck_id INTEGER NOT NULL, book_id INTEGER, message_id INTEGER, quiz INTEGER, question INTEGER, title TEXT NOT NULL, " +
+        "CREATE TABLE IF NOT EXISTS question_groups (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, tags TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS questions (id INTEGER PRIMARY KEY, group_id INTEGER NOT NULL, ord INTEGER NOT NULL, " +
+            "deck_id INTEGER NOT NULL, book_id INTEGER, message_id INTEGER, quiz INTEGER, position INTEGER, title TEXT NOT NULL, " +
             "data TEXT NOT NULL, variant TEXT NOT NULL, page INTEGER, stage INTEGER NOT NULL, fsrs TEXT NOT NULL, due REAL NOT NULL, " +
             "reps INTEGER NOT NULL, lapses INTEGER NOT NULL, suspended INTEGER NOT NULL, flag INTEGER NOT NULL, stability REAL, " +
-            "difficulty REAL, last_review REAL, created_at REAL NOT NULL, updated_at REAL NOT NULL)",
-        "CREATE TABLE IF NOT EXISTS reviews (id INTEGER PRIMARY KEY, card_id INTEGER NOT NULL, rating INTEGER NOT NULL, " +
-            "source TEXT NOT NULL, reviewed_at REAL NOT NULL, duration INTEGER NOT NULL, was_new INTEGER NOT NULL)",
+            "difficulty REAL, last_attempt REAL, created_at REAL NOT NULL, updated_at REAL NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS attempts (id INTEGER PRIMARY KEY, question_id INTEGER NOT NULL, rating INTEGER NOT NULL, " +
+            "source TEXT NOT NULL, attempted_at REAL NOT NULL, duration INTEGER NOT NULL, was_new INTEGER NOT NULL)",
         "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
         "CREATE TABLE IF NOT EXISTS acks (device TEXT NOT NULL, batch TEXT NOT NULL, PRIMARY KEY (device, batch))",
     )
@@ -45,14 +52,64 @@ object SyncStore {
     val LOCAL_SCHEMA = listOf(
         "CREATE TABLE IF NOT EXISTS pending (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, " +
             "batch TEXT, json TEXT NOT NULL)",
-        "CREATE TABLE IF NOT EXISTS buried (card_id INTEGER PRIMARY KEY, until REAL NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS buried (question_id INTEGER PRIMARY KEY, until REAL NOT NULL)",
         "CREATE TABLE IF NOT EXISTS local (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
     )
 
-    /** Makes sure a database (a fresh snapshot copy, or an empty one) has every table the app uses. */
+    /** Makes sure a database (a fresh snapshot copy, or an empty one) has every table the app uses,
+     *  and brings local tables an older build of the app wrote up to date. */
     fun prepare(db: Sql) {
-        for (s in SNAPSHOT_SCHEMA + LOCAL_SCHEMA) db.exec(s)
+        db.transaction {
+            migrateLocal(db)
+            for (s in SNAPSHOT_SCHEMA + LOCAL_SCHEMA) db.exec(s)
+            upgradePending(db)
+        }
     }
+
+    private fun columns(db: Sql, table: String): List<String> = db.query("PRAGMA table_info($table)").map { it.str("name") }
+
+    /** Builds before the rename kept `buried (card_id, until)`. (Rebuilt rather than ALTER ... RENAME
+     *  COLUMN, which Android's SQLite lacks before API 30.) */
+    private fun migrateLocal(db: Sql) {
+        if ("card_id" !in columns(db, "buried")) return
+        db.exec("ALTER TABLE buried RENAME TO buried_old")
+        db.exec(LOCAL_SCHEMA[1])
+        db.exec("INSERT OR REPLACE INTO buried (question_id, until) SELECT card_id, until FROM buried_old")
+        db.exec("DROP TABLE buried_old")
+    }
+
+    /**
+     * Rewrites queued events an older build wrote (format 1: type "review", the question under "card")
+     * in today's terms, so every batch is format 2 throughout. Batch files already written stay as they
+     * are; the desktop reads both formats.
+     */
+    private fun upgradePending(db: Sql) {
+        for (r in db.query("SELECT seq, json FROM pending WHERE json LIKE '%\"card\":%' OR json LIKE '%\"type\":\"review\"%'")) {
+            val e = try { Json.parseToJsonElement(r.str("json")).jsonObject } catch (_: Exception) { continue }
+            val now = upgraded(e)
+            if (now != e) db.exec("UPDATE pending SET json=? WHERE seq=?", now.toString(), r.long("seq"))
+        }
+    }
+
+    /** An event in format 2 terms (format 1's "review" is "attempt", and its "card" is "question"). */
+    fun upgraded(e: JsonObject): JsonObject {
+        if ("card" !in e && (e["type"] as? JsonPrimitive)?.contentOrNull != "review") return e
+        return buildJsonObject {
+            e.forEach { (k, v) ->
+                when {
+                    k == "card" -> if ("question" !in e) put("question", v)
+                    k == "type" && (v as? JsonPrimitive)?.contentOrNull == "review" -> put("type", "attempt")
+                    else -> put(k, v)
+                }
+            }
+        }
+    }
+
+    /** The snapshot's schema version: 0 for a snapshot from before the rename (no 'schema' in meta). */
+    fun schema(db: Sql): Int = meta(db, "schema")?.toIntOrNull() ?: 0
+
+    /** Why the phone can't take this snapshot in, or null if it can. */
+    fun refusal(snapshot: Sql): String? = if (schema(snapshot) < SCHEMA) TOO_OLD else null
 
     fun local(db: Sql, key: String): String? = db.one("SELECT value FROM local WHERE key=?", key)?.str("value")
     fun setLocal(db: Sql, key: String, value: String) =
@@ -98,13 +155,14 @@ object SyncStore {
      * Returns the names of the acknowledged batch files, which the phone can now delete.
      */
     fun adopt(new: Sql, old: Sql?): List<String> {
+        refusal(new)?.let { throw IllegalStateException(it) }
         prepare(new)
         return new.transaction {
             if (old != null) {
                 for (r in old.query("SELECT key, value FROM local"))
                     new.exec("INSERT OR REPLACE INTO local (key, value) VALUES (?,?)", r["key"], r["value"])
-                for (r in old.query("SELECT card_id, until FROM buried"))
-                    new.exec("INSERT OR REPLACE INTO buried (card_id, until) VALUES (?,?)", r["card_id"], r["until"])
+                for (r in old.query("SELECT question_id, until FROM buried"))
+                    new.exec("INSERT OR REPLACE INTO buried (question_id, until) VALUES (?,?)", r["question_id"], r["until"])
                 for (r in old.query("SELECT seq, id, batch, json FROM pending ORDER BY seq"))
                     new.exec("INSERT OR IGNORE INTO pending (seq, id, batch, json) VALUES (?,?,?,?)", r["seq"], r["id"], r["batch"], r["json"])
             }
@@ -112,13 +170,13 @@ object SyncStore {
             val acked = new.query("SELECT batch FROM acks WHERE device=?", device).map { it.str("batch") }.toSet()
             val done = new.query("SELECT DISTINCT batch FROM pending WHERE batch IS NOT NULL").map { it.str("batch") }.filter { it in acked }
             for (b in done) new.exec("DELETE FROM pending WHERE batch=?", b)
-            val srs = Srs(new)
-            val gamify = Gamify(srs)
+            val practice = Practice(new)
+            val gamify = Gamify(practice)
             for (r in new.query("SELECT json FROM pending ORDER BY seq")) {
                 try {
-                    replay(srs, gamify, Json.parseToJsonElement(r.str("json")).jsonObject)
+                    replay(practice, gamify, Json.parseToJsonElement(r.str("json")).jsonObject)
                 } catch (_: Exception) {
-                    // an event that no longer applies (its card is gone): the desktop skips it too
+                    // an event that no longer applies (its question is gone): the desktop skips it too
                 }
             }
             setLocal(new, "snapshot", meta(new, "id") ?: "")
@@ -127,33 +185,34 @@ object SyncStore {
     }
 
     /** Applies a queued event to a snapshot that doesn't reflect it yet. */
-    fun replay(srs: Srs, gamify: Gamify, e: JsonObject) {
+    fun replay(practice: Practice, gamify: Gamify, event: JsonObject) {
+        val e = upgraded(event)
         val type = e["type"]!!.jsonPrimitive.content
         val at = e["at"]!!.jsonPrimitive.doubleOrNull!!
-        val cardId = (e["card"] as? JsonPrimitive)?.longOrNull
+        val questionId = (e["question"] as? JsonPrimitive)?.longOrNull
         when (type) {
-            "review" -> {
+            "attempt" -> {
                 val rating = e["rating"]!!.jsonPrimitive.intOrNull!!
-                val card = srs.card(cardId!!) ?: return
-                val last = card.doubleOrNull("last_review")
-                srs.review(cardId, rating, if (last != null && at < last) last else at,
+                val question = practice.question(questionId!!) ?: return
+                val last = question.doubleOrNull("last_attempt")
+                practice.attempt(questionId, rating, if (last != null && at < last) last else at,
                     e["response"]?.takeIf { it is JsonObject }, (e["verdict"] as? JsonPrimitive)?.contentOrNull,
                     (e["duration"] as? JsonPrimitive)?.longOrNull ?: 0, (e["new"] as? JsonPrimitive)?.contentOrNull == "true")
             }
-            "suspend" -> srs.update(cardId!!, mapOf("suspended" to ((e["suspended"] as? JsonPrimitive)?.intOrNull ?: 1).toLong()))
-            "flag" -> srs.update(cardId!!, mapOf("flag" to ((e["flag"] as? JsonPrimitive)?.intOrNull ?: 0).coerceIn(0, 7).toLong()))
+            "suspend" -> practice.update(questionId!!, mapOf("suspended" to ((e["suspended"] as? JsonPrimitive)?.intOrNull ?: 1).toLong()))
+            "flag" -> practice.update(questionId!!, mapOf("flag" to ((e["flag"] as? JsonPrimitive)?.intOrNull ?: 0).coerceIn(0, 7).toLong()))
             "bury" -> {}  // the buried table came over with the rest of the local state
             "xp", "achievement", "goal", "freeze_spent", "freeze_earned" -> gamify.applyReward(e, at)
         }
     }
 
     // -- events -------------------------------------------------------------------------------
-    fun reviewEvent(cardId: Long, at: Double, rating: Int, durationMs: Long, response: JsonObject?, verdict: String?, new: Boolean) =
+    fun attemptEvent(questionId: Long, at: Double, rating: Int, durationMs: Long, response: JsonObject?, verdict: String?, new: Boolean) =
         buildJsonObject {
-            put("type", "review"); put("card", cardId); put("at", at); put("rating", rating); put("duration", durationMs)
+            put("type", "attempt"); put("question", questionId); put("at", at); put("rating", rating); put("duration", durationMs)
             put("response", response ?: kotlinx.serialization.json.JsonNull); put("verdict", verdict); put("new", new)
         }
 
-    fun cardEvent(type: String, cardId: Long, at: Double, more: kotlinx.serialization.json.JsonObjectBuilder.() -> Unit = {}) =
-        buildJsonObject { put("type", type); put("card", cardId); put("at", at); more() }
+    fun questionEvent(type: String, questionId: Long, at: Double, more: kotlinx.serialization.json.JsonObjectBuilder.() -> Unit = {}) =
+        buildJsonObject { put("type", type); put("question", questionId); put("at", at); more() }
 }

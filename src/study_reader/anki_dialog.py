@@ -19,8 +19,8 @@ NAME_ROLE = Qt.ItemDataRole.UserRole + 1  # a deck item's full name
 
 
 class AnkiImportDialog(QDialog):
-    """Accepted once a migration has run; report and query (a browser search for the migrated
-    cards, '' if they shouldn't be shown) then say what happened."""
+    """Accepted once a migration has run; report and query (a browser search for the questions
+    it made, '' if they shouldn't be shown) then say what happened."""
 
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
@@ -32,10 +32,10 @@ class AnkiImportDialog(QDialog):
         self.resize(760, 720)
 
         intro = QLabel(
-            "Brings decks over from Anki: their cards (as flashcards, flashcards both ways, cloze and image occlusion), tags, "
-            "each card's schedule and review history, images, and Anki's FSRS parameters. Anki itself isn't changed "
-            "(the app reads a copy), so delete or suspend the decks there yourself once you're happy. Running it again "
-            "skips cards already brought over.")
+            "Brings decks over from Anki: their notes and cards become questions (self-checks, self-checks both ways, "
+            "fill-in-the-blanks and image labels), with their tags, each card's schedule and review history, images, "
+            "and Anki's FSRS parameters. Anki itself isn't changed (the app reads a copy), so delete or suspend the "
+            "decks there yourself once you're happy. Running it again skips cards already brought over.")
         intro.setWordWrap(True)
         self.profile = QComboBox()
         for name, path in anki_import.find_collections():
@@ -73,7 +73,7 @@ class AnkiImportDialog(QDialog):
         prefix_row = QHBoxLayout()
         prefix_row.addWidget(QLabel("Put the decks under"))
         prefix_row.addWidget(self.prefix, 1)
-        self.open_browser = QCheckBox("Show the migrated cards in the card browser afterwards")
+        self.open_browser = QCheckBox("Show the new questions on the Questions page afterwards")
         self.open_browser.setChecked(True)
 
         self.migrate_button = QPushButton("Migrate")
@@ -159,14 +159,14 @@ class AnkiImportDialog(QDialog):
         self._update_picked()
 
     def _already_here(self) -> dict[int, int]:
-        """Cards of each Anki deck that are in the app already."""
+        """Cards of each Anki deck that are in the app already (as questions)."""
         if self.collection is None:
             return {}
-        ours = {r[0] for r in self.db.conn.execute("SELECT anki_id FROM cards WHERE anki_id IS NOT NULL")}
+        ours = {r[0] for r in self.db.conn.execute("SELECT anki_id FROM questions WHERE anki_id IS NOT NULL")}
         if not ours:
             return {}
         out: dict[int, int] = {}
-        for card_id, deck in self.collection.conn.execute(
+        for card_id, deck in self.collection.conn.execute(  # Anki's own cards table
                 "SELECT id, CASE WHEN odid THEN odid ELSE did END FROM cards"):
             if card_id in ours:
                 out[deck] = out.get(deck, 0) + 1
@@ -272,8 +272,8 @@ class AnkiImportDialog(QDialog):
 
 
 def summary(report: anki_import.Report) -> str:
-    lines = [f"Brought over {report.cards} card{'s' * (report.cards != 1)} from {report.notes} "
-             f"Anki note{'s' * (report.notes != 1)}, with {report.reviews} review{'s' * (report.reviews != 1)} "
+    lines = [f"Made {report.cards} question{'s' * (report.cards != 1)} from {report.notes} "
+             f"Anki note{'s' * (report.notes != 1)}, with {report.reviews} past attempt{'s' * (report.reviews != 1)} "
              f"and {report.media_copied} image{'s' * (report.media_copied != 1)}."]
     if report.skipped:
         lines.append(f"{report.skipped} card{'s were' if report.skipped != 1 else ' was'} already here and left as is.")
@@ -282,7 +282,7 @@ def summary(report: anki_import.Report) -> str:
         lines.append(f"Using Anki's FSRS parameters{retention}.")
     if report.fallback_types:
         kinds = ", ".join(f"{name} ({n})" for name, n in report.fallback_types.items())
-        lines.append(f"Anki note types brought over as flashcards from their fields: {kinds}.")
+        lines.append(f"Anki note types brought over as self-checks from their fields: {kinds}.")
     if report.missing_media:
         shown = ", ".join(report.missing_media[:5]) + (" …" if len(report.missing_media) > 5 else "")
         lines.append(f"{len(report.missing_media)} image(s) weren't in Anki's media folder: {shown}")

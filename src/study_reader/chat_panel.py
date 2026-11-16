@@ -1,6 +1,6 @@
 """The chat panels: a book's chats, the open transcript, and the composer. There are two, the
-reader's (beside the open book) and the Review page's (beside the card under review, following it
-from card to card); they share a ChatHub."""
+reader's (beside the open book) and the Practice page's (beside the question being practiced,
+following it from question to question); they share a ChatHub."""
 
 from __future__ import annotations
 
@@ -15,21 +15,21 @@ from PySide6.QtWidgets import (
 )
 
 from . import claude_client as cc
-from . import gamify, quiz, srs
+from . import gamify, quiz, practice
 from .chat_service import BookRef, ChatWorker, Job
 from .db import Database, data_dir, last_page
 from .theme import icon, theme
 from .transcript_view import TranscriptView
 
-DEFAULT_QUESTION = "Explain this."
+DEFAULT_MESSAGE = "Explain this."
 MODELS = [("Claude Code default", ""), ("Opus", "opus"), ("Sonnet", "sonnet"), ("Haiku", "haiku")]
 CONTEXT_LABELS = {
-    None: "The whole book is shared with Claude on your first question.",
+    None: "The whole book is shared with Claude on your first message.",
     "full": "Whole book in context.",
     "partial": "Book too large to share whole — nearby pages are sent instead.",
 }
-# The Review page's: the book's sharing state after its title, or for cards with no book.
-BOOKLESS_LABEL = "No book: Claude sees the card and this chat."
+# The Practice page's: the book's sharing state after its title, or for questions with no book.
+BOOKLESS_LABEL = "No book: Claude sees the question and this chat."
 INPUT_LINES = (2, 10)  # composer height range, in lines
 
 
@@ -71,30 +71,30 @@ class ChatPanel(QWidget):
     jumpRequested = Signal(int, list)  # page, rects
     pageRequested = Signal(int)
     highlightsChanged = Signal()  # a chat, or the composer, gained or lost snippets
-    cardsChanged = Signal()  # review cards were added, answered or put in or out of review
+    questionsChanged = Signal()  # practice questions were added, answered or put in or out of practice
     listenRequested = Signal(int)  # message id: read this reply aloud
 
     def __init__(self, db: Database, worker: ChatWorker, variants=None, hub: ChatHub | None = None,
-                 review: bool = False, parent=None):
-        """review: the Review page's panel, whose chats are about the card on display (set_card):
-        those of the card's book, or of cards with no book."""
+                 practice: bool = False, parent=None):
+        """practice: the Practice page's panel, whose chats are about the question on display
+        (set_question): those of the question's book, or of questions with no book."""
         super().__init__(parent)
         self.db = db
         self.worker = worker
-        self.variants = variants  # review.VariantMaker: the next version of calculation cards first answered here
+        self.variants = variants  # practice_view.VariantMaker: the next version of calculation questions first answered here
         self.hub = hub or ChatHub()
         self.hub.panels.append(self)
-        self.review = review
+        self.practice = practice
         self.book_id: int | None = None
         self.chat_id: int | None = None
         self.current_page = lambda: 0  # set by the main window
         self._pending: list[dict] = []
-        # Review: the card on display (ReviewPanel.chat_card), sent with questions to its chats
-        # unless its chip was removed (_card_off, until the next card).
-        self._card: dict | None = None
-        self._card_off = False
+        # Practice: the question on display (PracticePanel.chat_question), sent with messages to its
+        # chats unless its chip was removed (_question_off, until the next question).
+        self._question: dict | None = None
+        self._question_off = False
         self._throwaway = False  # new chats are throwaway: never listed, deleted when left
-        # Chats still named after their first question (chat id -> that title): Claude names
+        # Chats still named after their first message (chat id -> that title): Claude names
         # them after the first reply, unless they were renamed meanwhile.
         self._untitled: dict[int, str] = {}
         self._naming: dict[int, str] = {}
@@ -146,7 +146,7 @@ class ChatPanel(QWidget):
         self.chat_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.chat_list.customContextMenuRequested.connect(self._chat_menu)
 
-        self.transcript = TranscriptView(listen=not review)  # read aloud's controls are under the reader
+        self.transcript = TranscriptView(listen=not practice)  # read aloud's controls are under the reader
         self.transcript.jumpRequested.connect(self._on_jump)
         self.transcript.editRequested.connect(self.edit_message)
         self.transcript.regenerateRequested.connect(self.regenerate)
@@ -154,7 +154,7 @@ class ChatPanel(QWidget):
         self.transcript.quizAnswered.connect(self._on_quiz_answer)
         self.transcript.quizRetake.connect(self._on_quiz_retake)
         self.transcript.quizRegrade.connect(self._on_quiz_regrade)
-        self.transcript.quizReviewToggled.connect(self._on_quiz_review_toggled)
+        self.transcript.quizPracticeToggled.connect(self._on_quiz_practice_toggled)
         self.transcript.quizReviseRequested.connect(self.revise_quiz)
         self.transcript.quizRequested.connect(self.quiz_on_reply)
         self.transcript.listenRequested.connect(self.listenRequested)
@@ -166,7 +166,7 @@ class ChatPanel(QWidget):
         self.chips = QVBoxLayout()
         self.chips.setSpacing(4)
         self.input = _Composer(objectName="composerInput")
-        self.input.setPlaceholderText("Ask about this card…" if review else "Ask about the book…")
+        self.input.setPlaceholderText("Ask about this question…" if practice else "Ask about the book…")
         self.input.submitted.connect(self.send)
         self.input.cancelled.connect(self._on_escape)
         self.input.document().documentLayout().documentSizeChanged.connect(self._fit_input)
@@ -205,7 +205,7 @@ class ChatPanel(QWidget):
         throwaway_label.setProperty("role", "hint")
         throwaway_label.setMinimumWidth(1)
         self.save_btn = QPushButton("Save chat")
-        self.save_btn.setToolTip("Keep this chat: it joins the chat list (and its quizzes your review cards)")
+        self.save_btn.setToolTip("Keep this chat: it joins the chat list (and its quizzes your practice questions)")
         self.save_btn.clicked.connect(self.save_throwaway)
         self.throwaway_bar = QWidget()
         throwaway_row = QHBoxLayout(self.throwaway_bar)
@@ -279,17 +279,17 @@ class ChatPanel(QWidget):
         self.list_toggle.setIcon(icon("chevron-down" if on else "chevron-right", "muted"))
 
     def _list_shown(self) -> bool:
-        if self.review:
-            return self.db.get_setting("review_chat_list") != "0"
+        if self.practice:
+            return self.db.get_setting("practice_chat_list") != "0"
         return self.book_id is None or bool(self.db.book(self.book_id)["show_chat_list"])
 
     def _toggle_list(self) -> None:
         """Collapse or expand the chat list, remembering it per book like the other panels (the
-        Review page's once for all)."""
+        Practice page's once for all)."""
         on = not self.chat_list.isVisible()
         self._show_list(on)
-        if self.review:
-            self.db.set_setting("review_chat_list", "1" if on else "0")
+        if self.practice:
+            self.db.set_setting("practice_chat_list", "1" if on else "0")
         elif self.book_id is not None:
             self.db.update_book(self.book_id, show_chat_list=int(on))
 
@@ -321,7 +321,7 @@ class ChatPanel(QWidget):
 
     # -- book / chat selection ---------------------------------------------------
     def set_book(self, book_id: int | None) -> None:
-        """The book whose chats to show (the Review page's: None for those about cards with no book)."""
+        """The book whose chats to show (the Practice page's: None for those about questions with no book)."""
         self.cancel_edit()
         self.cancel_quiz()
         self._leave()
@@ -331,7 +331,7 @@ class ChatPanel(QWidget):
         self._status = ""
         self._pending.clear()
         self._refresh_chips()
-        self.setEnabled(book_id is not None or self.review)
+        self.setEnabled(book_id is not None or self.practice)
         self._show_list(self._list_shown())
         self._refresh_list()
         self._sync_model()
@@ -365,7 +365,7 @@ class ChatPanel(QWidget):
         self._refresh_chips()
 
     def show_chat(self, chat_id: int) -> None:
-        """Open a chat, switching to its book's chats if need be (the Review page's Open chat)."""
+        """Open a chat, switching to its book's chats if need be (the Practice page's Open chat)."""
         chat = self.db.chat(chat_id)
         if chat is None:
             return
@@ -373,45 +373,45 @@ class ChatPanel(QWidget):
             self.set_book(chat["book_id"])
         self.open_chat(chat_id)
 
-    # -- the Review page's card ------------------------------------------------------------
-    def set_card(self, card: dict | None) -> None:
-        """The card on display on the Review page (ReviewPanel.chat_card; None for the overview),
-        drawn again as it is answered. A new card brings up the latest chat about it, else the
-        quiz chat it came from, else a new chat about it, in its book's chats."""
-        new = card is not None and (self._card is None or self._card["id"] != card["id"])
-        self._card = card
+    # -- the Practice page's question -----------------------------------------------------
+    def set_question(self, question: dict | None) -> None:
+        """The question on display on the Practice page (PracticePanel.chat_question; None for the
+        overview), drawn again as it is answered. A new question brings up the latest chat about it,
+        else the quiz chat it came from, else a new chat about it, in its book's chats."""
+        new = question is not None and (self._question is None or self._question["id"] != question["id"])
+        self._question = question
         if new:
-            self._card_off = False
-            chat = self.db.card_chat(card["id"])
-            if chat is None and card.get("chat_id"):
-                chat = self.db.chat(card["chat_id"])
+            self._question_off = False
+            chat = self.db.question_chat(question["id"])
+            if chat is None and question.get("chat_id"):
+                chat = self.db.chat(question["chat_id"])
             if chat is None or chat["id"] != self.chat_id:
-                book_id = chat["book_id"] if chat is not None else card["book_id"]
+                book_id = chat["book_id"] if chat is not None else question["book_id"]
                 if book_id != self.book_id:
                     self.set_book(book_id)
                 if chat is not None:
                     self.open_chat(chat["id"])
                 else:
-                    self.new_chat(focus=False)  # the review keeps the keyboard
+                    self.new_chat(focus=False)  # practice keeps the keyboard
         self._refresh_chips()
 
-    def _card_attached(self) -> bool:
-        """Whether the card on display goes with questions in the open chat: a new chat, or one
-        about that card or the quiz chat it came from, unless its chip was removed."""
-        if self._card is None or self._card_off:
+    def _question_attached(self) -> bool:
+        """Whether the question on display goes with messages in the open chat: a new chat, or one
+        about that question or the quiz chat it came from, unless its chip was removed."""
+        if self._question is None or self._question_off:
             return False
         if self.chat_id is None:
             return True
         chat = self.db.chat(self.chat_id)
-        return chat is not None and (chat["card_id"] == self._card["id"] or chat["id"] == self._card.get("chat_id"))
+        return chat is not None and (chat["question_id"] == self._question["id"] or chat["id"] == self._question.get("chat_id"))
 
     @property
-    def card(self) -> dict | None:
-        """The Review page's card on display (set_card)."""
-        return self._card
+    def question(self) -> dict | None:
+        """The Practice page's question on display (set_question)."""
+        return self._question
 
-    def _drop_card(self) -> None:
-        self._card_off = True
+    def _drop_question(self) -> None:
+        self._question_off = True
         self._refresh_chips()
 
     # -- throwaway chats -----------------------------------------------------------------
@@ -463,7 +463,7 @@ class ChatPanel(QWidget):
             self._discard(self.chat_id, now=True)
 
     def save_throwaway(self) -> None:
-        """Keep the open throwaway chat: it joins the list, and its quizzes become review cards."""
+        """Keep the open throwaway chat: it joins the list, and its quizzes' questions go into practice."""
         chat = self.db.chat(self.chat_id) if self.chat_id is not None else None
         if chat is None or not chat["throwaway"] or self.chat_id in self._streams:
             return
@@ -476,9 +476,9 @@ class ChatPanel(QWidget):
         made = False
         for m in messages:
             if m["role"] == "assistant":
-                made |= bool(srs.add_quiz_cards(self.db, chat["book_id"], m["id"], m["text"], deck_id=self._deck_for(chat)))
+                made |= bool(practice.add_quiz_questions(self.db, chat["book_id"], m["id"], m["text"], deck_id=self._deck_for(chat)))
         if made:
-            self.cardsChanged.emit()
+            self.questionsChanged.emit()
         reply = next((m for m in reversed(messages) if m["role"] == "assistant" and m["text"].strip()), None)
         if reply is not None:
             self._name_chat(chat["id"], reply["text"])
@@ -487,10 +487,10 @@ class ChatPanel(QWidget):
         self._changed(chat["id"])
 
     def _deck_for(self, chat) -> int | None:
-        """The deck for a chat's quiz cards: a bookless chat's card's (a book's chats use its deck)."""
-        if chat["book_id"] is None and chat["card_id"] is not None:
-            card = self.db.card(chat["card_id"])
-            return card["deck_id"] if card is not None else None
+        """The deck for a chat's quiz questions: a bookless chat's question's (a book's chats use its deck)."""
+        if chat["book_id"] is None and chat["question_id"] is not None:
+            row = self.db.question(chat["question_id"])
+            return row["deck_id"] if row is not None else None
         return None
 
     def _refresh_throwaway(self) -> None:
@@ -595,15 +595,15 @@ class ChatPanel(QWidget):
 
     def _send_quiz(self) -> None:
         q = self._quiz
-        question = quiz.drafted_request(q["request"], self.input.toPlainText())
+        text = quiz.drafted_request(q["request"], self.input.toPlainText())
         snippets = q["snippets"] + self._pending
         if q["chat_id"] is None:
             self.chat_id = self.db.create_chat(self.book_id, q["title"], self._draft_model, throwaway=self._throwaway)
             prior = []
         else:
             prior = self.db.messages(self.chat_id)
-        self.db.add_message(self.chat_id, "user", question, snippets, pages=q["pages"])
-        self._ask(question, snippets, prior, branch=False, page=q["page"])
+        self.db.add_message(self.chat_id, "user", text, snippets, pages=q["pages"])
+        self._ask(text, snippets, prior, branch=False, page=q["page"])
         self._quiz = None
         self._restore_draft()
         self._refresh_list()
@@ -613,7 +613,7 @@ class ChatPanel(QWidget):
 
     def revise_quiz(self, message_id: int, index: int, change: str | None = None) -> None:
         """Ask, in the same chat, for a revision of one of its quizzes (asking what to change
-        unless given); Claude's revision takes over the cards of the questions it keeps."""
+        unless given); Claude's revision takes over the practice history of the questions it keeps."""
         if self.chat_id is None or self.chat_id in self._streams or self._editing is not None:
             return
         found = self._quiz_of(message_id, index)
@@ -629,10 +629,10 @@ class ChatPanel(QWidget):
                 return
         if not change.strip():
             return
-        question = quiz.revise_request(title, change)
+        text = quiz.revise_request(title, change)
         messages = self.db.messages(self.chat_id)
-        self.db.add_message(self.chat_id, "user", question)
-        self._ask(question, [], messages, branch=False)
+        self.db.add_message(self.chat_id, "user", text)
+        self._ask(text, [], messages, branch=False)
         self._refresh_list()
         self._refresh_transcript()
 
@@ -676,7 +676,7 @@ class ChatPanel(QWidget):
             self._refresh_transcript()
             self._changed(chat_id)
             self.highlightsChanged.emit()
-            self.cardsChanged.emit()  # its unreviewed cards went with it
+            self.questionsChanged.emit()  # its never-attempted questions went with it
 
     def _on_renamed(self, item: QListWidgetItem) -> None:
         chat = self.db.chat(item.data(Qt.ItemDataRole.UserRole))
@@ -695,25 +695,25 @@ class ChatPanel(QWidget):
 
     # -- sending -----------------------------------------------------------------
     def send(self) -> None:
-        if (self.book_id is None and not self.review) or self.chat_id in self._streams:
+        if (self.book_id is None and not self.practice) or self.chat_id in self._streams:
             return
         if self._quiz is not None:
             self._send_quiz()
             return
-        question = self.input.toPlainText().strip()
+        text = self.input.toPlainText().strip()
         snippets = list(self._pending)
-        if not question and not snippets:
+        if not text and not snippets:
             return
-        question = question or DEFAULT_QUESTION
+        text = text or DEFAULT_MESSAGE
 
         if self.chat_id is None:
             first = snippets[0] if snippets else None
-            title = question if question != DEFAULT_QUESTION or not first else (
+            title = text if text != DEFAULT_MESSAGE or not first else (
                 first["text"] or f"Screenshot, p. {first['page'] + 1}"
             )
             title = " ".join(title.split())[:70]
             self.chat_id = self.db.create_chat(
-                self.book_id, title, self._draft_model, card_id=self._card["id"] if self._card_attached() else None,
+                self.book_id, title, self._draft_model, question_id=self._question["id"] if self._question_attached() else None,
                 throwaway=self._throwaway,
             )
             self._untitled[self.chat_id] = title
@@ -722,9 +722,9 @@ class ChatPanel(QWidget):
         if editing is not None:
             prior = [m for m in prior if m["id"] < editing]
             self.db.delete_messages_from(self.chat_id, editing)
-            self.cardsChanged.emit()
-        self.db.add_message(self.chat_id, "user", question, snippets)
-        self._ask(question, snippets, prior, branch=editing is not None)
+            self.questionsChanged.emit()
+        self.db.add_message(self.chat_id, "user", text, snippets)
+        self._ask(text, snippets, prior, branch=editing is not None)
 
         if editing is not None:
             self._end_edit()
@@ -759,7 +759,7 @@ class ChatPanel(QWidget):
             self.stop()
 
     def regenerate(self, message_id: int) -> None:
-        """Ask the question before this reply again, replacing the reply."""
+        """Send the message before this reply again, replacing the reply."""
         if self.chat_id is None or self.chat_id in self._streams or self._editing is not None:
             return
         messages = self.db.messages(self.chat_id)
@@ -767,16 +767,16 @@ class ChatPanel(QWidget):
         asked = next((i for i in range(at, -1, -1) if messages[i]["role"] == "user"), None) if at is not None else None
         if asked is None or asked + 1 >= len(messages):
             return
-        question = messages[asked]
+        message = messages[asked]
         self.db.delete_messages_from(self.chat_id, messages[asked + 1]["id"])
-        self.cardsChanged.emit()
-        self._ask(question["text"], question["snippets"], messages[:asked], branch=True)
+        self.questionsChanged.emit()
+        self._ask(message["text"], message["snippets"], messages[:asked], branch=True)
         self._refresh_transcript()
 
     def _ask(
-        self, question: str, snippets: list[dict], prior: list[dict], branch: bool, page: int | None = None
+        self, text: str, snippets: list[dict], prior: list[dict], branch: bool, page: int | None = None
     ) -> None:
-        """Send a question that follows `prior`, the chat's saved messages before it.
+        """Send a message that follows `prior`, the chat's saved messages before it.
 
         branch: later turns were dropped, so rather than continuing the chat's session, fork
         from the last reply in `prior` at that reply (or, with no reply or one saved before
@@ -792,9 +792,9 @@ class ChatPanel(QWidget):
                 session_id, resume_at = reply["session_id"], reply["session_uuid"]
         if page is None:
             page = snippets[0]["page"] if snippets else self.current_page()
-        context = [quiz.answers_context(prior, self.db.quiz_answers(self.chat_id)), srs.tags_context(self.db)]
-        if self._card_attached():
-            context.insert(0, self._card["context"])
+        context = [quiz.answers_context(prior, self.db.quiz_answers(self.chat_id)), practice.tags_context(self.db)]
+        if self._question_attached():
+            context.insert(0, self._question["context"])
         last = next((m for m in reversed(prior) if m["role"] != "error"), None)
         if last is not None and last["role"] == "assistant" and last["stopped"]:
             asked = next((m for m in reversed(prior[:prior.index(last)]) if m["role"] == "user"), None)
@@ -803,7 +803,7 @@ class ChatPanel(QWidget):
             chat_id=self.chat_id,
             book=self._book_ref(),
             chat_session_id=session_id,
-            question=question,
+            message=text,
             snippets=[cc.Snippet(s["kind"], s["page"], s.get("text", ""), s.get("image_path", ""),
                                  last_page(s["page"], s.get("rects", []))) for s in snippets],
             history=[(m["role"], m["text"]) for m in prior if m["role"] != "error"],
@@ -842,7 +842,7 @@ class ChatPanel(QWidget):
             response = json.loads(response_json)
         except (IndexError, ValueError):
             return
-        if spec["type"] == "written":
+        if spec["type"] == "short_answer":
             answer_id = self.db.save_quiz_answer(message_id, index, question, response_json, "pending")
             self._grade(message, q, question, answer_id, response.get("text", ""))
         else:
@@ -852,31 +852,31 @@ class ChatPanel(QWidget):
                 self.transcript.quiz_input_error(message_id, index, question, str(e))
                 return
             self.db.save_quiz_answer(message_id, index, question, response_json, "done", verdict)
-            if srs.answered_in_chat(self.db, message_id, index, question, verdict, response):
-                self._first_review(message_id, index, question)
+            if practice.answered_in_chat(self.db, message_id, index, question, verdict, response):
+                self._first_attempt(message_id, index, question)
         self._update_quiz(message_id, index)
 
-    def _first_review(self, message_id: int, index: int, question: int) -> None:
-        """A quiz question's first answer was its card's first review."""
-        gamify.reviewed(self.db, new=True)
-        card = self.db.card_for(message_id, index, question)
-        if self.variants is not None and card is not None:
-            self.variants.after_review(card["id"])
-        self.cardsChanged.emit()
+    def _first_attempt(self, message_id: int, index: int, question: int) -> None:
+        """A quiz question's first answer in the chat was its first attempt."""
+        gamify.attempted(self.db, new=True)
+        row = self.db.question_for(message_id, index, question)
+        if self.variants is not None and row is not None:
+            self.variants.after_attempt(row["id"])
+        self.questionsChanged.emit()
 
     def _on_quiz_retake(self, message_id: int, index: int) -> None:
         if self._quiz_of(message_id, index) is not None:
             self.db.clear_quiz_answers(message_id, index)
             self._update_quiz(message_id, index)
 
-    def _on_quiz_review_toggled(self, message_id: int, index: int) -> None:
+    def _on_quiz_practice_toggled(self, message_id: int, index: int) -> None:
         if self._quiz_of(message_id, index) is None:
             return
-        cards = self.db.quiz_cards(message_id, index)
-        if cards:
-            self.db.set_quiz_suspended(message_id, index, not any(c["suspended"] for c in cards))
+        rows = self.db.quiz_questions(message_id, index)
+        if rows:
+            self.db.set_quiz_suspended(message_id, index, not any(r["suspended"] for r in rows))
             self._update_quiz(message_id, index)
-            self.cardsChanged.emit()
+            self.questionsChanged.emit()
 
     def _on_quiz_regrade(self, message_id: int, index: int, question: int) -> None:
         found = self._quiz_of(message_id, index)
@@ -891,7 +891,7 @@ class ChatPanel(QWidget):
         self._update_quiz(message_id, index)
 
     def _grade(self, message: dict, q: dict, question: int, answer_id: int, text: str) -> None:
-        """Have Claude grade a written answer, in a detached fork of the chat at the quiz's reply."""
+        """Have Claude grade a short answer, in a detached fork of the chat at the quiz's reply."""
         chat = self.db.chat(message["chat_id"])
         page = q["questions"][question]["page"]
         prior = [m for m in self.db.messages(message["chat_id"]) if m["id"] <= message["id"] and m["role"] != "error"]
@@ -900,7 +900,7 @@ class ChatPanel(QWidget):
             chat_id=message["chat_id"],
             book=self._book_ref(),
             chat_session_id=message["session_id"],
-            question=quiz.grading_prompt(q, question, text),
+            message=quiz.grading_prompt(q, question, text),
             history=[(m["role"], m["text"]) for m in prior],
             page=page - 1 if page else self.current_page(),
             model=chat["model"] or None,
@@ -921,10 +921,10 @@ class ChatPanel(QWidget):
         if message_id is None or row is None:  # retaken or deleted meanwhile
             return
         self.db.update_quiz_answer(answer_id, **fields)
-        if fields.get("verdict") and srs.answered_in_chat(
+        if fields.get("verdict") and practice.answered_in_chat(
             self.db, message_id, row["quiz"], row["question"], fields["verdict"], json.loads(row["response"])
         ):
-            self._first_review(message_id, row["quiz"], row["question"])
+            self._first_attempt(message_id, row["quiz"], row["question"])
         message = self.db.message(message_id)
         if message is not None and message["chat_id"] == self.chat_id:
             self._update_quiz(message_id, row["quiz"])
@@ -953,8 +953,8 @@ class ChatPanel(QWidget):
 
     def _quiz_view(self, q: dict, index: int, rows, message_id: int, revised_by: int | None = None) -> dict:
         """A quiz as transcript.html draws it: with the answers given so far, whether its
-        questions are in review ("on", "off", or None without cards), and the reply whose quiz
-        revises it, if any."""
+        questions are in practice ("practice": "on", "off", or None if none are), and the reply whose
+        quiz revises it, if any."""
         answers = {}
         for r in rows:
             if r["quiz"] != index:
@@ -965,13 +965,13 @@ class ChatPanel(QWidget):
             answers[r["question"]] = {
                 "response": json.loads(r["response"]), "status": status, "verdict": r["verdict"], "feedback": feedback,
             }
-        cards = self.db.quiz_cards(message_id, index) if "questions" in q else []
-        review = ("off" if all(c["suspended"] for c in cards) else "on") if cards else None
-        return {**q, "answers": answers, "review": review, "revised_by": revised_by}
+        practiced = self.db.quiz_questions(message_id, index) if "questions" in q else []
+        in_practice = ("off" if all(r["suspended"] for r in practiced) else "on") if practiced else None
+        return {**q, "answers": answers, "practice": in_practice, "revised_by": revised_by}
 
     # -- editing -------------------------------------------------------------------
     def edit_message(self, message_id: int) -> None:
-        """Load one of the chat's questions into the composer; sending replaces it and what follows."""
+        """Load one of the user's messages into the composer; sending replaces it and what follows."""
         if self.chat_id is None or self.chat_id in self._streams:
             return
         message = next((m for m in self.db.messages(self.chat_id) if m["id"] == message_id), None)
@@ -1031,9 +1031,9 @@ class ChatPanel(QWidget):
             return
         message_id = self.db.add_message(chat_id, role, text, session_id=session_id, session_uuid=session_uuid,
                                          stopped=stopped)
-        if role == "assistant" and not chat["throwaway"] and srs.add_quiz_cards(
+        if role == "assistant" and not chat["throwaway"] and practice.add_quiz_questions(
                 self.db, chat["book_id"], message_id, text, deck_id=self._deck_for(chat)):
-            self.cardsChanged.emit()
+            self.questionsChanged.emit()
         if chat_id == self.chat_id:
             self._refresh_transcript()
         self._changed(chat_id)
@@ -1096,20 +1096,20 @@ class ChatPanel(QWidget):
     def _refresh_status(self) -> None:
         book = self.db.book(self.book_id) if self.book_id is not None else None
         label = CONTEXT_LABELS[book["context_mode"]] if book else ""
-        if self.review:  # which book's chats these are, as they follow the cards
+        if self.practice:  # which book's chats these are, as they follow the questions
             label = f"{book['title']} — {label}" if book else BOOKLESS_LABEL
         self.status.setText(self._status or label)
 
     def _refresh_list(self) -> None:
         self.chat_list.blockSignals(True)
         self.chat_list.clear()
-        chats = self.db.chats(self.book_id) if self.book_id is not None or self.review else []
+        chats = self.db.chats(self.book_id) if self.book_id is not None or self.practice else []
         self.list_toggle.setText(f"Chats · {len(chats)}" if chats else "Chats")
         for chat in chats:
-            card = chat["card_id"] is not None
-            item = QListWidgetItem(icon("cards" if card else "message", "muted"), chat["title"])
+            about_question = chat["question_id"] is not None
+            item = QListWidgetItem(icon("questions" if about_question else "message", "muted"), chat["title"])
             item.setData(Qt.ItemDataRole.UserRole, chat["id"])
-            about = "\n\nAbout a review card" if card else ""
+            about = "\n\nAbout a practice question" if about_question else ""
             item.setToolTip(f"{chat['title']}{about}\n\nDouble-click or F2 to rename")
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
             self.chat_list.addItem(item)
@@ -1126,10 +1126,10 @@ class ChatPanel(QWidget):
                 m["text"], quizzes = quiz.split(m["text"])
                 m["quizzes"] = [self._quiz_view(q, i, answers.get(m["id"], []), m["id"], revised.get((m["id"], i)))
                                 for i, q in enumerate(quizzes)]
-        if self.review:
-            placeholder = ("Ask about the card on the left: Claude sees it, but won't give the answer away "
-                           "until you've answered." if self._card is not None else
-                           "Start a review to ask Claude about its cards.")
+        if self.practice:
+            placeholder = ("Ask about the question on the left: Claude sees it, but won't give the answer away "
+                           "until you've answered." if self._question is not None else
+                           "Start practicing to ask Claude about the questions.")
         elif self.book_id is not None:
             placeholder = "Select text or capture a region in the book to ask about it."
         else:
@@ -1147,12 +1147,12 @@ class ChatPanel(QWidget):
             old = self.chips.takeAt(0).widget()
             old.hide()
             old.deleteLater()
-        if self._card_attached():
-            seen = "with its answer" if self._card["revealed"] else "answer kept back"
+        if self._question_attached():
+            seen = "with its answer" if self._question["revealed"] else "answer kept back"
             self.chips.addWidget(self._chip(
-                "cards", "Card", f"{self._card['title']} · {seen}", self._drop_card,
-                "Don't send the card with this chat's questions (until the next card)",
-                "Claude sees this card with your questions; until you've answered, it won't give the answer away",
+                "questions", "Question", f"{self._question['title']} · {seen}", self._drop_question,
+                "Don't send the question with this chat's messages (until the next question)",
+                "Claude sees this question with your messages; until you've answered, it won't give the answer away",
             ))
         if self._quiz is not None:
             self.chips.addWidget(self._chip(

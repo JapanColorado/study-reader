@@ -64,10 +64,10 @@
  },
  "gamify_state": {
   "achievements": {
+   "attempts_100": 1800000000.0,
    "first": 1800000000.0,
    "level_10": 1800000000.0,
    "mature_1": 1800000000.0,
-   "reviews_100": 1800000000.0,
    "streak_3": 1800000000.0,
    "streak_30": 1800000000.0,
    "streak_7": 1800000000.0
@@ -82,30 +82,30 @@
  "gamify_status": {
   "achievements": [
    {
-    "desc": "Review your first card",
+    "desc": "Answer your first question",
     "icon": "\ud83c\udf31",
     "id": "first",
     "name": "First steps",
     "unlocked": true
    },
    {
-    "desc": "Review 100 cards",
+    "desc": "Answer 100 questions",
     "icon": "\ud83d\udcaf",
-    "id": "reviews_100",
+    "id": "attempts_100",
     "name": "Centurion",
     "unlocked": true
    },
    {
-    "desc": "Review 1,000 cards",
+    "desc": "Answer 1,000 questions",
     "icon": "\ud83d\udcda",
-    "id": "reviews_1000",
+    "id": "attempts_1000",
     "name": "Bookworm",
     "unlocked": false
    },
    {
-    "desc": "Review 10,000 cards",
+    "desc": "Answer 10,000 questions",
     "icon": "\ud83c\udfdb\ufe0f",
-    "id": "reviews_10000",
+    "id": "attempts_10000",
     "name": "Library of Alexandria",
     "unlocked": false
    },
@@ -159,28 +159,28 @@
     "unlocked": false
    },
    {
-    "desc": "Review 25 cards in a row without a long pause",
+    "desc": "Answer 25 questions in a row without a long pause",
     "icon": "\u26a1",
     "id": "combo_25",
     "name": "In the flow",
     "unlocked": false
    },
    {
-    "desc": "Review 100 cards in a row without a long pause",
+    "desc": "Answer 100 questions in a row without a long pause",
     "icon": "\ud83c\udf0a",
     "id": "combo_100",
     "name": "Deep focus",
     "unlocked": false
    },
    {
-    "desc": "Review 100 cards in one session",
+    "desc": "Answer 100 questions in one session",
     "icon": "\ud83c\udfc3",
     "id": "marathon",
     "name": "Marathon",
     "unlocked": false
    },
    {
-    "desc": "Review every card that's due",
+    "desc": "Practice every question that's due",
     "icon": "\ud83e\uddf9",
     "id": "caught_up",
     "name": "Inbox zero",
@@ -194,14 +194,14 @@
     "unlocked": false
    },
    {
-    "desc": "Get a card to a 3-week interval",
+    "desc": "Get a question to a 3-week interval",
     "icon": "\ud83c\udf33",
     "id": "mature_1",
     "name": "Taking root",
     "unlocked": true
    },
    {
-    "desc": "Have 100 cards at 3-week intervals or longer",
+    "desc": "Have 100 questions at 3-week intervals or longer",
     "icon": "\ud83c\udf32",
     "id": "mature_100",
     "name": "Forest",
@@ -222,14 +222,14 @@
     "unlocked": false
    },
    {
-    "desc": "Review after midnight",
+    "desc": "Practice after midnight",
     "icon": "\ud83e\udd89",
     "id": "night_owl",
     "name": "Night owl",
     "unlocked": false
    },
    {
-    "desc": "Review before 7 am",
+    "desc": "Practice before 7 am",
     "icon": "\ud83d\udc26",
     "id": "early_bird",
     "name": "Early bird",

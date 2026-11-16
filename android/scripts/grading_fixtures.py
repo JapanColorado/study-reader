@@ -354,24 +354,27 @@ def grade_cases() -> list[dict]:
         cases.append(({**tf, "answer": True}, r))
     cases.append(({"type": "truefalse", "answer": None}, {}))
     cases.append(({"type": "truefalse"}, {"value": True}))
-    card = {"type": "flashcard", "question": "Front", "answer": "Back"}
+    self_check = {"type": "self_check", "question": "Front", "answer": "Back"}
     for r in [{"rating": 1}, {"rating": 2}, {"rating": 3}, {"rating": 4}, {"rating": 0}, {"rating": 5},
               {"rating": 3.0}, {"rating": 3.5}, {"rating": True}, {"rating": False}, {"rating": "3"},
               {"rating": None}, {}, {"rating": [3]}, {"rating": {"a": 1}}, {"rating": -1}, {"rating": 2 ** 40}]:
-        cases.append((card, r))
-    for kind in ["written", "free", "cloze", "occlusion", "basic", "", 5, None]:
+        cases.append((self_check, r))
+    # Kinds graded elsewhere. (The old names flashcard and numeric are left out: Grading.kt reads them as
+    # self_check and calculation, which the desktop does before grading, when it parses a quiz.)
+    for kind in ["short_answer", "fill_in", "image_labels", "both_ways", "written", "free", "cloze", "occlusion",
+                 "basic", "", 5, None]:
         cases.append(({"type": kind, "question": "Why?", "answer": "Because"}, {"text": "x"}))
     cases.append(({"question": "no type"}, {"choice": 1}))
 
-    numeric = {"type": "numeric", "question": "How many?", "answer": "41", "unit": "s"}
+    calculation = {"type": "calculation", "question": "How many?", "answer": "41", "unit": "s"}
     for latex in ["41", r"\frac{82}{2}", "40.7", "40.59", "40.58", "41.41", "41.42", "40", "", "   ", r"\frac{1}{",
                   r"\frac{1}{0}", "x", r"\sqrt{-1}", "41.0", "4.1e1", r"4.1\times10^{1}", r"4.1\cdot10", "41\\%",
                   r"\placeholder{}", r"10^{400}", r"\infty", "-41", " 41 ", "\u00a041\u00a0", "1,5", r"\int"]:
-        cases.append((numeric, {"latex": latex}))
+        cases.append((calculation, {"latex": latex}))
     for r in [{}, {"latex": None}, {"latex": 41}, {"latex": 41.0}, {"latex": 4.1e1}, {"latex": 1e20},
               {"latex": 1e-7}, {"latex": True}, {"latex": [41]}, {"latex": [1, 2]}, {"latex": {"a": 1}},
               {"latex": 1e300}, {"latex": -0.0}, {"latex": 123456789012345678901234567890}]:
-        cases.append((numeric, r))
+        cases.append((calculation, r))
 
     answers = [41, 41.0, -41, 0, 0.0, 1e-9, 1e300, 100, "41", "3/8", "sqrt(2)/2", "2e-3", "1.5 × 10^3", "6.02e23",
                "pi/4", r"\frac{3}{8}", r"\frac{\sqrt{2}}{2}", r"1.5\times10^{-3}", "2\\pi", "x", r"\frac{1}{0}",
@@ -384,21 +387,21 @@ def grade_cases() -> list[dict]:
                  "101", "99", "101.0000001", "1e300", r"10^{300}", "1.01e300"]
     for a in answers:
         for latex in responses:
-            cases.append(({"type": "numeric", "answer": a}, {"latex": latex}))
+            cases.append(({"type": "calculation", "answer": a}, {"latex": latex}))
     for tol in [0, 0.0, 0.5, 1, 1.0, 1.5, 2, -1, -1e-12, -2e-12, 1e-12, True, False, None, "1", [1], {"a": 1}, 1e300,
                 10 ** 400]:
         for latex in ["41", "41.5", "42", "42.5", "43", "40", "39", "41.000000000001", "41.000000000002"]:
-            cases.append(({"type": "numeric", "answer": 41, "tolerance": tol}, {"latex": latex}))
-    cases.append(({"type": "numeric"}, {"latex": "1"}))
-    cases.append(({"type": "numeric"}, {"latex": ""}))
-    cases.append(({"type": "numeric", "answer": "x"}, {"latex": "y"}))
-    cases.append(({"type": "numeric", "answer": 0.1, "tolerance": 0}, {"latex": "0.1"}))
-    cases.append(({"type": "numeric", "answer": "0.1+0.2", "tolerance": 0}, {"latex": "0.3"}))
-    cases.append(({"type": "numeric", "answer": 0.3, "tolerance": 0}, {"latex": "0.1+0.2"}))
-    cases.append(({"type": "numeric", "answer": 1, "tolerance": 0}, {"latex": r"10^{20}+1-10^{20}"}))
-    cases.append(({"type": "numeric", "answer": 1}, {"latex": r"10^{400}\cdot1.0"}))
-    cases.append(({"type": "numeric", "answer": 1}, {"latex": r"10^{400}"}))
-    cases.append(({"type": "numeric", "answer": "10^400"}, {"latex": "1"}))
+            cases.append(({"type": "calculation", "answer": 41, "tolerance": tol}, {"latex": latex}))
+    cases.append(({"type": "calculation"}, {"latex": "1"}))
+    cases.append(({"type": "calculation"}, {"latex": ""}))
+    cases.append(({"type": "calculation", "answer": "x"}, {"latex": "y"}))
+    cases.append(({"type": "calculation", "answer": 0.1, "tolerance": 0}, {"latex": "0.1"}))
+    cases.append(({"type": "calculation", "answer": "0.1+0.2", "tolerance": 0}, {"latex": "0.3"}))
+    cases.append(({"type": "calculation", "answer": 0.3, "tolerance": 0}, {"latex": "0.1+0.2"}))
+    cases.append(({"type": "calculation", "answer": 1, "tolerance": 0}, {"latex": r"10^{20}+1-10^{20}"}))
+    cases.append(({"type": "calculation", "answer": 1}, {"latex": r"10^{400}\cdot1.0"}))
+    cases.append(({"type": "calculation", "answer": 1}, {"latex": r"10^{400}"}))
+    cases.append(({"type": "calculation", "answer": "10^400"}, {"latex": "1"}))
     out = []
     for q, r in cases:
         out.append({"question": q, "response": r, **raised(quiz.grade, q, r)})

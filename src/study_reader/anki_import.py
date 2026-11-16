@@ -1,11 +1,12 @@
 """Migrating decks from Anki: reads a copy of an Anki collection (so Anki can stay open) and
 brings its notes, cards, schedules, review history, media and FSRS parameters into the app's
-decks. Anki itself is never written to. Qt-free.
+decks: Anki's notes and cards become question groups and questions, its reviews attempts. Anki
+itself is never written to. Qt-free.
 
-Anki's note types map onto card types (cardmodel.TYPES) by their fields: cloze types (and Cloze
-Overlapping) to cloze, image occlusion to occlusion, Front/Back types to flashcard (or reversed,
-with two templates), anything else to a flashcard made from its fields. Field HTML becomes Markdown
-with inline HTML (to_markdown)."""
+Anki's note types map onto question types (question_model.TYPES) by their fields: cloze types (and
+Cloze Overlapping) to fill_in, image occlusion to image_labels, Front/Back types to self_check (or
+both_ways, with two templates), anything else to a self-check made from its fields. Field HTML
+becomes Markdown with inline HTML (to_markdown)."""
 
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ from typing import Callable
 
 from fsrs import Card, Rating, State
 
-from . import cardmodel, srs
+from . import question_model, practice
 from .db import Database, media_dir
 
 
@@ -237,18 +238,18 @@ class NoteType:
         names = set(self.lower)
         if ({"occlusion", "image"} <= names or self.stock_kind == 6
                 or any("image-occlusion" in q for q in self.qfmts)):
-            return "occlusion"
+            return "image_labels"
         if self.is_cloze or any("{{cloze:" in q for q in self.qfmts) or "cloze" in self.name.lower():
-            return "cloze"
+            return "fill_in"
         if ("front" in names and "back" in names and len(self.qfmts) == 2
                 and "{{front}}" in self.qfmts[0].lower() and "{{back}}" in self.qfmts[1].lower()):
-            return "reversed"
-        return "flashcard"
+            return "both_ways"
+        return "self_check"
 
     @property
     def generic(self) -> bool:
         """Mapped by the fallback (first field front, the rest back)."""
-        return self.kind == "flashcard" and "front" not in self.lower
+        return self.kind == "self_check" and "front" not in self.lower
 
 
 def _join(*parts: str) -> str:
@@ -256,20 +257,20 @@ def _join(*parts: str) -> str:
 
 
 def note_fields(nt: NoteType, values: list[str]) -> tuple[str, dict]:
-    """(kind, cardmodel fields) for an Anki note's field values (raw HTML)."""
+    """(kind, question_model fields) for an Anki note's field values (raw HTML)."""
     raw = {name.lower(): (values[i] if i < len(values) else "") for i, name in enumerate(nt.fields)}
     md = lambda key: to_markdown(raw.get(key, ""))
     kind = nt.kind
     source = md("source")
     source = f"Source: {source}" if source else ""
-    if kind == "occlusion":
+    if kind == "image_labels":
         images = _media_names([raw.get("image", "")])
         return kind, {
             "image": images[0] if images else "",
-            "shapes": cardmodel.parse_occlusion(raw.get("occlusion", "")),
+            "shapes": question_model.parse_image_labels(raw.get("occlusion", "")),
             "header": md("header"), "extra": _join(md("comments"), md("back extra"), source),
         }
-    if kind == "cloze":
+    if kind == "fill_in":
         text = raw["text"] if "text" in raw else (values[0] if values else "")
         text = re.sub(r"\[\[\w+::(.*?)\]\]", r"\1", text, flags=re.DOTALL)  # Cloze Overlapping's [[r::row]] groups
         return kind, {"text": to_markdown(text), "extra": _join(md("back extra"), md("extra"), source)}
@@ -285,7 +286,7 @@ def note_fields(nt: NoteType, values: list[str]) -> tuple[str, dict]:
                       "extra": _join(md("back extra"), md("extra"), md("comments"), source)}
     texts = [to_markdown(v) for v in values]
     filled = [t for t in texts if t]
-    return "flashcard", {"front": filled[0] if filled else "", "back": _join(*filled[1:]), "extra": ""}
+    return "self_check", {"front": filled[0] if filled else "", "back": _join(*filled[1:]), "extra": ""}
 
 
 # -- HTML to Markdown ----------------------------------------------------------------------
@@ -300,8 +301,8 @@ _STYLES = ("color", "background-color", "font-weight", "font-style", "text-decor
 
 
 def to_markdown(source: str) -> str:
-    """An Anki field (HTML with \\(MathJax\\)) as Markdown with inline HTML, the format card text is
-    stored in: emphasis as ** and *, line breaks as newlines, Markdown characters in the text
+    """An Anki field (HTML with \\(MathJax\\)) as Markdown with inline HTML, the format question text
+    is stored in: emphasis as ** and *, line breaks as newlines, Markdown characters in the text
     escaped, and only harmless formatting kept as HTML. Cloze markers pass through."""
     if not source or not source.strip():
         return ""
@@ -592,6 +593,7 @@ def _escape_line_starts(s: str) -> str:
 # -- migrating -----------------------------------------------------------------------------
 @dataclass
 class Report:
+    # Counted in Anki's terms: its notes and cards brought in, and its reviews (our attempts).
     notes: int = 0
     cards: int = 0
     reviews: int = 0
@@ -621,7 +623,8 @@ def migrate(
     now: float | None = None,
 ) -> Report:
     """Bring the cards in the given Anki decks (each deck's own cards, not its subdecks') into
-    the app. Cards already migrated are skipped, so it can be run again (e.g. for more decks)."""
+    the app as questions. Cards already migrated are skipped, so it can be run again (e.g. for
+    more decks)."""
     now = time.time() if now is None else now
     media_to = Path(media_to) if media_to else media_dir()
     media_to.mkdir(parents=True, exist_ok=True)
@@ -654,8 +657,8 @@ def migrate(
             deck_cache[anki_deck] = db.ensure_deck(f"{prefix}::{name}" if prefix.strip() else name)
         return deck_cache[anki_deck]
 
-    sched = srs.scheduler(db)
-    imported: list[tuple[int, int]] = []  # (our card id, Anki card id), for the review log
+    sched = practice.scheduler(db)
+    imported: list[tuple[int, int]] = []  # (our question id, Anki card id), for the attempt log
     media: set[str] = set()
     configs: Counter = Counter()
     fallback: Counter = Counter()
@@ -667,7 +670,7 @@ def migrate(
                 progress(done, len(note_ids), f"Migrating notes… {done} of {len(note_ids)}")
             todo = []
             for c in by_note[nid]:
-                if db.card_by_anki_id(c["id"]) is not None:
+                if db.question_by_anki_id(c["id"]) is not None:
                     report.skipped += 1
                 else:
                     todo.append(c)
@@ -679,25 +682,25 @@ def migrate(
                 report.errors.append(f"Anki note {nid}: its note type is missing")
                 continue
             values = note["flds"].split("\x1f")
-            existing = db.note_by_anki_id(nid)
+            existing = db.group_by_anki_id(nid)
             try:
                 if existing is None:
                     kind, fields = note_fields(nt, values)
-                    note_id = db.add_card_note(
+                    group_id = db.add_question_group(
                         kind, fields, deck_for(todo[0]["home"]), tags=note["tags"].split(), anki_id=nid,
                         created_at=nid / 1000, now=now,
                     )
-                    db.conn.execute("UPDATE card_notes SET updated_at=? WHERE id=?", (note["mod"], note_id))
+                    db.conn.execute("UPDATE question_groups SET updated_at=? WHERE id=?", (note["mod"], group_id))
                     report.notes += 1
                     if nt.generic:
                         fallback[nt.name] += 1
                 else:
-                    note_id, kind, fields = existing["id"], existing["kind"], json.loads(existing["fields"])
-            except (cardmodel.NoteError, ValueError, KeyError) as e:
+                    group_id, kind, fields = existing["id"], existing["kind"], json.loads(existing["fields"])
+            except (question_model.QuestionError, ValueError, KeyError) as e:
                 report.errors.append(f"Anki note {nid} ({nt.name}): {e}")
                 continue
-            ords = set(cardmodel.card_ords(kind, fields))
-            ours = {c["ord"]: c["id"] for c in db.note_cards(note_id)}
+            ords = set(question_model.question_ords(kind, fields))
+            ours = {q["ord"]: q["id"] for q in db.group_questions(group_id)}
             wanted = set()
             for c in todo:
                 if c["ord"] not in ords:
@@ -705,36 +708,36 @@ def migrate(
                                          "has no counterpart here; skipped")
                     continue
                 deck_id = deck_for(c["home"])
-                card_id = ours.get(c["ord"]) if existing is None else db.ensure_card(note_id, c["ord"], deck_id, now)
+                question_id = ours.get(c["ord"]) if existing is None else db.ensure_question(group_id, c["ord"], deck_id, now)
                 wanted.add(c["ord"])
                 created = c["id"] / 1000
                 columns = _schedule(c, revlog.get(c["id"], []), collection.crt, sched, created) if scheduling else None
                 if columns is None:
-                    columns = srs.new_schedule_columns(created)
-                db.update_card(
-                    card_id, deck_id=deck_id, anki_id=c["id"], created_at=created, suspended=int(c["queue"] == -1),
+                    columns = practice.new_schedule_columns(created)
+                db.update_question(
+                    question_id, deck_id=deck_id, anki_id=c["id"], created_at=created, suspended=int(c["queue"] == -1),
                     flag=c["flags"] & 7, updated_at=c["mod"], **columns,
                 )
-                imported.append((card_id, c["id"]))
+                imported.append((question_id, c["id"]))
                 configs[decks[c["home"]].config_id if c["home"] in decks else 1] += 1
                 report.cards += 1
             if existing is None:
                 extra = [cid for o, cid in ours.items() if o not in wanted]
                 if extra:
-                    db.delete_cards(extra)
+                    db.delete_questions(extra)
             media.update(_media_names(values))
-            if kind == "occlusion" and fields.get("image"):
+            if kind == "image_labels" and fields.get("image"):
                 media.add(fields["image"])
         if progress:
             progress(len(note_ids), len(note_ids), "Copying the review history…")
         if scheduling and imported:
             with db.conn:
-                for card_id, anki_id in imported:
+                for question_id, anki_id in imported:
                     for r in revlog.get(anki_id, []):
                         db.conn.execute(
-                            "INSERT INTO reviews (card_id, rating, source, response, verdict, reviewed_at, duration) "
+                            "INSERT INTO attempts (question_id, rating, source, response, verdict, attempted_at, duration) "
                             "VALUES (?,?,'anki','',NULL,?,?)",
-                            (card_id, r["ease"], r["id"] / 1000, max(0, min(r["time"], 120_000))),
+                            (question_id, r["ease"], r["id"] / 1000, max(0, min(r["time"], 120_000))),
                         )
                         report.reviews += 1
     finally:
@@ -749,7 +752,7 @@ def migrate(
 
 
 def _schedule(c, logs, crt: int, sched, created: float) -> dict | None:
-    """The cards-table schedule columns for an Anki card, or None for a new card."""
+    """The questions-table schedule columns for an Anki card, or None for a new card."""
     ctype = c["type"]
     if ctype not in (1, 2, 3):
         return None
@@ -771,14 +774,14 @@ def _schedule(c, logs, crt: int, sched, created: float) -> dict | None:
             return None
         replay = Card(card_id=c["id"])
         for r in logs:
-            replay, _ = sched.review_card(replay, Rating(r["ease"]), srs.dt(r["id"] / 1000))
+            replay, _ = sched.review_card(replay, Rating(r["ease"]), practice.dt(r["id"] / 1000))
         s, d = replay.stability, replay.difficulty
         last = last or (replay.last_review.timestamp() if replay.last_review else None)
     if last is None:
         last = max(min(due - max(c["ivl"], 1) * 86400, time.time()), created)
     card = Card(card_id=c["id"], state=state, step=step, stability=float(s), difficulty=float(d),
-                due=srs.dt(due), last_review=srs.dt(float(last)))
-    return {**srs.schedule_columns(card), "reps": max(c["reps"], 1), "lapses": c["lapses"]}
+                due=practice.dt(due), last_review=practice.dt(float(last)))
+    return {**practice.schedule_columns(card), "reps": max(c["reps"], 1), "lapses": c["lapses"]}
 
 
 def _copy_media(names, source: Path, target: Path, report: Report) -> None:
@@ -806,11 +809,11 @@ def _take_parameters(db: Database, collection: Collection, configs: Counter, rep
         weights = preset["parameters"]
         if weights:
             try:
-                srs.set_parameters(db, weights)
-                report.parameters = list(srs.fsrs6_parameters(weights))
+                practice.set_parameters(db, weights)
+                report.parameters = list(practice.fsrs6_parameters(weights))
             except ValueError as e:
                 report.errors.append(f"Anki's FSRS parameters ({preset['name']}) couldn't be used: {e}")
         if preset["desired_retention"]:
-            db.set_setting(srs.RETENTION_SETTING, str(preset["desired_retention"]))
+            db.set_setting(practice.RETENTION_SETTING, str(preset["desired_retention"]))
             report.retention = preset["desired_retention"]
         return

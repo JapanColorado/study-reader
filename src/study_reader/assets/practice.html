@@ -46,13 +46,13 @@
   .bar a:hover { color:var(--fg); background:var(--hover); }
   .bar .count { font-weight:650; font-variant-numeric:tabular-nums; }
   .bar .count .due { color:var(--accent); } .bar .count .new { color:var(--new); }
-  .card { background:var(--raised); border:1px solid var(--border); border-radius:14px; overflow:hidden; box-shadow:0 1px 3px var(--shadow); }
-  .card .q { border-bottom:none; padding:20px 24px 22px; font-size:16px; }
-  .card .q-meta { flex-wrap:wrap; gap:4px 8px; }
-  .card .q-meta .tag { color:var(--new); }
-  .card .q-meta .book { color:var(--fg); }
-  .card .q-meta .src { white-space:nowrap; }
-  /* What to review: decks, or books with their sections */
+  .question { background:var(--raised); border:1px solid var(--border); border-radius:14px; overflow:hidden; box-shadow:0 1px 3px var(--shadow); }
+  .question .q { border-bottom:none; padding:20px 24px 22px; font-size:16px; }
+  .question .q-meta { flex-wrap:wrap; gap:4px 8px; }
+  .question .q-meta .tag { color:var(--new); }
+  .question .q-meta .book { color:var(--fg); }
+  .question .q-meta .src { white-space:nowrap; }
+  /* What to practice: decks, or books with their sections */
   .tabs { display:flex; gap:2px; margin:-4px 0 8px; border-bottom:1px solid var(--border); }
   .tabs a { font-size:13px; font-weight:600; color:var(--muted); text-decoration:none; padding:4px 10px 7px; margin-bottom:-1px;
             border-bottom:2px solid transparent; }
@@ -111,7 +111,7 @@
   @keyframes toast-out { to { opacity:0; transform:translateX(30px); } }
   @keyframes pulse { 50% { transform:scale(1.35); } }
   @media (prefers-reduced-motion: reduce) { .toast, .float, .combo.pulse { animation:none; } }
-  /* Flags (as Anki's), on the phone app's cards */
+  /* Flags (as Anki's), on the phone app's questions */
   .flagdot { display:inline-block; width:9px; height:9px; border-radius:50%; vertical-align:middle; }
   .flags { display:flex; gap:10px; justify-content:center; align-items:center; margin:0 0 10px; }
   .flags button { width:30px; height:30px; border-radius:50%; border:2px solid transparent; cursor:pointer; }
@@ -144,21 +144,21 @@
 <body>
 <div id="root"></div>
 <script>
-// The app picks the cards and schedules them (srs.py); this page shows the overview or one card,
-// and sends answers, ratings and actions back through the web channel.
+// The app picks the questions and schedules them (practice.py); this page shows the overview or
+// one question, and sends answers, ratings and actions back through the web channel.
 let bridge = null;
-// The Android app (android/) puts its bridge on the page as ReviewApp, with the same methods.
-const MOBILE = !!window.ReviewApp;
-if (MOBILE) { bridge = window.ReviewApp; document.documentElement.classList.add("mobile"); }
-else new QWebChannel(qt.webChannelTransport, channel => { bridge = channel.objects.review; });
+// The Android app (android/) puts its bridge on the page as PracticeApp, with the same methods.
+const MOBILE = !!window.PracticeApp;
+if (MOBILE) { bridge = window.PracticeApp; document.documentElement.classList.add("mobile"); }
+else new QWebChannel(qt.webChannelTransport, channel => { bridge = channel.objects.practice; });
 // Anki's flag colors (browser.py's FLAGS).
 const FLAG_COLORS = { 1: "#e25252", 2: "#f59a3a", 3: "#4fb35a", 4: "#3d8bf2", 5: "#ec79c6", 6: "#3cc7c2", 7: "#9a6be0" };
 const FLAG_NAMES = { 1: "Red", 2: "Orange", 3: "Green", 4: "Blue", 5: "Pink", 6: "Turquoise", 7: "Purple" };
 
-const CARDS_ICON = `<svg viewBox="0 0 24 24"><rect width="14" height="16" x="7" y="5" rx="2"/><path d="M4 16V5a2 2 0 0 1 2-2h9"/></svg>`;
-let CARD = null;  // the card on display, as the app sent it; null on the overview
-// Cards the reviewer rates on their own once the answer shows (in review, written answers too).
-const selfRated = q => SELF_RATED.includes(q.type) || q.type === "written";
+const QUESTIONS_ICON = `<svg viewBox="0 0 24 24"><rect width="14" height="16" x="7" y="5" rx="2"/><path d="M4 16V5a2 2 0 0 1 2-2h9"/></svg>`;
+let SHOWN = null;  // the question on display, as the app sent it (type names made current); null on the overview
+// Questions the learner rates on their own once the answer shows (in practice, short answers too).
+const selfRated = q => SELF_RATED.includes(q.type) || q.type === "short_answer";
 
 const OPEN = new Set();  // rows expanded in the overview's lists: "d<deck id>", "b<book id>", "s<section tag>"
 const num = (n, cls) => `<span class="n ${cls}${n ? "" : " zero"}">${n}</span>`;
@@ -172,22 +172,22 @@ const CALC_ICON = `<svg viewBox="0 0 24 24"><rect width="16" height="20" x="4" y
 const CALC_TITLE = "Show or hide the calculator (F11)";
 function setCalc(on) {
   if (LAST) LAST.calc = on;
-  if (CARD) CARD.calc = on;
+  if (SHOWN) SHOWN.calc = on;
   document.querySelectorAll('[data-act="calc"]').forEach(el => el.classList.toggle("on", on));
 }
 // The desktop's Chat button (theme.py's "message" icon), and setChatPanel to show it open or closed.
 const CHAT_ICON = `<svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
-const CHAT_TITLE = "Show or hide the chat about this card (F10)";
+const CHAT_TITLE = "Show or hide the chat about this question (F10)";
 function setChatPanel(on) {
   if (LAST) LAST.chat_panel = on;
-  if (CARD) CARD.chat_panel = on;
+  if (SHOWN) SHOWN.chat_panel = on;
   document.querySelectorAll('[data-act="chatpanel"]').forEach(el => el.classList.toggle("on", on));
 }
 let LAST = null;  // the overview last shown, to redraw when the picker's tab changes
-let PICK = null;  // the picker's tab on the Review page: "decks" or "books" (null: by what is picked)
+let PICK = null;  // the picker's tab on the Practice page: "decks" or "books" (null: by what is picked)
 
-// What to review (o.picks, several at once): decks {deck}, books {book, section: null} and
-// sections of books {book, section: tag}; none for every card. A click picks one row; Ctrl+click
+// What to practice (o.picks, several at once): decks {deck}, books {book, section: null} and
+// sections of books {book, section: tag}; none for every question. A click picks one row; Ctrl+click
 // (a long press on the phone) adds or removes one, Shift+click picks the rows from the last one clicked.
 const pickKey = p => p.deck ? `d${p.deck}` : p.section ? `s${p.book}|${p.section}` : `b${p.book}`;
 const picked = (o, p) => (o.picks || []).some(q => pickKey(q) === pickKey(p));
@@ -226,12 +226,12 @@ function pickRow(row, how) {
   else choose([p]);
 }
 
-// Every card, whatever its deck or book: the first row of both the Decks and the Books tab.
+// Every question, whatever its deck or book: the first row of both the Decks and the Books tab.
 const allRow = o => `<div class="deck all${(o.picks || []).length ? "" : " sel"}" data-act="deck" data-deck="0"`
-  + ` title="Every card, in every deck and book"><span class="tw"></span><span class="name">All</span>`
+  + ` title="Every question, in every deck and book"><span class="tw"></span><span class="name">All</span>`
   + `${num(o.all_due, "due")}${num(o.all_new, "new")}</div>`;
 
-// Every deck, with its own and its subdecks' counts; clicking one picks what to review.
+// Every deck, with its own and its subdecks' counts; clicking one picks what to practice.
 function decksHtml(o) {
   const byParent = {};
   for (const d of o.decks) (byParent[d.parent ?? 0] ||= []).push(d);
@@ -247,7 +247,7 @@ function decksHtml(o) {
     + allRow(o) + (byParent[0] || []).map(d => row(d, 0)).join("") + pickHint + `</div>`;
 }
 
-// A book's sections (srs.sections) as rows under it; clicking one reviews just that section.
+// A book's sections (practice.sections) as rows under it; clicking one practices just that section.
 function sectionRows(sections, bookId, o, depth) {
   const byParent = {};
   for (const s of sections) (byParent[s.parent ?? ""] ||= []).push(s);
@@ -262,7 +262,7 @@ function sectionRows(sections, bookId, o, depth) {
   return (byParent[""] || []).map(s => row(s, depth)).join("");
 }
 
-// Every book with cards, each opening onto its sections.
+// Every book with questions, each opening onto its sections.
 function booksHtml(o) {
   return `<div class="decks"><div class="deck-head"><span class="tw"></span><span class="name">Book</span><span class="n">Due</span><span class="n">New</span></div>`
     + allRow(o) + o.books.map(b => {
@@ -277,11 +277,11 @@ function booksHtml(o) {
 const pickHint = `<div class="pick-hint">${MOBILE ? "Long-press to pick more than one"
   : "Ctrl+click to pick more than one · Shift+click for a range"}</div>`;
 
-// What to review: decks or books.
+// What to practice: decks or books.
 function pickerHtml(o) {
   const hasDecks = !!(o.decks && o.decks.length), hasBooks = !!(o.books && o.books.length);
   // The desktop's Make a deck with Claude link comes with o.make, which the phone app never sends.
-  const make = o.make ? `<span class="grow"></span><a href="#" class="make" data-act="make" title="Describe a deck and Claude writes its cards">+ Make a deck with Claude</a>` : "";
+  const make = o.make ? `<span class="grow"></span><a href="#" class="make" data-act="make" title="Describe a deck and Claude writes its questions">+ Make a deck with Claude</a>` : "";
   if (!hasDecks && !hasBooks) return make ? `<section class="panel"><div class="tabs">${make}</div></section>` : "";
   const first = (o.picks || [])[0];
   let tab = PICK || (first && !first.deck && hasBooks ? "books" : hasDecks ? "decks" : "books");
@@ -297,19 +297,19 @@ function heroHtml(o) {
   let html = `<section class="panel hero"><div class="counts">`
     + `<div class="big-count"><span class="n due-c${o.due ? "" : " zero"}">${comma(o.due)}</span><span class="l">due</span></div>`
     + `<div class="big-count"><span class="n new-c${o.new ? "" : " zero"}">${comma(o.new)}</span><span class="l">new today</span></div></div>`
-    + `<div class="sub">${comma(o.total)} card${o.total === 1 ? "" : "s"}${o.new_total > o.new ? ` · ${comma(o.new_total)} new waiting` : ""}`
+    + `<div class="sub">${comma(o.total)} question${o.total === 1 ? "" : "s"}${o.new_total > o.new ? ` · ${comma(o.new_total)} new waiting` : ""}`
     + `${o.suspended ? ` · ${comma(o.suspended)} suspended` : ""}</div>`;
   if (o.status) html += `<div class="nudge">${esc(o.status)}</div>`;  // the Android app's sync status
-  if (o.reviewed && !o.summary) html += `<div class="msg"><strong>${plural(o.reviewed, "card")} reviewed.</strong></div>`;
-  const more = o.reviewed ? " more" : "";
+  if (o.attempted && !o.summary) html += `<div class="msg"><strong>${plural(o.attempted, "question")} answered.</strong></div>`;
+  const more = o.attempted ? " more" : "";
   if (o.ready) {
-    html += `<div class="actions"><button class="btn primary big" data-act="start">${PLAY}${o.reviewed ? "Keep going" : "Start review"}</button>`
-      + `<button class="btn" data-act="start" data-limit="cards" title="A short session: just ${o.quick.cards} cards">Just ${o.quick.cards}${more} cards</button>`
-      + `<button class="btn" data-act="start" data-limit="time" title="A short session: as many cards as fit in ${o.quick.minutes} minutes">${o.quick.minutes}${more} minutes</button></div>`
-      + `<div class="keys"><kbd>Space</kbd> to start · <kbd>5</kbd> for ${o.quick.cards} cards</div>`;
+    html += `<div class="actions"><button class="btn primary big" data-act="start">${PLAY}${o.attempted ? "Keep going" : "Start practice"}</button>`
+      + `<button class="btn" data-act="start" data-limit="questions" title="A short session: just ${o.quick.questions} questions">Just ${o.quick.questions}${more} questions</button>`
+      + `<button class="btn" data-act="start" data-limit="time" title="A short session: as many questions as fit in ${o.quick.minutes} minutes">${o.quick.minutes}${more} minutes</button></div>`
+      + `<div class="keys"><kbd>Space</kbd> to start · <kbd>5</kbd> for ${o.quick.questions} questions</div>`;
   } else {
-    html += `<div class="done done-c">All caught up ✓</div><div class="hint">${o.next ? `The next card is due ${esc(o.next)}.` : ""}`
-      + (o.new_total > o.new ? ` Today's ${o.new_per_day} new cards are done; more tomorrow.` : "") + `</div>`;
+    html += `<div class="done done-c">All caught up ✓</div><div class="hint">${o.next ? `The next question is due ${esc(o.next)}.` : ""}`
+      + (o.new_total > o.new ? ` Today's ${o.new_per_day} new questions are done; more tomorrow.` : "") + `</div>`;
   }
   return html + `</section>`;
 }
@@ -320,19 +320,19 @@ function headerHtml(o) {
   const calc = o.calc == null ? "" : `<a class="btn ghost calc${o.calc ? " on" : ""}" href="#" data-act="calc" title="${CALC_TITLE}">${CALC_ICON}Calculator</a>`;
   // Likewise the Chat button with o.chat_panel.
   const chat = o.chat_panel == null ? "" : `<a class="btn ghost${o.chat_panel ? " on" : ""}" href="#" data-act="chatpanel" title="${CHAT_TITLE}">${CHAT_ICON}Chat</a>`;
-  return `<header><div class="head-row"><h1>${o.title ? esc(o.title) : "Review"}</h1>${chat}${calc}</div><div class="crumbs">${crumbs}</div></header>`;
+  return `<header><div class="head-row"><h1>${o.title ? esc(o.title) : "Practice"}</h1>${chat}${calc}</div><div class="crumbs">${crumbs}</div></header>`;
 }
 
 function showOverview(o) {
-  CARD = null;
+  SHOWN = null;
   ORDER = null;
   LAST = o;
   const root = document.getElementById("root");
-  const how = `Every question in a quiz Claude writes becomes a review card. Choose <em>Quiz me</em>
+  const how = `Every question in a quiz Claude writes goes into practice. Choose <em>Quiz me</em>
     (<kbd>Ctrl+Shift+Q</kbd>) on a selection or the section you're reading, or under one of
     Claude's replies.`;
   if (!o.total) {
-    root.innerHTML = headerHtml(o) + `<div class="empty">${CARDS_ICON}<div class="msg">${o.empty ? esc(o.empty) : "No review cards yet."}</div></div>`
+    root.innerHTML = headerHtml(o) + `<div class="empty">${QUESTIONS_ICON}<div class="msg">${o.empty ? esc(o.empty) : "No questions to practice yet."}</div></div>`
       + `<div class="hint">${how}</div>`;
     return;
   }
@@ -358,11 +358,11 @@ function summaryHtml(s, game) {
   const head = s.caught_up ? "All caught up! 🎉" : s.quick ? "Quick session done! 🍪" : "Session summary";
   const mins = `${Math.floor(s.seconds / 60)}:${String(s.seconds % 60).padStart(2, "0")}`;
   const stat = (n, l) => `<div><div class="n">${n}</div><div class="l">${l}</div></div>`;
-  let cells = stat(s.reviewed, s.reviewed === 1 ? "card" : "cards")
-    + stat(`${Math.round(100 * s.passed / s.reviewed)}%`, "recalled")
+  let cells = stat(s.attempted, s.attempted === 1 ? "question" : "questions")
+    + stat(`${Math.round(100 * s.passed / s.attempted)}%`, "recalled")
     + stat(mins, "time");
   if (game) cells += stat(`+${comma(s.xp)}`, "XP") + stat(s.best, "best combo");
-  if (s.matured) cells += stat(s.matured, s.matured === 1 ? "card matured" : "cards matured");
+  if (s.matured) cells += stat(s.matured, s.matured === 1 ? "question matured" : "questions matured");
   if (s.stability) cells += stat(`+${comma(s.stability)}d`, "memory stability");
   return `<section class="panel summary"><h2>${head}</h2><div class="grid">${cells}</div></section>`;
 }
@@ -396,7 +396,7 @@ function floatText(text) {
   setTimeout(() => el.remove(), 1300);
 }
 
-// From the app: what the last review or session earned.
+// From the app: what the last attempt or session earned.
 function celebrate(events) {
   for (const e of events) {
     if (e.kind === "xp") floatText(`+${e.xp} XP`);
@@ -405,12 +405,12 @@ function celebrate(events) {
       if (el) { el.classList.remove("pulse"); void el.offsetWidth; el.classList.add("pulse"); }
       confetti({ count: 25, spread: 400 });
     }
-    else if (e.kind === "milestone") { confetti({ count: 70 }); toast("🎉", `${e.n} cards this session!`, "Keep it rolling."); }
+    else if (e.kind === "milestone") { confetti({ count: 70 }); toast("🎉", `${e.n} questions this session!`, "Keep it rolling."); }
     else if (e.kind === "level") { confetti({ count: 160, spread: 1000 }); toast("⭐", `Level ${e.level}!`, e.title); }
     else if (e.kind === "goal") { confetti({ count: 120 }); toast("🎯", "Daily goal reached!", "Anything more is a bonus."); }
     else if (e.kind === "freeze") toast("❄️", "Streak freeze earned", `You have ${e.freezes}. Each one covers a missed day.`);
     else if (e.kind === "achievement") { confetti({ count: 80 }); toast(e.icon, `Achievement: ${e.name}`, e.desc); }
-    else if (e.kind === "welcome") toast("🤝", "Welcome back!", "Every card counts. Start small.");
+    else if (e.kind === "welcome") toast("🤝", "Welcome back!", "Every question counts. Start small.");
     else if (e.kind === "done") {
       if (e.caught_up) confetti({ count: 240, spread: 1400 });
       else if (e.quick) confetti({ count: 110 });
@@ -418,25 +418,26 @@ function celebrate(events) {
   }
 }
 
-// Multiple-choice options are drawn in a new order each time a card comes up, so the right
+// Multiple-choice options are drawn in a new order each time a question comes up, so the right
 // answer can't be known by its place. Only the drawing is mixed: answers go to the app, and
-// into the review log, as indices into the question's own choices.
-let ORDER = null;  // {id, order, answered} of the card showing: order[k] is the k-th option drawn
+// into the attempt log, as indices into the question's own choices.
+let ORDER = null;  // {id, order, answered} of the question showing: order[k] is the k-th option drawn
 
-function cardOrder(c) {
+function choiceOrderFor(c) {
   const q = c.question;
   if (q.type !== "choice") return ORDER = null;
-  // The same card again once it has been answered is a new showing (rated Again with nothing else left).
+  // The same question again once it has been answered is a new showing (rated Missed with nothing else left).
   if (!ORDER || ORDER.id !== c.id || ORDER.order.length !== q.choices.length || ORDER.answered && !c.answer)
     ORDER = { id: c.id, order: choiceOrder(q) };
   ORDER.answered = !!c.answer;
   return ORDER.order;
 }
 
-function showCard(c) {
-  CARD = c;
+function showQuestion(c) {
+  c = { ...c, question: drawnQuestion(c.question) };
+  SHOWN = c;
   let q = c.question, a = c.answer;
-  const order = cardOrder(c);
+  const order = choiceOrderFor(c);
   if (order) {
     q = { ...q, choices: order.map(k => q.choices[k]), answer: order.indexOf(q.answer) };
     if (a && a.response && Number.isInteger(a.response.choice))
@@ -444,22 +445,22 @@ function showCard(c) {
   }
   const meta = [
     c.new ? `<span class="tag">New</span>` : "",
-    c.varied && q.type === "choice" ? `<span class="tag" title="Claude wrote these choices after your last review">New choices</span>`
-      : c.varied ? `<span class="tag" title="Claude wrote this version with new numbers after your last review">New numbers</span>` : "",
+    c.varied && q.type === "choice" ? `<span class="tag" title="Claude wrote these choices after your last attempt">New choices</span>`
+      : c.varied ? `<span class="tag" title="Claude wrote this version with new numbers after your last attempt">New numbers</span>` : "",
     c.book ? `<span class="book">${esc(c.book)}</span>` : "",
     `<span title="${esc(c.deck)}">${esc(c.title || c.deck.split("::").pop())}</span>`,
     c.page !== null ? `<a class="src" href="#" data-act="source" title="Show this page in the book">p. ${c.page + 1}</a>` : "",
     c.chat ? `<a class="src" href="#" data-act="chat" title="Open the chat the quiz is in">Open chat</a>` : "",
     c.flag ? `<span title="${FLAG_NAMES[c.flag]} flag"><span class="flagdot" style="background:${FLAG_COLORS[c.flag]}"></span></span>` : "",
   ].filter(Boolean).join("<span>·</span>");
-  // Written answers are rated by the reviewer: recall the answer, or write it out first.
-  const writtenActions = `<div class="submit-row"><span class="grow">Answer in your head, or write it out first (Ctrl+Enter)</span>`
+  // Short answers are rated by the learner: recall the answer, or write it out first.
+  const answerActions = `<div class="submit-row"><span class="grow">Answer in your head, or write it out first (Ctrl+Enter)</span>`
     + `<button class="qbtn" data-act="show">Show answer</button></div>`;
   const actions = c.actions || [
-    ["skip", "Skip", "Show another card first"],
-    ["edit", "Edit", "Open this card in the browser to edit it"],
-    ["suspend", "Suspend", "Leave this card out of review (the quiz's “In review” toggle brings it back)"],
-    ["delete", "Delete", "Delete this card and its history"],
+    ["skip", "Skip", "Show another question first"],
+    ["edit", "Edit", "Open this question in the browser to edit it"],
+    ["suspend", "Suspend", "Leave this question out of practice (the quiz's “In practice” toggle brings it back)"],
+    ["delete", "Delete", "Delete this question and its history"],
   ];
   if (!c.actions && c.calc != null) actions.unshift(["calc", "Calculator", CALC_TITLE]);
   if (!c.actions && c.chat_panel != null) actions.unshift(["chatpanel", "Chat", CHAT_TITLE]);
@@ -472,7 +473,7 @@ function showCard(c) {
     + ` class="${c.flag === n ? "on" : ""}" style="background:${FLAG_COLORS[n]}" title="${FLAG_NAMES[n]}"></button>`).join("")}`
     + `<button class="none" data-act="setflag" data-k="0" title="No flag">✕</button></div>`;
   html += progressHtml(c);
-  html += `<div class="card">${questionHtml(q, a || undefined, { meta, writtenActions, openAnswer: true })}`;
+  html += `<div class="question">${questionHtml(q, a || undefined, { meta, answerActions, openAnswer: true })}`;
   html += `</div>`;
   if (c.previews && MOBILE) {
     html += `<div class="rate-dock"><div class="submit-row">How well did you know it?</div>${ratingRow(c.previews, c.suggested)}</div>`;
@@ -480,19 +481,19 @@ function showCard(c) {
     html += `<div class="submit-row" style="margin-top:12px">How well did you know it?</div>${ratingRow(c.previews, c.suggested)}`
       + `<div class="keys"><kbd>1</kbd>–<kbd>4</kbd> to rate · <kbd>Space</kbd> for ${RATING_LABELS[c.suggested || 3]}</div>`;
   } else if (selfRated(q) && !a) {
-    html += `<div class="keys"><kbd>Space</kbd> to show the answer${q.type === "written" ? " · <kbd>Esc</kbd> leaves the answer box" : ""}</div>`;
+    html += `<div class="keys"><kbd>Space</kbd> to show the answer${q.type === "short_answer" ? " · <kbd>Esc</kbd> leaves the answer box" : ""}</div>`;
   }
   const root = document.getElementById("root");
   root.innerHTML = html;
-  setupMathFields(root, qEl => answer("numeric", qEl));
-  if (!MOBILE || c.id !== SHOWN_ID) window.scrollTo(0, 0);  // the phone keeps its place when the card is redrawn
+  setupMathFields(root, qEl => answer("calculation", qEl));
+  if (!MOBILE || c.id !== SHOWN_ID) window.scrollTo(0, 0);  // the phone keeps its place when the question is redrawn
   SHOWN_ID = c.id;
   const field = root.querySelector("math-field");
   if (field && MOBILE) field.mathVirtualKeyboardPolicy = "auto";  // MathLive's math keyboard on touch
   if (field) field.focus();
 }
 
-let SHOWN_ID = null;  // the card last drawn
+let SHOWN_ID = null;  // the question last drawn
 let FLAGS_OPEN = false;  // the phone's flag picker is showing
 
 let CLOCK = null;  // the timer counting down a timed session
@@ -505,7 +506,7 @@ function progressHtml(c) {
   const width = timed ? 100 * (1 - s.left / s.seconds) : s.total ? 100 * s.done / s.total : 0;
   const label = timed ? `<span id="clock">${clock(s.left)}</span> left` : `${s.done} / ${s.total}`;
   const combo = c.rewards && s.combo >= 2
-    ? `<span class="combo" title="Cards in a row without a long pause; every 5 raise the XP multiplier">⚡ ${s.combo}${s.multiplier > 1 ? ` · ×${s.multiplier.toFixed(1)}` : ""}</span>` : "";
+    ? `<span class="combo" title="Questions in a row without a long pause; every 5 raise the XP multiplier">⚡ ${s.combo}${s.multiplier > 1 ? ` · ×${s.multiplier.toFixed(1)}` : ""}</span>` : "";
   if (timed) {
     const ends = Date.now() + s.left * 1000;
     CLOCK = setInterval(() => {
@@ -514,7 +515,7 @@ function progressHtml(c) {
       if (!el) { clearInterval(CLOCK); return; }
       el.textContent = clock(left);
       bar.style.width = `${100 * (1 - left / s.seconds)}%`;
-      if (!left) { el.parentElement.textContent = "Time's up: finish this card"; clearInterval(CLOCK); }
+      if (!left) { el.parentElement.textContent = "Time's up: finish this question"; clearInterval(CLOCK); }
     }, 1000);
   }
   return `<div class="prog"><div class="track"><i style="width:${width.toFixed(1)}%"></i></div><span class="label">${label}</span>${combo}</div>`;
@@ -523,24 +524,24 @@ function progressHtml(c) {
 const clock = sec => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
 
 function answer(act, qEl, button) {
-  if (!CARD || !bridge || qEl.classList.contains("busy")) return;
-  const q = CARD.question;
-  if (act === "reveal") { bridge.check(CARD.id, "{}"); return; }
+  if (!SHOWN || !bridge || qEl.classList.contains("busy")) return;
+  const q = SHOWN.question;
+  if (act === "reveal") { bridge.check(SHOWN.id, "{}"); return; }
   if (act === "show") {
     const area = qEl.querySelector("textarea");
-    bridge.check(CARD.id, area ? JSON.stringify({ text: area.value.trim() }) : "{}");
+    bridge.check(SHOWN.id, area ? JSON.stringify({ text: area.value.trim() }) : "{}");
     return;
   }
   const response = readResponse(q, qEl, act, button);
   if (!response) return;
   if (ORDER && "choice" in response) response.choice = ORDER.order[response.choice];
   qEl.classList.add("busy");
-  bridge.check(CARD.id, JSON.stringify(response));
+  bridge.check(SHOWN.id, JSON.stringify(response));
 }
 
 // From the app: an answer it couldn't read; the input stays.
-function inputError(cardId, error) {
-  const q = CARD && CARD.id === cardId ? document.querySelector(".card .q") : null;
+function inputError(questionId, error) {
+  const q = SHOWN && SHOWN.id === questionId ? document.querySelector(".question .q") : null;
   if (!q) return;
   q.classList.remove("busy");
   const el = q.querySelector(".q-error");
@@ -596,11 +597,11 @@ document.addEventListener("click", ev => {
   else if (act === "chatpanel") bridge.open("chat");
   else if (act === "make") bridge.open("make");
   else if (act === "open") bridge.open(target.dataset.what);
-  else if (!CARD) return;
-  else if (act === "rate") { FLAGS_OPEN = false; bridge.rate(CARD.id, +target.dataset.k); }
-  else if (act === "flag") { FLAGS_OPEN = !FLAGS_OPEN; showCard(CARD); }
-  else if (act === "setflag") { FLAGS_OPEN = false; bridge.act(CARD.id, `flag:${target.dataset.k}`); }
-  else if (["source", "chat", "skip", "suspend", "delete", "edit", "bury"].includes(act)) { FLAGS_OPEN = false; bridge.act(CARD.id, act); }
+  else if (!SHOWN) return;
+  else if (act === "rate") { FLAGS_OPEN = false; bridge.rate(SHOWN.id, +target.dataset.k); }
+  else if (act === "flag") { FLAGS_OPEN = !FLAGS_OPEN; showQuestion(SHOWN); }
+  else if (act === "setflag") { FLAGS_OPEN = false; bridge.act(SHOWN.id, `flag:${target.dataset.k}`); }
+  else if (["source", "chat", "skip", "suspend", "delete", "edit", "bury"].includes(act)) { FLAGS_OPEN = false; bridge.act(SHOWN.id, act); }
   else answer(act, target.closest(".q"), target);
 });
 
@@ -608,25 +609,25 @@ document.addEventListener("keydown", ev => {
   if (!bridge || ev.ctrlKey && ev.key !== "Enter" || ev.altKey || ev.metaKey) return;
   const typing = ev.target.matches && ev.target.matches("textarea, input, math-field");
   if (typing) {
-    if (ev.key === "Enter" && ev.ctrlKey && ev.target.matches("textarea.written")) {
+    if (ev.key === "Enter" && ev.ctrlKey && ev.target.matches("textarea.short-answer")) {
       ev.preventDefault();
       answer("show", ev.target.closest(".q"));
-    } else if (ev.key === "Escape" && ev.target.matches("textarea.written")) {
+    } else if (ev.key === "Escape" && ev.target.matches("textarea.short-answer")) {
       ev.target.blur();
     }
     return;
   }
   const go = () => ev.preventDefault();
-  if (!CARD) {
+  if (!SHOWN) {
     if (!document.querySelector("[data-act=start]")) return;
     if (ev.key === " " || ev.key === "Enter") { go(); bridge.start(""); }
-    else if (ev.key === "5") { go(); bridge.start("cards"); }
+    else if (ev.key === "5") { go(); bridge.start("questions"); }
     return;
   }
-  if (CARD.previews && "1234".includes(ev.key) && ev.key.length === 1) { go(); bridge.rate(CARD.id, +ev.key); }
+  if (SHOWN.previews && "1234".includes(ev.key) && ev.key.length === 1) { go(); bridge.rate(SHOWN.id, +ev.key); }
   else if (ev.key === " " || ev.key === "Enter") {
-    if (CARD.previews) { go(); bridge.rate(CARD.id, CARD.suggested || 3); }
-    else if (selfRated(CARD.question) && !CARD.answer) { go(); answer("show", document.querySelector(".card .q")); }
+    if (SHOWN.previews) { go(); bridge.rate(SHOWN.id, SHOWN.suggested || 3); }
+    else if (selfRated(SHOWN.question) && !SHOWN.answer) { go(); answer("show", document.querySelector(".question .q")); }
   }
 });
 </script>

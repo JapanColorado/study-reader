@@ -64,12 +64,12 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewClientCompat
-import dev.russell.studyreader.core.ReviewController
+import dev.russell.studyreader.core.PracticeController
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
-/** The desktop's light and dark colors (theme.py), for the review page and the app bar. */
+/** The desktop's light and dark colors (theme.py), for the practice page and the app bar. */
 private val LIGHT = mapOf(
     "window" to "#f4f1ea", "surface" to "#faf8f4", "raised" to "#ffffff", "fg" to "#1d1b18", "muted" to "#69645c",
     "faint" to "#a39e95", "border" to "#e2ddd3", "hover" to "#ece8df", "accent" to "#b9532b", "accent_hover" to "#a34723",
@@ -91,10 +91,10 @@ class MainActivity : ComponentActivity() {
     private var webView: WebView? = null
     private var pageReady = false
     private val queued = mutableListOf<String>()
-    @Volatile private var controller: ReviewController? = null
-    private var onCard = mutableStateOf(false)
+    @Volatile private var controller: PracticeController? = null
+    private var onQuestion = mutableStateOf(false)
     private var syncing = mutableStateOf(false)
-    private var screen = mutableStateOf("review")
+    private var screen = mutableStateOf("practice")
 
     private fun systemDark() = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
     private val darkState = mutableStateOf(false)
@@ -124,7 +124,7 @@ class MainActivity : ComponentActivity() {
         store = Store.get(this)
         darkState.value = systemDark()
         store.worker.execute {
-            controller = ReviewController(store.sql, js = ::runJs, onChanged = { updateStatus() })
+            controller = PracticeController(store.sql, js = ::runJs, onChanged = { updateStatus() })
         }
         setContent {
             val palette = if (dark()) DARK else LIGHT
@@ -133,8 +133,8 @@ class MainActivity : ComponentActivity() {
             else lightColorScheme(primary = color(palette["accent"]!!), background = color(palette["surface"]!!),
                 surface = color(palette["surface"]!!), onSurface = color(palette["fg"]!!))
             MaterialTheme(colorScheme = scheme) {
-                if (screen.value == "settings") SettingsScreen(store, onBack = { screen.value = "review"; syncNow() }, onSync = { syncNow() })
-                else ReviewScreen()
+                if (screen.value == "settings") SettingsScreen(store, onBack = { screen.value = "practice"; syncNow() }, onSync = { syncNow() })
+                else PracticeScreen()
             }
         }
     }
@@ -150,9 +150,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun runJs(js: String) {
-        android.util.Log.d("StudyReview", "js: ${js.take(120)}")
-        if (js.startsWith("showCard(")) onCard.value = true
-        else if (js.startsWith("showOverview(")) onCard.value = false
+        android.util.Log.d("StudyPractice", "js: ${js.take(120)}")
+        if (js.startsWith("showQuestion(")) onQuestion.value = true
+        else if (js.startsWith("showOverview(")) onQuestion.value = false
         runOnUiThread {
             val view = webView
             if (view != null && pageReady) view.evaluateJavascript(js, null) else queued += js
@@ -171,9 +171,9 @@ class MainActivity : ComponentActivity() {
             val c = controller
             if (c != null) {
                 c.status = store.statusLine()
-                c.emptyMessage = if (store.folder == null) "No cards yet. Choose the folder the computer shares in Settings."
-                                 else "No cards yet. Turn on Phone sync in Study Reader on the computer (Settings › Phone sync…) and pick the same folder."
-                if (changed || c.cardId == null) c.refresh()
+                c.emptyMessage = if (store.folder == null) "No questions yet. Choose the folder the computer shares in Settings."
+                                 else "No questions yet. Turn on Phone sync in Study Reader on the computer (Settings › Phone sync…) and pick the same folder."
+                if (changed || c.questionId == null) c.refresh()
             }
             syncing.value = false
         }
@@ -181,12 +181,12 @@ class MainActivity : ComponentActivity() {
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
-    private fun ReviewScreen() {
-        BackHandler(enabled = onCard.value) { store.worker.execute { controller?.stop() } }
+    private fun PracticeScreen() {
+        BackHandler(enabled = onQuestion.value) { store.worker.execute { controller?.stop() } }
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("Review") },
+                    title = { Text("Practice") },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
                     actions = {
                         if (syncing.value) CircularProgressIndicator(Modifier.size(22.dp).padding(end = 4.dp), strokeWidth = 2.dp)
@@ -215,10 +215,10 @@ class MainActivity : ComponentActivity() {
             settings.domStorageEnabled = true
             settings.allowFileAccess = false
             setBackgroundColor(android.graphics.Color.parseColor((if (dark()) DARK else LIGHT)["surface"]))
-            addJavascriptInterface(ReviewBridge(store) { controller!! }, "ReviewApp")
+            addJavascriptInterface(PracticeBridge(store) { controller!! }, "PracticeApp")
             webChromeClient = object : android.webkit.WebChromeClient() {
                 override fun onConsoleMessage(m: android.webkit.ConsoleMessage): Boolean {
-                    android.util.Log.i("StudyReview", "page: ${m.message()} (${m.sourceId()}:${m.lineNumber()})")
+                    android.util.Log.i("StudyPractice", "page: ${m.message()} (${m.sourceId()}:${m.lineNumber()})")
                     return true
                 }
             }
@@ -227,7 +227,7 @@ class MainActivity : ComponentActivity() {
                     loader.shouldInterceptRequest(request.url)
 
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                    // Links in card text open in the browser.
+                    // Links in question text open in the browser.
                     if (request.url.host != "appassets.androidplatform.net") {
                         startActivity(Intent(Intent.ACTION_VIEW, request.url))
                     }
@@ -235,7 +235,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 override fun onPageFinished(view: WebView, url: String?) {
-                    android.util.Log.d("StudyReview", "page loaded: $url")
+                    android.util.Log.d("StudyPractice", "page loaded: $url")
                     pageReady = true
                     applyTheme()
                     view.evaluateJavascript("setMedia(${JsonPrimitive("https://appassets.androidplatform.net/media/")})", null)
@@ -244,7 +244,7 @@ class MainActivity : ComponentActivity() {
                     store.worker.execute { updateStatus(); controller?.refresh() }
                 }
             }
-            loadUrl("https://appassets.androidplatform.net/assets/web/review.html")
+            loadUrl("https://appassets.androidplatform.net/assets/web/practice.html")
         }
     }
 }
@@ -288,10 +288,10 @@ private fun SettingsScreen(store: Store, onBack: () -> Unit, onSync: () -> Unit)
         ) {
             Text("Sync", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Cards come from Study Reader on your computer through a folder that Syncthing keeps in step on both " +
+                "Questions come from Study Reader on your computer through a folder that Syncthing keeps in step on both " +
                     "devices. On the computer, choose Settings › Phone sync… and pick the folder Syncthing shares with this " +
-                    "phone. Here, choose the same folder as Syncthing keeps it on the phone. Reviews you do here go back " +
-                    "the same way, and the computer applies them.",
+                    "phone. Here, choose the same folder as Syncthing keeps it on the phone. What you practice here goes back " +
+                    "the same way, and the computer applies it.",
                 style = MaterialTheme.typography.bodyMedium,
             )
             Text(folder?.let { Uri.decode(it.lastPathSegment ?: it.toString()) } ?: "No folder chosen",
@@ -306,7 +306,7 @@ private fun SettingsScreen(store: Store, onBack: () -> Unit, onSync: () -> Unit)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Daily reminder", style = MaterialTheme.typography.bodyLarge)
-                    Text("A notification when cards are waiting", style = MaterialTheme.typography.bodySmall)
+                    Text("A notification when questions are waiting", style = MaterialTheme.typography.bodySmall)
                 }
                 Switch(checked = reminder, onCheckedChange = { on ->
                     if (on && Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
@@ -328,7 +328,7 @@ private fun SettingsScreen(store: Store, onBack: () -> Unit, onSync: () -> Unit)
                 }) { Text("%d:%02d".format(minute / 60, minute % 60)) }
             }
             HorizontalDivider()
-            Text("Review settings (new cards a day, retention, daily goal, rewards) follow the computer's.",
+            Text("Practice settings (new questions a day, retention, daily goal, rewards) follow the computer's.",
                 style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.width(1.dp))
         }

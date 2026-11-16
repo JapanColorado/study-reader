@@ -189,19 +189,23 @@ class GradingTest {
 
     @Test
     fun gradesEachKind() {
-        val numeric = json("""{"type": "numeric", "answer": "41", "unit": "s"}""")
-        assertEquals("correct", Grading.grade(numeric, json("""{"latex": "\\frac{82}{2}"}""")))
-        assertEquals("correct", Grading.grade(numeric, json("""{"latex": "40.7"}"""))) // within 1%
-        assertEquals("incorrect", Grading.grade(numeric, json("""{"latex": "40"}""")))
-        assertEquals("correct", Grading.grade(json("""{"type": "numeric", "answer": 41, "tolerance": 1.5}"""), json("""{"latex": "40"}""")))
-        assertEquals("correct", Grading.grade(json("""{"type": "numeric", "answer": "sqrt(2)/2"}"""), json("""{"latex": "0.7071"}""")))
+        val calculation = json("""{"type": "calculation", "answer": "41", "unit": "s"}""")
+        assertEquals("correct", Grading.grade(calculation, json("""{"latex": "\\frac{82}{2}"}""")))
+        assertEquals("correct", Grading.grade(calculation, json("""{"latex": "40.7"}"""))) // within 1%
+        assertEquals("incorrect", Grading.grade(calculation, json("""{"latex": "40"}""")))
+        assertEquals("correct", Grading.grade(json("""{"type": "calculation", "answer": 41, "tolerance": 1.5}"""), json("""{"latex": "40"}""")))
+        assertEquals("correct", Grading.grade(json("""{"type": "calculation", "answer": "sqrt(2)/2"}"""), json("""{"latex": "0.7071"}""")))
+        // The old name, in older snapshots and variants.
+        assertEquals("correct", Grading.grade(json("""{"type": "numeric", "answer": "41"}"""), json("""{"latex": "41"}""")))
         assertEquals("correct", Grading.grade(json("""{"type": "choice", "choices": ["a", "b"], "answer": 1}"""), json("""{"choice": 1}""")))
         assertEquals("incorrect", Grading.grade(json("""{"type": "truefalse", "answer": false}"""), json("""{"value": true}""")))
+        assertEquals("partial", Grading.grade(json("""{"type": "self_check", "answer": "Back"}"""), json("""{"rating": 2}""")))
         assertEquals("partial", Grading.grade(json("""{"type": "flashcard", "answer": "Back"}"""), json("""{"rating": 2}""")))
-        assertEquals("Enter a number", assertThrows(AnswerError::class.java) { Grading.grade(numeric, json("""{"latex": " "}""")) }.message)
+        assertEquals("Enter a number", assertThrows(AnswerError::class.java) { Grading.grade(calculation, json("""{"latex": " "}""")) }.message)
         assertEquals("Fill in the empty box first", assertThrows(AnswerError::class.java) {
-            Grading.grade(numeric, json("""{"latex": "\\frac{1}{\\placeholder{}}"}"""))
+            Grading.grade(calculation, json("""{"latex": "\\frac{1}{\\placeholder{}}"}"""))
         }.message)
+        assertThrows(IllegalArgumentException::class.java) { Grading.grade(json("""{"type": "short_answer"}"""), json("""{"text": "x"}""")) }
         assertThrows(IllegalArgumentException::class.java) { Grading.grade(json("""{"type": "written"}"""), json("""{"text": "x"}""")) }
     }
 

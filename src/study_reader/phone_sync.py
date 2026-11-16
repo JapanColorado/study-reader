@@ -1,34 +1,43 @@
-"""Syncing review cards with the Android companion app (android/) through a shared folder that
-Syncthing keeps in step between the computer and the phone. Qt-free.
+"""Syncing practice questions with the Android companion app (android/) through a shared folder
+that Syncthing keeps in step between the computer and the phone. Qt-free.
 
 The desktop stays the source of truth. Each side writes only its own files, so Syncthing never
 sees a conflict:
 
-    <folder>/desktop/snapshot.db     cards, decks, schedules, the review log and the review settings,
-                                     rewritten whole (atomically) when something changed
-    <folder>/desktop/media/          the card media (images), mirrored from media_dir()
+    <folder>/desktop/snapshot.db     questions, decks, schedules, the attempt log and the practice
+                                     settings, rewritten whole (atomically) when something changed
+    <folder>/desktop/media/          the question media (images), mirrored from media_dir()
     <folder>/phones/<device>/<batch>.json
                                      what the phone did, one immutable file per batch of events
 
-A batch is {"format": 1, "device", "batch", "events": [...]}; every event has a unique "id",
-a "type", a "card" (where it applies to one) and "at" (epoch seconds):
+The snapshot's tables are SNAPSHOT_SCHEMA; its meta table holds the snapshot's "format", "schema"
+(SNAPSHOT_VERSION: 2 since the tables took their names, questions, question_groups and attempts;
+the phone refuses an older one), "id", "made_at" and "day_starts_at_hour".
 
-    review        rating 1-4, duration (ms), response (JSON as review.html sends it, or null),
-                  verdict, new (the card was new on the phone)
+A batch is {"format": 2, "device", "batch", "events": [...]}; every event has a unique "id",
+a "type", a "question" (the question's id, where it applies to one) and "at" (epoch seconds):
+
+    attempt       rating 1-4, duration (ms), response (JSON as practice.html sends it, or null),
+                  verdict, new (the question was new on the phone)
     suspend       suspended (0/1)
     flag          flag (0-7)
-    bury          the card is put off until tomorrow (scheduled cards only; the phone hides new ones itself)
+    bury          the question is put off until tomorrow (scheduled ones only; the phone hides new
+                  ones itself)
     xp            amount: XP the phone awarded (gamify.py's rules run on the phone)
-    achievement   key
+    achievement   key (older keys are read through gamify.ACHIEVEMENT_ALIASES)
     goal          day (ISO): the daily goal was met that day
     freeze_spent  day: a streak freeze covered that day
     freeze_earned day
 
-Reviews are replayed through FSRS at the time they happened. A review older than the card's last
-review (the card was also reviewed here meanwhile) rebuilds the card's schedule from its whole
-review log in time order. Applied events are remembered by id (phone_events), so a batch read
-twice changes nothing. The snapshot lists the batches it already reflects (its acks table); the
-phone then deletes those files and replays only its newer events on top of the snapshot.
+Batches in format 1, from phones not yet updated, are read too: their events say "card" for
+"question" and "review" for "attempt".
+
+Attempts are replayed through FSRS at the time they happened. An attempt older than the
+question's last one (it was also practiced here meanwhile) rebuilds the question's schedule from
+its whole attempt log in time order. Applied events are remembered by id (phone_events), so a
+batch read twice changes nothing. The snapshot lists the batches it already reflects (its acks
+table); the phone then deletes those files and replays only its newer events on top of the
+snapshot.
 """
 
 from __future__ import annotations
@@ -45,10 +54,13 @@ from pathlib import Path
 
 from fsrs import Card, Rating, State
 
-from . import gamify, srs, variants
+from . import gamify, practice, variants
 from .db import Database, media_dir
 
-FORMAT = 1
+FORMAT = 2  # of the batches the phone writes
+FORMATS = (1, 2)  # read: 1 is from before events said "question" and "attempt"
+SNAPSHOT_FORMAT = 1
+SNAPSHOT_VERSION = 2  # meta "schema": the snapshot's tables (2: questions, question_groups, attempts)
 FOLDER_SETTING = "phone_sync_folder"  # the shared folder ('' while phone sync is off)
 FINGERPRINT_SETTING = "phone_sync_fingerprint"  # what the last snapshot was made from
 LAST_SYNC_SETTING = "phone_sync_at"
@@ -57,38 +69,40 @@ MEDIA = "desktop/media"
 PHONES = "phones"
 # Syncthing never syncs its own temporary files, so the snapshot is written under such a name first.
 TEMP_PREFIX = ".syncthing."
-# The review settings the phone follows.
-SETTINGS = (srs.NEW_PER_DAY_SETTING, srs.RETENTION_SETTING, srs.PARAMETERS_SETTING, gamify.ENABLED_SETTING,
-            gamify.GOAL_SETTING, gamify.STATE_SETTING)
-CARD_COLUMNS = ("id", "note_id", "ord", "deck_id", "book_id", "message_id", "quiz", "question", "title", "data",
-                "variant", "page", "stage", "fsrs", "due", "reps", "lapses", "suspended", "flag", "stability",
-                "difficulty", "last_review", "created_at", "updated_at")
+# The practice settings the phone follows.
+SETTINGS = (practice.NEW_PER_DAY_SETTING, practice.RETENTION_SETTING, practice.PARAMETERS_SETTING,
+            gamify.ENABLED_SETTING, gamify.GOAL_SETTING, gamify.STATE_SETTING)
+QUESTION_COLUMNS = ("id", "group_id", "ord", "deck_id", "book_id", "message_id", "quiz", "position", "title", "data",
+                    "variant", "page", "stage", "fsrs", "due", "reps", "lapses", "suspended", "flag", "stability",
+                    "difficulty", "last_attempt", "created_at", "updated_at")
+# Format 1 event names: old -> new.
+OLD_EVENT_TYPES = {"review": "attempt"}
 
 SNAPSHOT_SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE decks (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
 CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT NOT NULL, root TEXT NOT NULL, deck_id INTEGER);
 CREATE TABLE section_starts (book_id INTEGER NOT NULL, tag TEXT NOT NULL, page INTEGER NOT NULL);
-CREATE TABLE card_notes (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, tags TEXT NOT NULL);
-CREATE TABLE cards (
-    id INTEGER PRIMARY KEY, note_id INTEGER NOT NULL, ord INTEGER NOT NULL, deck_id INTEGER NOT NULL,
-    book_id INTEGER, message_id INTEGER, quiz INTEGER, question INTEGER, title TEXT NOT NULL, data TEXT NOT NULL,
+CREATE TABLE question_groups (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, tags TEXT NOT NULL);
+CREATE TABLE questions (
+    id INTEGER PRIMARY KEY, group_id INTEGER NOT NULL, ord INTEGER NOT NULL, deck_id INTEGER NOT NULL,
+    book_id INTEGER, message_id INTEGER, quiz INTEGER, position INTEGER, title TEXT NOT NULL, data TEXT NOT NULL,
     variant TEXT NOT NULL, page INTEGER, stage INTEGER NOT NULL, fsrs TEXT NOT NULL, due REAL NOT NULL,
     reps INTEGER NOT NULL, lapses INTEGER NOT NULL, suspended INTEGER NOT NULL, flag INTEGER NOT NULL,
-    stability REAL, difficulty REAL, last_review REAL, created_at REAL NOT NULL, updated_at REAL NOT NULL
+    stability REAL, difficulty REAL, last_attempt REAL, created_at REAL NOT NULL, updated_at REAL NOT NULL
 );
-CREATE TABLE reviews (
-    id INTEGER PRIMARY KEY, card_id INTEGER NOT NULL, rating INTEGER NOT NULL, source TEXT NOT NULL,
-    reviewed_at REAL NOT NULL, duration INTEGER NOT NULL, was_new INTEGER NOT NULL
+CREATE TABLE attempts (
+    id INTEGER PRIMARY KEY, question_id INTEGER NOT NULL, rating INTEGER NOT NULL, source TEXT NOT NULL,
+    attempted_at REAL NOT NULL, duration INTEGER NOT NULL, was_new INTEGER NOT NULL
 );
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE acks (device TEXT NOT NULL, batch TEXT NOT NULL, PRIMARY KEY (device, batch));
 """
 SNAPSHOT_INDEXES = """
-CREATE INDEX cards_due ON cards (book_id, suspended, stage, due);
-CREATE INDEX cards_deck ON cards (deck_id, suspended, stage, due);
-CREATE INDEX reviews_time ON reviews (reviewed_at);
-CREATE INDEX reviews_card ON reviews (card_id);
+CREATE INDEX questions_due ON questions (book_id, suspended, stage, due);
+CREATE INDEX questions_deck ON questions (deck_id, suspended, stage, due);
+CREATE INDEX attempts_time ON attempts (attempted_at);
+CREATE INDEX attempts_question ON attempts (question_id);
 """
 
 
@@ -97,7 +111,7 @@ class Result:
     applied: int = 0  # events applied
     batches: int = 0  # batch files read for the first time
     exported: bool = False  # a new snapshot was written
-    reviewed: list[int] = field(default_factory=list)  # cards the phone reviewed
+    attempted: list[int] = field(default_factory=list)  # questions the phone attempted
     errors: list[str] = field(default_factory=list)  # batches that couldn't be read (yet)
 
 
@@ -142,12 +156,12 @@ def import_batches(db: Database, root: Path) -> Result:
             continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            if data.get("format") != FORMAT or not isinstance(data.get("events"), list):
+            if data.get("format") not in FORMATS or not isinstance(data.get("events"), list):
                 raise ValueError(f"unknown format {data.get('format')!r}")
         except (OSError, ValueError) as e:  # half-synced, most likely: read it next time
             result.errors.append(f"{device}/{path.name}: {e}")
             continue
-        events = sorted((e for e in data["events"] if isinstance(e, dict) and e.get("id")),
+        events = sorted((_current(e) for e in data["events"] if isinstance(e, dict) and e.get("id")),
                         key=lambda e: (float(e.get("at") or 0), str(e["id"])))
         with db.conn:
             seen = {r[0] for r in db.conn.execute("SELECT id FROM phone_events WHERE device=?", (device,))}
@@ -155,8 +169,8 @@ def import_batches(db: Database, root: Path) -> Result:
                 if event["id"] in seen:
                     continue
                 try:
-                    if apply_event(db, event) and event.get("type") == "review":
-                        result.reviewed.append(int(event["card"]))
+                    if apply_event(db, event) and event.get("type") == "attempt":
+                        result.attempted.append(int(event["question"]))
                 except (KeyError, TypeError, ValueError) as e:
                     result.errors.append(f"{device}/{path.name}: event {event['id']}: {e}")
                 db.conn.execute("INSERT OR IGNORE INTO phone_events (id, device, applied_at) VALUES (?,?,?)",
@@ -168,80 +182,93 @@ def import_batches(db: Database, root: Path) -> Result:
     return result
 
 
+def _current(e: dict) -> dict:
+    """A format 1 event in format 2's names ("question" for "card", "attempt" for "review")."""
+    if "card" in e and "question" not in e:
+        e = {**{k: v for k, v in e.items() if k != "card"}, "question": e["card"]}
+    if e.get("type") in OLD_EVENT_TYPES:
+        e = {**e, "type": OLD_EVENT_TYPES[e["type"]]}
+    return e
+
+
 def apply_event(db: Database, e: dict) -> bool:
-    """Apply one event from a phone. False if it no longer applies (its card is gone, say)."""
+    """Apply one event from a phone (in format 2's names; _current makes them). False if it no
+    longer applies (its question is gone, say)."""
     kind = e.get("type")
     at = float(e["at"])
     if kind in ("xp", "achievement", "goal", "freeze_spent", "freeze_earned"):
         _apply_reward(db, kind, e, at)
         return True
-    card = db.card(int(e["card"]))
-    if card is None:
+    question = db.question(int(e["question"]))
+    if question is None:
         return False
-    if kind == "review":
-        apply_review(db, card, int(e["rating"]), at, e.get("response") or None, e.get("verdict"),
-                     int(e.get("duration") or 0), bool(e.get("new")))
+    if kind == "attempt":
+        apply_attempt(db, question, int(e["rating"]), at, e.get("response") or None, e.get("verdict"),
+                      int(e.get("duration") or 0), bool(e.get("new")))
     elif kind == "suspend":
-        db.update_card(card["id"], suspended=1 if e.get("suspended", 1) else 0, updated_at=at)
+        db.update_question(question["id"], suspended=1 if e.get("suspended", 1) else 0, updated_at=at)
     elif kind == "flag":
-        db.update_card(card["id"], flag=max(0, min(7, int(e.get("flag") or 0))), updated_at=at)
+        db.update_question(question["id"], flag=max(0, min(7, int(e.get("flag") or 0))), updated_at=at)
     elif kind == "bury":
-        bury(db, card, at)
+        bury(db, question, at)
     else:
         return False
     return True
 
 
-def apply_review(db: Database, card, rating: int, at: float, response: dict | None, verdict: str | None,
-                 duration: int, new: bool) -> None:
+def apply_attempt(db: Database, question, rating: int, at: float, response: dict | None, verdict: str | None,
+                  duration: int, new: bool) -> None:
     if rating not in (1, 2, 3, 4):
         raise ValueError(f"rating {rating}")
-    if card["last_review"] is None or at >= card["last_review"]:
-        srs.review(db, card["id"], rating, now=at, response=response, verdict=verdict, duration=duration)
+    if question["last_attempt"] is None or at >= question["last_attempt"]:
+        practice.attempt(db, question["id"], rating, now=at, response=response, verdict=verdict, duration=duration)
         return
-    # Reviewed here too, after the phone's review: put the phone's in the log, then replay the log.
-    db.record_review(card["id"], rating, "review", json.dumps(response) if response else "", verdict, at,
-                     duration, was_new=new)
-    if not rebuild(db, card["id"]):
-        # Nothing to replay from (history from Anki, say): schedule it as if reviewed with the last one.
-        fsrs_card, _ = srs.scheduler(db).review_card(srs._fsrs_card(card, at), Rating(rating), srs.dt(card["last_review"]))
-        db.update_card(card["id"], **srs.schedule_columns(fsrs_card), reps=card["reps"] + 1)
+    # Practiced here too, after the phone's attempt: put the phone's in the log, then replay the log.
+    db.record_attempt(question["id"], rating, "practice", json.dumps(response) if response else "", verdict, at,
+                      duration, was_new=new)
+    if not rebuild(db, question["id"]):
+        # Nothing to replay from (history from Anki, say): schedule it as if attempted with the last one.
+        fsrs_card, _ = practice.scheduler(db).review_card(practice._fsrs_card(question, at), Rating(rating),
+                                                          practice.dt(question["last_attempt"]))
+        db.update_question(question["id"], **practice.schedule_columns(fsrs_card), reps=question["reps"] + 1)
 
 
-def rebuild(db: Database, card_id: int) -> bool:
-    """Recompute a card's schedule by replaying its reviews in time order, from its last
-    introduction (a review of it while new). False if its log can't be replayed."""
-    reviews = db.conn.execute(
-        "SELECT rating, reviewed_at, was_new, source FROM reviews WHERE card_id=? ORDER BY reviewed_at, id", (card_id,),
+def rebuild(db: Database, question_id: int) -> bool:
+    """Recompute a question's schedule by replaying its attempts in time order, from its last
+    introduction (an attempt at it while new). False if its log can't be replayed."""
+    attempts = db.conn.execute(
+        "SELECT rating, attempted_at, was_new, source FROM attempts WHERE question_id=? ORDER BY attempted_at, id",
+        (question_id,),
     ).fetchall()
-    starts = [i for i, r in enumerate(reviews) if r["was_new"]]
+    starts = [i for i, r in enumerate(attempts) if r["was_new"]]
     if not starts:
         return False
-    reviews = reviews[starts[-1]:]
-    if any(r["source"] == "anki" for r in reviews):
+    attempts = attempts[starts[-1]:]
+    if any(r["source"] == "anki" for r in attempts):
         return False
-    sched = srs.scheduler(db)
-    fsrs_card = Card(due=srs.dt(reviews[0]["reviewed_at"]))
+    sched = practice.scheduler(db)
+    fsrs_card = Card(due=practice.dt(attempts[0]["attempted_at"]))
     lapses = 0
-    for r in reviews:
+    for r in attempts:
         lapses += r["rating"] == 1 and fsrs_card.state == State.Review
-        fsrs_card, _ = sched.review_card(fsrs_card, Rating(r["rating"]), srs.dt(r["reviewed_at"]))
-    card = db.card(card_id)
-    db.update_card(card_id, **srs.schedule_columns(fsrs_card), reps=card["reps"] + 1, lapses=max(card["lapses"], lapses))
+        fsrs_card, _ = sched.review_card(fsrs_card, Rating(r["rating"]), practice.dt(r["attempted_at"]))
+    question = db.question(question_id)
+    db.update_question(question_id, **practice.schedule_columns(fsrs_card), reps=question["reps"] + 1,
+                       lapses=max(question["lapses"], lapses))
     return True
 
 
-def bury(db: Database, card, at: float) -> None:
-    """Put a scheduled card off until tomorrow (the review day after `at`). New cards stay as
-    they are: the phone keeps those out of its own queue for the day."""
-    if card["stage"] == 0 or card["suspended"]:
+def bury(db: Database, question, at: float) -> None:
+    """Put a scheduled question off until tomorrow (the practice day after `at`). New questions
+    stay as they are: the phone keeps those out of its own queue for the day."""
+    if question["stage"] == 0 or question["suspended"]:
         return
-    tomorrow = srs.next_day(at)
-    if card["due"] >= tomorrow:
+    tomorrow = practice.next_day(at)
+    if question["due"] >= tomorrow:
         return
-    fsrs_card = Card.from_json(card["fsrs"]) if card["fsrs"] else Card(due=srs.dt(tomorrow))
-    fsrs_card.due = srs.dt(tomorrow)
-    db.update_card(card["id"], **srs.schedule_columns(fsrs_card), updated_at=at)
+    fsrs_card = Card.from_json(question["fsrs"]) if question["fsrs"] else Card(due=practice.dt(tomorrow))
+    fsrs_card.due = practice.dt(tomorrow)
+    db.update_question(question["id"], **practice.schedule_columns(fsrs_card), updated_at=at)
 
 
 def _apply_reward(db: Database, kind: str, e: dict, at: float) -> None:
@@ -250,6 +277,7 @@ def _apply_reward(db: Database, kind: str, e: dict, at: float) -> None:
         state["xp"] += max(int(e.get("amount") or 0), 0)
     elif kind == "achievement":
         key = str(e["key"])
+        key = gamify.achievement_key(key)
         if key in {a[0] for a in gamify.ACHIEVEMENTS}:
             state["achievements"].setdefault(key, at)
     elif kind == "goal":
@@ -272,14 +300,16 @@ def _apply_reward(db: Database, kind: str, e: dict, at: float) -> None:
 
 # -- to the phone --------------------------------------------------------------------------
 def _fingerprint(db: Database, root: Path) -> str:
-    """Changes whenever anything the snapshot holds does (cheaply: aggregates, not the rows)."""
+    """Changes whenever anything the snapshot holds does (cheaply: aggregates, not the rows), and
+    with the snapshot's format and schema, so a desktop that changes them rewrites it once."""
     c = db.conn
     parts = [
+        [SNAPSHOT_FORMAT, SNAPSHOT_VERSION],
         c.execute("SELECT COUNT(*), TOTAL(id*(stage+1)), TOTAL(due), TOTAL(suspended*id), TOTAL(flag*id), "
                   "TOTAL(length(data)+length(variant)), MAX(updated_at), TOTAL(deck_id*id), TOTAL(reps), "
-                  "TOTAL(COALESCE(book_id, 0)*id) FROM cards").fetchone(),
-        c.execute("SELECT COUNT(*), MAX(id), TOTAL(reviewed_at) FROM reviews").fetchone(),
-        c.execute("SELECT COUNT(*), MAX(updated_at), TOTAL(length(tags)*id) FROM card_notes").fetchone(),
+                  "TOTAL(COALESCE(book_id, 0)*id) FROM questions").fetchone(),
+        c.execute("SELECT COUNT(*), MAX(id), TOTAL(attempted_at) FROM attempts").fetchone(),
+        c.execute("SELECT COUNT(*), MAX(updated_at), TOTAL(length(tags)*id) FROM question_groups").fetchone(),
         c.execute("SELECT group_concat(id||':'||name, '|') FROM decks").fetchone(),
         c.execute("SELECT group_concat(id||':'||title||':'||COALESCE(length(toc), 0)||':'||COALESCE(deck_id, ''), '|') "
                   "FROM books").fetchone(),
@@ -312,24 +342,26 @@ def export_snapshot(db: Database, root: Path, now: float | None = None) -> Path:
     snap = sqlite3.connect(tmp)
     try:
         snap.executescript(SNAPSHOT_SCHEMA)
-        meta = {"format": FORMAT, "id": uuid.uuid4().hex, "made_at": now, "day_starts_at_hour": srs.DAY_STARTS_AT_HOUR}
+        meta = {"format": SNAPSHOT_FORMAT, "schema": SNAPSHOT_VERSION, "id": uuid.uuid4().hex, "made_at": now,
+                "day_starts_at_hour": practice.DAY_STARTS_AT_HOUR}
         snap.executemany("INSERT INTO meta VALUES (?,?)", [(k, str(v)) for k, v in meta.items()])
         snap.executemany("INSERT INTO decks VALUES (?,?)", db.conn.execute("SELECT id, name FROM decks"))
         books = db.conn.execute("SELECT id, title, toc, deck_id FROM books").fetchall()
         snap.executemany("INSERT INTO books VALUES (?,?,?,?)",
-                         [(b["id"], b["title"], srs.section_root(b), b["deck_id"]) for b in books])
+                         [(b["id"], b["title"], practice.section_root(b), b["deck_id"]) for b in books])
         snap.executemany("INSERT INTO section_starts VALUES (?,?,?)", [
             (b["id"], tag, page) for b in books
-            for tag, page in srs._section_starts(srs.section_root(b), b["toc"]).items()
+            for tag, page in practice._section_starts(practice.section_root(b), b["toc"]).items()
         ])
-        snap.executemany("INSERT INTO card_notes VALUES (?,?,?)", db.conn.execute("SELECT id, kind, tags FROM card_notes"))
-        cols = ", ".join(CARD_COLUMNS)
-        # With new versions turned off (variants.ENABLED_SETTING) the phone shows the cards' own questions.
+        snap.executemany("INSERT INTO question_groups VALUES (?,?,?)",
+                         db.conn.execute("SELECT id, kind, tags FROM question_groups"))
+        cols = ", ".join(QUESTION_COLUMNS)
+        # With new versions turned off (variants.ENABLED_SETTING) the phone shows the questions as written.
         shown = cols.replace("variant", "variant" if variants.enabled(db) else "'' AS variant")
-        snap.executemany(f"INSERT INTO cards ({cols}) VALUES ({', '.join('?' * len(CARD_COLUMNS))})",
-                         db.conn.execute(f"SELECT {shown} FROM cards"))
-        snap.executemany("INSERT INTO reviews VALUES (?,?,?,?,?,?,?)", db.conn.execute(
-            "SELECT id, card_id, rating, source, reviewed_at, duration, was_new FROM reviews"))
+        snap.executemany(f"INSERT INTO questions ({cols}) VALUES ({', '.join('?' * len(QUESTION_COLUMNS))})",
+                         db.conn.execute(f"SELECT {shown} FROM questions"))
+        snap.executemany("INSERT INTO attempts VALUES (?,?,?,?,?,?,?)", db.conn.execute(
+            "SELECT id, question_id, rating, source, attempted_at, duration, was_new FROM attempts"))
         gamify.load(db, now)  # made from the log the first time, so the phone starts from the same state
         snap.executemany("INSERT INTO settings VALUES (?,?)",
                          [(k, db.get_setting(k)) for k in SETTINGS if db.get_setting(k) != ""])

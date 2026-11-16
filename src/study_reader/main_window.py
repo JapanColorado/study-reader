@@ -1,5 +1,5 @@
 """Main window: the navigation rail | the open book (contents | reader | chats, notes or the
-calculator) or a page: Home, Library, Review, Cards, Stats."""
+calculator) or a page: Home, Library, Practice, Questions, Stats."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import gamify, quiz, srs, variants
+from . import gamify, quiz, practice, variants
 from .calculator import CalculatorPanel
 from .chat_panel import MODELS, ChatHub, ChatPanel, drop_throwaway_chats
 from .chat_service import ChatWorker
@@ -33,7 +33,7 @@ from .phone_sync_dialog import PhoneSync, PhoneSyncDialog
 from .read_aloud import ReadAloud
 from .render_dialog import AudioSync, ColabRender, RenderDialog, local_audio
 from .reader_view import ReaderView
-from .review import ReviewPanel, VariantMaker
+from .practice_view import PracticePanel, VariantMaker
 from .theme import MODES, icon, theme
 from .tts_engines import ENGINES
 from .web_import import WebImportError, normalize_url
@@ -48,9 +48,9 @@ class MainWindow(QMainWindow):
         self.db = db or Database()
         theme().configure(self.db.get_setting("theme", "system"), self.db.get_setting("dark_pages") == "1")
         self.worker = ChatWorker(data_dir() / "sessions", self)
-        srs.backfill(self.db)  # once: cards for quizzes from before there were cards
-        self._learn_tocs()  # once a book: section tags for quiz cards from before there were any
-        self.browser = None  # browser.CardBrowser, the Cards page, made when first shown
+        practice.backfill(self.db)  # once: practice questions for quizzes from before there were any
+        self._learn_tocs()  # once a book: section tags for quiz questions from before there were any
+        self.browser = None  # browser.QuestionBrowser, the Questions page, made when first shown
         self.stats_window = None  # stats_view.StatsWindow, the Stats page, likewise
         self._optimizer: _Optimizer | None = None
         self.doc: Document | None = None
@@ -91,36 +91,37 @@ class MainWindow(QMainWindow):
         col.addWidget(self.reader, 1)
         col.addWidget(self.read_aloud.bar)
         self.library = LibraryView(self.db)
-        self.variants = VariantMaker(self.db, self.worker, self)  # new numbers for reviewed calculation cards
-        self.review = ReviewPanel(self.db, variants=self.variants)  # the Review page's cards
-        # The Review page's calculator (F11 there), beside the cards: the history of the book of the card under review.
-        self.review_calc = CalculatorPanel(self.db, shared=True, closable=True)
-        self.review_calc.closeRequested.connect(lambda: self.review_calc_action.trigger())
-        self.review.cardShown.connect(self._review_card_book)
-        # Its chats (F10 there), about the card under review: those of its book, or of cards with
-        # no book. They take turns with the calculator beside the cards, like the reader's panels.
+        self.variants = VariantMaker(self.db, self.worker, self)  # new numbers for attempted calculation questions
+        self.practice = PracticePanel(self.db, variants=self.variants)  # the Practice page's questions
+        # The Practice page's calculator (F11 there), beside the questions: the history of the book of the
+        # question being practiced.
+        self.practice_calc = CalculatorPanel(self.db, shared=True, closable=True)
+        self.practice_calc.closeRequested.connect(lambda: self.practice_calc_action.trigger())
+        self.practice.questionShown.connect(self._practice_question_book)
+        # Its chats (F10 there), about the question being practiced: those of its book, or of questions
+        # with no book. They take turns with the calculator beside the questions, like the reader's panels.
         drop_throwaway_chats(self.db, self.worker)  # left by a run that crashed
-        self.chat_hub = ChatHub()  # the reader's and the Review page's chat panels share replies on the way
-        self.review_chat = ChatPanel(self.db, self.worker, self.variants, hub=self.chat_hub, review=True)
-        # A long book's nearby pages, sent instead of all of it, are the card's.
-        self.review_chat.current_page = lambda: (self.review_chat.card or {}).get("page") or 0
-        self.review.cardChanged.connect(self._review_chat_card)
-        self.review_right = QStackedWidget()
-        self.review_right.addWidget(self.review_chat)
-        self.review_right.addWidget(self.review_calc)
-        self.review_page = QSplitter()
-        self.review_page.setChildrenCollapsible(False)
-        self.review_page.addWidget(self.review)
-        self.review_page.addWidget(self.review_right)
-        self.review_page.setStretchFactor(0, 1)
-        self.review_page.setSizes([1000, 460])
-        self.cards_page = _Page()  # holds the browser once made
+        self.chat_hub = ChatHub()  # the reader's and the Practice page's chat panels share replies on the way
+        self.practice_chat = ChatPanel(self.db, self.worker, self.variants, hub=self.chat_hub, practice=True)
+        # A long book's nearby pages, sent instead of all of it, are the question's.
+        self.practice_chat.current_page = lambda: (self.practice_chat.question or {}).get("page") or 0
+        self.practice.questionChanged.connect(self._practice_chat_question)
+        self.practice_right = QStackedWidget()
+        self.practice_right.addWidget(self.practice_chat)
+        self.practice_right.addWidget(self.practice_calc)
+        self.practice_page = QSplitter()
+        self.practice_page.setChildrenCollapsible(False)
+        self.practice_page.addWidget(self.practice)
+        self.practice_page.addWidget(self.practice_right)
+        self.practice_page.setStretchFactor(0, 1)
+        self.practice_page.setSizes([1000, 460])
+        self.questions_page = _Page()  # holds the browser once made
         self.stats_page = _Page()  # holds the statistics once made
         self.center = QStackedWidget()
         # The pages the navigation rail switches between; "book" is the open book.
         self.pages = {
-            "home": self.home, "library": self.library, "review": self.review_page,
-            "cards": self.cards_page, "stats": self.stats_page, "book": self.book_view,
+            "home": self.home, "library": self.library, "practice": self.practice_page,
+            "questions": self.questions_page, "stats": self.stats_page, "book": self.book_view,
         }
         for w in self.pages.values():
             self.center.addWidget(w)
@@ -128,7 +129,7 @@ class MainWindow(QMainWindow):
         self.chat.current_page = self.reader.current_page
         self.calc = CalculatorPanel(self.db)
         self.notes = NotesPanel(self.db)
-        for a, b in ((self.calc, self.review_calc), (self.review_calc, self.calc)):
+        for a, b in ((self.calc, self.practice_calc), (self.practice_calc, self.calc)):
             a.historyChanged.connect(lambda book_id, b=b: b.saves and b.book_id == book_id and b.reload())
         self.right = QStackedWidget()  # chats, notes and the calculator take turns in the same slot
         for w in (self.chat, self.notes, self.calc):
@@ -142,14 +143,14 @@ class MainWindow(QMainWindow):
         split.setSizes([240, 800, 460])
 
         self._build_actions()
-        # The Review page's Calculator and Chat buttons, lit while theirs is open.
-        self.review.set_calculator(self.review_calc_action.isChecked())
-        self.review.set_chat_panel(self.review_chat_action.isChecked())
-        self.review_calc_action.toggled.connect(self.review.set_calculator)
-        self.review_chat_action.toggled.connect(self.review.set_chat_panel)
-        self.review.calculatorRequested.connect(self.review_calc_action.trigger)
-        self.review.chatPanelRequested.connect(self.review_chat_action.trigger)
-        self._sync_review_right()
+        # The Practice page's Calculator and Chat buttons, lit while theirs is open.
+        self.practice.set_calculator(self.practice_calc_action.isChecked())
+        self.practice.set_chat_panel(self.practice_chat_action.isChecked())
+        self.practice_calc_action.toggled.connect(self.practice.set_calculator)
+        self.practice_chat_action.toggled.connect(self.practice.set_chat_panel)
+        self.practice.calculatorRequested.connect(self.practice_calc_action.trigger)
+        self.practice.chatPanelRequested.connect(self.practice_chat_action.trigger)
+        self._sync_practice_right()
         self.nav = NavRail(self._build_settings_menu())
         self.nav.pageRequested.connect(self.show_page)
         central = QWidget()
@@ -165,10 +166,10 @@ class MainWindow(QMainWindow):
         row.addLayout(col, 1)
         self.setCentralWidget(central)
 
-        self.home.startRequested.connect(self.review_everything)
+        self.home.startRequested.connect(self.practice_everything)
         self.home.openRequested.connect(self._open_book_id)
-        self.home.reviewBookRequested.connect(self.review_book)
-        self.home.reviewDeckRequested.connect(self._review_deck)
+        self.home.practiceBookRequested.connect(self.practice_book)
+        self.home.practiceDeckRequested.connect(self._practice_deck)
         self.home.pageRequested.connect(self.show_page)
         self.home.browseRequested.connect(self.browse)
         self.home.webRequested.connect(self.ask_url)
@@ -176,7 +177,7 @@ class MainWindow(QMainWindow):
         self.library.browseRequested.connect(self.browse)
         self.library.webRequested.connect(self.ask_url)
         self.library.refetchRequested.connect(self.refetch)
-        self.library.reviewBookRequested.connect(self.review_book)
+        self.library.practiceBookRequested.connect(self.practice_book)
         self.web = WebImporter(data_dir() / "web", self)
         self.web.status.connect(lambda text: self._web_progress and self._web_progress.setLabelText(text))
         self.web.finished.connect(self._on_web_done)
@@ -197,33 +198,33 @@ class MainWindow(QMainWindow):
         self.reader.zoomChanged.connect(lambda z: self.zoom_label.setText(f"{round(z * 100)}%"))
         self.chat.jumpRequested.connect(self.reader.flash)
         self.chat.pageRequested.connect(self.reader.go_to)
-        self.chat.cardsChanged.connect(self._on_cards_changed)
-        self.review.countsChanged.connect(self._on_cards_changed)
-        self.review.sourceRequested.connect(self._book_page)
-        self.review.chatRequested.connect(self._review_chat)
-        self.review_chat.cardsChanged.connect(self._on_cards_changed)
-        self.review_chat.highlightsChanged.connect(self._refresh_highlights)
-        self.review_chat.pageRequested.connect(
-            lambda page: self.review_chat.book_id is not None and self._book_page(self.review_chat.book_id, page))
-        self.review_chat.jumpRequested.connect(self._review_chat_jump)
-        self.review.editRequested.connect(lambda card_id: self.show_browser().show_card(card_id))
-        # Make with Claude: decks Claude writes from a description, and existing cards it improves.
+        self.chat.questionsChanged.connect(self._on_questions_changed)
+        self.practice.countsChanged.connect(self._on_questions_changed)
+        self.practice.sourceRequested.connect(self._book_page)
+        self.practice.chatRequested.connect(self._practice_chat)
+        self.practice_chat.questionsChanged.connect(self._on_questions_changed)
+        self.practice_chat.highlightsChanged.connect(self._refresh_highlights)
+        self.practice_chat.pageRequested.connect(
+            lambda page: self.practice_chat.book_id is not None and self._book_page(self.practice_chat.book_id, page))
+        self.practice_chat.jumpRequested.connect(self._practice_chat_jump)
+        self.practice.editRequested.connect(lambda question_id: self.show_browser().show_question(question_id))
+        # Make with Claude: decks Claude writes from a description, and existing questions it improves.
         self.deck_maker = DeckMaker(self.db, self.worker, self)
-        self.deck_maker.cardsChanged.connect(self._on_made_cards)
-        self.deck_maker.aboutToChange.connect(lambda: self.browser is not None and self.browser.save_note())
-        self.deck_maker.showCards.connect(lambda query: self.show_browser().set_search(query))
+        self.deck_maker.questionsChanged.connect(self._on_made_questions)
+        self.deck_maker.aboutToChange.connect(lambda: self.browser is not None and self.browser.save_question())
+        self.deck_maker.showQuestions.connect(lambda query: self.show_browser().set_search(query))
         self.home.makeRequested.connect(lambda: self.make_deck())
-        self.review.make_link = True
-        self.review.makeRequested.connect(self._make_deck_under)
+        self.practice.make_link = True
+        self.practice.makeRequested.connect(self._make_deck_under)
         theme().changed.connect(self._on_theme_changed)
         self._on_theme_changed()
 
         self._save_timer = QTimer(self, interval=10_000)
         self._save_timer.timeout.connect(self._save_position)
         self._save_timer.start()
-        # The phone app's reviews come in through a shared folder; new numbers for the calculation cards it reviewed.
-        self.phone_sync = PhoneSync(self.db, after_review=self.variants.after_review, parent=self)
-        self.phone_sync.synced.connect(lambda result: result.applied and self._on_cards_changed())
+        # The phone app's attempts come in through a shared folder; new numbers for the calculation questions it attempted.
+        self.phone_sync = PhoneSync(self.db, after_attempt=self.variants.after_attempt, parent=self)
+        self.phone_sync.synced.connect(lambda result: result.applied and self._on_questions_changed())
         QTimer.singleShot(0, self.phone_sync.sync)
         self.show_page("home")
 
@@ -256,7 +257,7 @@ class MainWindow(QMainWindow):
         action("Book", f"Alt+{len(PAGES) + 1}", lambda: self.show_page("book"))
         action("Open…", QKeySequence.StandardKey.Open, self.browse)
         self.web_action = action("Open web page…", "Ctrl+Shift+O", self.ask_url)
-        action("Browse cards", "Ctrl+Shift+B", self.show_browser)
+        action("Browse questions", "Ctrl+Shift+B", self.show_browser)
         self.close_action = action("Close book", "Ctrl+W", self.close_book)
         find = action("Find in book", QKeySequence.StandardKey.Find, self.find.open, "search")
         find_next = action("Find next", "F3", self.find.next)
@@ -320,7 +321,7 @@ class MainWindow(QMainWindow):
         quiz_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
         new_chat = action("New chat", "Ctrl+N", self.chat.new_chat, "message-plus")
         # Act on the current selection without reaching for the popup. Only while the reader has
-        # focus: as window shortcuts they'd swallow Ctrl+Enter in the review, quiz and note pages.
+        # focus: as window shortcuts they'd swallow Ctrl+Enter in the practice, quiz and note pages.
         for text, shortcut, new in (("Ask in new chat", "Ctrl+Return", True),
                                     ("Add to current chat", "Ctrl+Shift+Return", False)):
             a = QAction(text, self.reader, shortcut=QKeySequence(shortcut))
@@ -341,14 +342,14 @@ class MainWindow(QMainWindow):
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         bar.addWidget(spacer)
 
-        # The Review page narrowed to this book, with its count on it; then the right-hand panels.
-        self.review_action = action("Review", "F8", self.review_open_book, "cards")
-        bar.addAction(self.review_action)
-        labelled(self.review_action)
+        # The Practice page narrowed to this book, with its count on it; then the right-hand panels.
+        self.practice_action = action("Practice", "F8", self.practice_open_book, "questions")
+        bar.addAction(self.practice_action)
+        labelled(self.practice_action)
         self.book_actions = [
             zoom_out, zoom_in, fit, self.crop_action, self.region_action, self.quiz_action,
             self.finished_action, new_chat, add_note, self.close_action, self.read_action, self.play_action,
-            find, find_next, find_prev, self.review_action,
+            find, find_next, find_prev, self.practice_action,
         ]
         self._on_reading(False)
         self.chat_action = action("Chats", "F10", lambda on: self._toggle_right("chat", on), "message", checkable=True)
@@ -359,16 +360,16 @@ class MainWindow(QMainWindow):
         bar.addAction(self.notes_action)
         self.calc_action = action("Calculator", "F11", lambda on: self._toggle_right("calc", on), "calculator", checkable=True)
         bar.addAction(self.calc_action)
-        # The Review page's chat panel and calculator; F10 and F11 are these or the book's, whichever screen is up.
-        self.review_chat_action = action("Chat", "F10", lambda on: self._toggle_review_panel("chat", on), "message",
+        # The Practice page's chat panel and calculator; F10 and F11 are these or the book's, whichever screen is up.
+        self.practice_chat_action = action("Chat", "F10", lambda on: self._toggle_practice_panel("chat", on), "message",
                                          checkable=True)
-        self.review_calc_action = action("Calculator", "F11", lambda on: self._toggle_review_panel("calc", on),
+        self.practice_calc_action = action("Calculator", "F11", lambda on: self._toggle_practice_panel("calc", on),
                                          "calculator", checkable=True)
-        shown = self.db.get_setting("review_panel", None)
+        shown = self.db.get_setting("practice_panel", None)
         if shown is None:  # from before the chat panel: just the calculator's
-            shown = "calc" if self.db.get_setting("review_calc") == "1" else ""
-        self.review_chat_action.setChecked(shown == "chat")
-        self.review_calc_action.setChecked(shown == "calc")
+            shown = "calc" if self.db.get_setting("practice_calc") == "1" else ""
+        self.practice_chat_action.setChecked(shown == "chat")
+        self.practice_calc_action.setChecked(shown == "calc")
         # The right-hand slot's panels, by the names books.right_panel stores; one at most is shown.
         self.right_panels = {
             "chat": (self.chat_action, self.chat),
@@ -415,28 +416,28 @@ class MainWindow(QMainWindow):
         voice_menu.addAction("Render audio on Colab…").triggered.connect(self.render_on_colab)
         menu.addSeparator()
         menu.addAction(icon("import"), "Migrate from Anki…").triggered.connect(self.migrate_from_anki)
-        review_menu = menu.addMenu(icon("cards"), "Review settings")
-        review_menu.setToolTipsVisible(True)
-        review_menu.addAction("New cards per day…").triggered.connect(self._set_new_per_day)
-        review_menu.addAction("Desired retention…").triggered.connect(self._set_retention)
-        review_menu.addAction("Optimize FSRS parameters…").triggered.connect(self._optimize)
-        review_menu.addAction("Use default FSRS parameters").triggered.connect(self._reset_parameters)
-        review_menu.addSeparator()
-        self.rewards_action = review_menu.addAction("Rewards and streaks")
+        practice_menu = menu.addMenu(icon("questions"), "Practice settings")
+        practice_menu.setToolTipsVisible(True)
+        practice_menu.addAction("New questions per day…").triggered.connect(self._set_new_per_day)
+        practice_menu.addAction("Desired retention…").triggered.connect(self._set_retention)
+        practice_menu.addAction("Optimize FSRS parameters…").triggered.connect(self._optimize)
+        practice_menu.addAction("Use default FSRS parameters").triggered.connect(self._reset_parameters)
+        practice_menu.addSeparator()
+        self.rewards_action = practice_menu.addAction("Rewards and streaks")
         self.rewards_action.setCheckable(True)
         self.rewards_action.setChecked(gamify.enabled(self.db))
         self.rewards_action.toggled.connect(self._set_rewards)
-        review_menu.addAction("Daily goal…").triggered.connect(self._set_daily_goal)
-        review_menu.addSeparator()
-        self.variants_action = review_menu.addAction("New numbers and new choices after each review")
+        practice_menu.addAction("Daily goal…").triggered.connect(self._set_daily_goal)
+        practice_menu.addSeparator()
+        self.variants_action = practice_menu.addAction("New numbers and new choices after each attempt")
         self.variants_action.setToolTip(
-            "After you review a numeric or written-answer card, Claude writes a fresh version of the problem "
-            "for next time, and for a multiple-choice card a new set of choices. Off: cards always show "
-            "their own question. Single cards can be turned off in the card browser.")
+            "After you practice a calculation or short-answer question, Claude writes a fresh version of the "
+            "problem for next time, and for a multiple-choice question a new set of choices. Off: questions always "
+            "show their own wording. Single questions can be turned off in the question browser.")
         self.variants_action.setCheckable(True)
         self.variants_action.setChecked(variants.enabled(self.db))
         self.variants_action.toggled.connect(self._set_variants)
-        menu.addAction(icon("cards"), "Phone sync…").triggered.connect(lambda: PhoneSyncDialog(self.phone_sync, self).exec())
+        menu.addAction(icon("questions"), "Phone sync…").triggered.connect(lambda: PhoneSyncDialog(self.phone_sync, self).exec())
         return menu
 
     # -- appearance ---------------------------------------------------------------
@@ -478,45 +479,45 @@ class MainWindow(QMainWindow):
         if on and name == "calc" and self.right.isVisible():
             self.calc.focus_input()
 
-    def _toggle_review_panel(self, name: str, on: bool) -> None:
-        """F10 / F11 on the Review page: the chat panel or the calculator beside the cards, one at a
-        time (remembered)."""
-        other = self.review_calc_action if name == "chat" else self.review_chat_action
+    def _toggle_practice_panel(self, name: str, on: bool) -> None:
+        """F10 / F11 on the Practice page: the chat panel or the calculator beside the questions, one at
+        a time (remembered)."""
+        other = self.practice_calc_action if name == "chat" else self.practice_chat_action
         if on:
             other.setChecked(False)
-        self.db.set_setting("review_panel", name if on else "")
-        self._sync_review_right()
+        self.db.set_setting("practice_panel", name if on else "")
+        self._sync_practice_right()
         if not on:
-            self.review.focus()
+            self.practice.focus()
         elif name == "calc":
-            self.review_calc.focus_input()
+            self.practice_calc.focus_input()
         else:
-            self.review_chat.input.setFocus()
+            self.practice_chat.input.setFocus()
 
-    def _sync_review_right(self) -> None:
-        chat, calc = self.review_chat_action.isChecked(), self.review_calc_action.isChecked()
+    def _sync_practice_right(self) -> None:
+        chat, calc = self.practice_chat_action.isChecked(), self.practice_calc_action.isChecked()
         if chat or calc:
-            self.review_right.setCurrentWidget(self.review_chat if chat else self.review_calc)
-        self.review_right.setVisible(chat or calc)
+            self.practice_right.setCurrentWidget(self.practice_chat if chat else self.practice_calc)
+        self.practice_right.setVisible(chat or calc)
         if chat:
-            self._review_chat_card()
+            self._practice_chat_question()
 
-    def _review_chat_card(self) -> None:
-        """A card was drawn on the Review page (or the overview): the chat panel follows it while open."""
-        if self.review_chat_action.isChecked():
-            self.review_chat.set_card(self.review.chat_card())
+    def _practice_chat_question(self) -> None:
+        """A question was drawn on the Practice page (or the overview): the chat panel follows it while open."""
+        if self.practice_chat_action.isChecked():
+            self.practice_chat.set_question(self.practice.chat_question())
 
-    def _review_chat_jump(self, page: int, rects: list) -> None:
-        """A passage in one of the Review page's chats: shown in its book."""
-        book_id = self.review_chat.book_id
+    def _practice_chat_jump(self, page: int, rects: list) -> None:
+        """A passage in one of the Practice page's chats: shown in its book."""
+        book_id = self.practice_chat.book_id
         if book_id is not None and (book_id == self.book_id or self._open_book_id(book_id)):
             self.show_page("book")
             self.reader.flash(page, rects)
 
-    def _review_card_book(self, book_id: int | None) -> None:
-        """A card came up on the Review page: its book's calculator history (or the shared one)."""
-        if book_id != self.review_calc.book_id:
-            self.review_calc.set_book(book_id)
+    def _practice_question_book(self, book_id: int | None) -> None:
+        """A question came up on the Practice page: its book's calculator history (or the shared one)."""
+        if book_id != self.practice_calc.book_id:
+            self.practice_calc.set_book(book_id)
 
     def _set_finished(self, on: bool) -> None:
         if self.book_id is not None:
@@ -557,23 +558,23 @@ class MainWindow(QMainWindow):
             self.read_aloud.pause()  # its controls are on the book page; F5 there resumes
             if self.region_action.isChecked():
                 self.region_action.trigger()
-        if current is self.cards_page and self.browser is not None and name != "cards":
-            self.browser.save_note()
-        if name == "cards":
+        if current is self.questions_page and self.browser is not None and name != "questions":
+            self.browser.save_question()
+        if name == "questions":
             self._ensure_browser()
         elif name == "stats":
             self._ensure_stats()
         self.center.setCurrentWidget(self.pages[name])
         self.nav.set_current(name)
         self._set_book_ui(name == "book")
-        self.review_calc_action.setEnabled(name == "review")
-        self.review_chat_action.setEnabled(name == "review")
+        self.practice_calc_action.setEnabled(name == "practice")
+        self.practice_chat_action.setEnabled(name == "practice")
         # The browser's own Ctrl+Shift+O (Open in book) wins while it is on screen.
-        self.web_action.setEnabled(name != "cards")
+        self.web_action.setEnabled(name != "questions")
         if name == "book":
             self.setWindowTitle(f"{self.db.book(self.book_id)['title']} — Study Reader")
         else:
-            title = {"library": "Library", "review": "Review", "cards": "Cards", "stats": "Statistics"}.get(name)
+            title = {"library": "Library", "practice": "Practice", "questions": "Questions", "stats": "Statistics"}.get(name)
             self.setWindowTitle(f"{title} — Study Reader" if title else "Study Reader")
         if refresh:
             if name == "home":
@@ -582,14 +583,14 @@ class MainWindow(QMainWindow):
             elif name == "library":
                 self.library.refresh()
                 self.library.list.setFocus()
-            elif name == "review":
-                self.review.refresh()
-                self.review.focus()
-            elif name == "cards":
+            elif name == "practice":
+                self.practice.refresh()
+                self.practice.focus()
+            elif name == "questions":
                 self.browser.refresh()
             elif name == "stats":
                 self.stats_window.show_scope()
-        self._update_review_counts()
+        self._update_practice_counts()
 
     def show_library(self) -> None:
         self.show_page("library")
@@ -729,7 +730,7 @@ class MainWindow(QMainWindow):
         self.book_id = book["id"]
         if remember_dir:
             self.db.set_setting("last_dir", str(path).rsplit("/", 1)[0])
-        srs.learn_toc(self.db, self.book_id, doc.toc())
+        practice.learn_toc(self.db, self.book_id, doc.toc())
 
         self.find.set_document(doc)
         self._fill_toc()
@@ -757,23 +758,23 @@ class MainWindow(QMainWindow):
         self.chat.set_book(self.book_id)
         self.calc.set_book(self.book_id)
         self.notes.set_book(self.book_id)
-        self._update_review_counts()
+        self._update_practice_counts()
         self._refresh_highlights()
         return True
 
     def _learn_tocs(self) -> None:
-        """The contents of books whose quiz cards have pages but which haven't been opened since
-        cards got section tags, so those cards get them."""
+        """The contents of books whose quiz questions have pages but which haven't been opened since
+        questions got section tags, so those questions get them."""
         for row in self.db.conn.execute(
             "SELECT id, path FROM books b WHERE toc IS NULL AND EXISTS "
-            "(SELECT 1 FROM cards c WHERE c.book_id=b.id AND c.quiz IS NOT NULL AND c.page IS NOT NULL)"
+            "(SELECT 1 FROM questions q WHERE q.book_id=b.id AND q.quiz IS NOT NULL AND q.page IS NOT NULL)"
         ).fetchall():
             try:
                 doc = Document(row["path"])
             except Exception:
                 continue  # missing for now; tagged when it's next opened
             try:
-                srs.learn_toc(self.db, row["id"], doc.toc())
+                practice.learn_toc(self.db, row["id"], doc.toc())
             finally:
                 doc.close()
 
@@ -793,7 +794,7 @@ class MainWindow(QMainWindow):
     # -- highlights -----------------------------------------------------------------
     def _refresh_highlights(self) -> None:
         if self.book_id is not None:
-            # Pending snippets are marked too, so a passage stays highlighted while its question is drafted.
+            # Pending snippets are marked too, so a passage stays highlighted while its message is drafted.
             pending = [{**sn, "chat_id": None} for sn in self.chat.pending_snippets()]
             self.reader.set_highlights(self.db.book_snippets(self.book_id) + pending, self.db.notes(self.book_id))
 
@@ -850,8 +851,8 @@ class MainWindow(QMainWindow):
         page = self.reader.current_page()
         first, last, title = quiz.section_around(self.doc.toc(), page, self.doc.page_count, level)
         whole = (first, last) == (0, self.doc.page_count - 1) and level == quiz.DOCUMENT_LEVEL
-        question, chat_title = quiz.request(first, last, title, whole)
-        self._show_chat(lambda: self.chat.start_quiz(question, chat_title, first, last=last))
+        request, chat_title = quiz.request(first, last, title, whole)
+        self._show_chat(lambda: self.chat.start_quiz(request, chat_title, first, last=last))
 
     def _fill_quiz_menu(self) -> None:
         """The whole document (if short), the contents entries around the page being read, outermost
@@ -892,34 +893,34 @@ class MainWindow(QMainWindow):
         group.addAction(a)
 
     def _quiz_on(self, snippet: dict) -> None:
-        question, title = quiz.snippet_request(snippet)
-        self._show_chat(lambda: self.chat.start_quiz(question, title, snippet["page"], snippet))
+        request, title = quiz.snippet_request(snippet)
+        self._show_chat(lambda: self.chat.start_quiz(request, title, snippet["page"], snippet))
 
-    # -- review ---------------------------------------------------------------------
-    def review_everything(self, limit: str = "") -> None:
-        """Start reviewing every deck (Home's Start review): "" or a quick session's limit."""
-        self.show_page("review")
-        self.review.choose_deck(None)
-        self.review.start(limit)
-        self.review.focus()
+    # -- practice -------------------------------------------------------------------
+    def practice_everything(self, limit: str = "") -> None:
+        """Start practicing every deck (Home's Start): "" or a quick session's limit."""
+        self.show_page("practice")
+        self.practice.choose_deck(None)
+        self.practice.start(limit)
+        self.practice.focus()
 
-    def review_book(self, book_id: int) -> None:
-        """Start reviewing one book's cards on the Review page (the Library's and Home's Review)."""
-        self.show_page("review")
-        self.review.choose_book(book_id)
-        self.review.start()
-        self.review.focus()
+    def practice_book(self, book_id: int) -> None:
+        """Start practicing one book's questions on the Practice page (the Library's and Home's Practice)."""
+        self.show_page("practice")
+        self.practice.choose_book(book_id)
+        self.practice.start()
+        self.practice.focus()
 
-    def review_open_book(self) -> None:
-        """F8 / the reader's Review: the open book's cards on the Review page."""
+    def practice_open_book(self) -> None:
+        """F8 / the reader's Practice: the open book's questions on the Practice page."""
         if self.book_id is not None:
-            self.review_book(self.book_id)
+            self.practice_book(self.book_id)
 
-    def _on_cards_changed(self) -> None:
-        # A card being answered stays put; a hidden page refreshes when it is shown.
-        if self.review.card_id is None and self.review.isVisible():
-            self.review.refresh()
-        self._update_review_counts()
+    def _on_questions_changed(self) -> None:
+        # A question being answered stays put; a hidden page refreshes when it is shown.
+        if self.practice.question_id is None and self.practice.isVisible():
+            self.practice.refresh()
+        self._update_practice_counts()
         if self.home.isVisible():
             self.home.refresh()
         elif self.library.isVisible():
@@ -927,23 +928,23 @@ class MainWindow(QMainWindow):
         elif self.stats_window is not None and self.stats_window.isVisible():
             self.stats_window.refresh()
 
-    def _update_review_counts(self) -> None:
-        """The counts on the rail's Review and the reader's Review button."""
-        everything = srs.counts(self.db, None)
-        self.nav.set_review_badge(everything["due"] + everything["new"])
-        c = srs.counts(self.db, self.book_id) if self.book_id is not None else None
+    def _update_practice_counts(self) -> None:
+        """The counts on the rail's Practice and the reader's Practice button."""
+        everything = practice.counts(self.db, None)
+        self.nav.set_practice_badge(everything["due"] + everything["new"])
+        c = practice.counts(self.db, self.book_id) if self.book_id is not None else None
         waiting = c["due"] + c["new"] if c else 0
-        self.review_action.setText(f"Review · {waiting}" if waiting else "Review")
-        self.review_action.setToolTip(
-            f"Review this book's cards on the Review page (F8) · {waiting} card{'s' * (waiting != 1)} to review"
-            if c else "Review (F8)"
+        self.practice_action.setText(f"Practice · {waiting}" if waiting else "Practice")
+        self.practice_action.setToolTip(
+            f"Practice this book's questions on the Practice page (F8) · {waiting} question{'s' * (waiting != 1)} waiting"
+            if c else "Practice (F8)"
         )
 
-    def _review_chat(self, chat_id: int) -> None:
-        """A card's Open chat: the quiz chat it came from, in the chat panel beside it."""
-        if not self.review_chat_action.isChecked():
-            self.review_chat_action.trigger()
-        self.review_chat.show_chat(chat_id)
+    def _practice_chat(self, chat_id: int) -> None:
+        """A question's Open chat: the quiz chat it came from, in the chat panel beside it."""
+        if not self.practice_chat_action.isChecked():
+            self.practice_chat_action.trigger()
+        self.practice_chat.show_chat(chat_id)
 
     def _open_book_id(self, book_id: int) -> bool:
         book = self.db.book(book_id)
@@ -955,17 +956,17 @@ class MainWindow(QMainWindow):
             return True
         return self.open_book(book["path"], remember_dir=False)
 
-    # -- cards: browser, statistics, Anki --------------------------------------------
+    # -- questions: browser, statistics, Anki ----------------------------------------
     def _ensure_browser(self) -> None:
         if self.browser is None:
-            from .browser import CardBrowser
-            self.browser = CardBrowser(self.db, embedded=True, maker=self.deck_maker)
-            self.browser.cardsChanged.connect(self._on_cards_changed)
+            from .browser import QuestionBrowser
+            self.browser = QuestionBrowser(self.db, embedded=True, maker=self.deck_maker)
+            self.browser.questionsChanged.connect(self._on_questions_changed)
             self.browser.bookRequested.connect(self._book_page)
-            self.browser.reviewDeckRequested.connect(self._review_deck)
+            self.browser.practiceDeckRequested.connect(self._practice_deck)
             self.browser.statsRequested.connect(lambda deck: self.show_stats(deck or None))
             self.browser.migrateRequested.connect(self.migrate_from_anki)
-            self.cards_page.set_widget(self.browser)
+            self.questions_page.set_widget(self.browser)
 
     def make_deck(self, parent_deck: str = "") -> None:
         """Make a deck with Claude (under parent_deck, if given)."""
@@ -975,10 +976,10 @@ class MainWindow(QMainWindow):
         deck = self.db.deck(deck_id) if deck_id else None
         self.make_deck(deck["name"] if deck else "")
 
-    def _on_made_cards(self) -> None:
+    def _on_made_questions(self) -> None:
         if self.browser is not None:
-            self.browser.cards_rewritten()
-        self._on_cards_changed()
+            self.browser.questions_rewritten()
+        self._on_questions_changed()
 
     def _ensure_stats(self) -> None:
         if self.stats_window is None:
@@ -987,8 +988,8 @@ class MainWindow(QMainWindow):
             self.stats_page.set_widget(self.stats_window)
 
     def show_browser(self):
-        """The Cards page (the browser, made on first use)."""
-        self.show_page("cards")
+        """The Questions page (the browser, made on first use)."""
+        self.show_page("questions")
         return self.browser
 
     def show_stats(self, deck_id: int | None = None, book_id: int | None = None) -> None:
@@ -1003,41 +1004,42 @@ class MainWindow(QMainWindow):
             self._on_migrated(dialog.query)
 
     def _on_migrated(self, query: str) -> None:
-        self._on_cards_changed()
+        self._on_questions_changed()
         if query:
             self.show_browser().set_search(query)
         elif self.browser is not None:
             self.browser.refresh()
 
     def _book_page(self, book_id: int, page: int) -> None:
-        """A card's page (-1: none) in its book, opened if it isn't (a card's link, the browser's Open in book)."""
+        """A question's page (-1: none) in its book, opened if it isn't (a question's link, the browser's Open in
+        book)."""
         if book_id != self.book_id and not self._open_book_id(book_id):
             return
         self.show_page("book")
         if page >= 0:
             self.reader.go_to(page)
 
-    def _review_deck(self, deck_id: int, start: bool = False) -> None:
-        self.show_page("review")
-        self.review.choose_deck(deck_id)
+    def _practice_deck(self, deck_id: int, start: bool = False) -> None:
+        self.show_page("practice")
+        self.practice.choose_deck(deck_id)
         if start:
-            self.review.start()
-        self.review.focus()
+            self.practice.start()
+        self.practice.focus()
 
     def _set_retention(self) -> None:
         r, ok = QInputDialog.getDouble(
-            self, "Desired retention", "How likely you want to be to remember a card when it comes back (0.70–0.99).\n"
-            "Higher means shorter intervals and more reviews.", srs.desired_retention(self.db), 0.7, 0.99, 2)
+            self, "Desired retention", "How likely you want to be to remember a question when it comes back (0.70–0.99).\n"
+            "Higher means shorter intervals and more practice.", practice.desired_retention(self.db), 0.7, 0.99, 2)
         if ok:
-            self.db.set_setting(srs.RETENTION_SETTING, f"{r:.2f}")
-            self._on_cards_changed()
+            self.db.set_setting(practice.RETENTION_SETTING, f"{r:.2f}")
+            self._on_questions_changed()
 
     def _optimize(self) -> None:
-        n = srs.optimizable_reviews(self.db)
-        if n < srs.MIN_OPTIMIZE_REVIEWS:
+        n = practice.optimizable_attempts(self.db)
+        if n < practice.MIN_OPTIMIZE_ATTEMPTS:
             self._warn("Optimize FSRS parameters",
-                       f"There are {n} reviews to learn from; optimizing needs at least {srs.MIN_OPTIMIZE_REVIEWS} "
-                       "(reviews of cards after their first). Until then the current parameters are a better bet.",
+                       f"There are {n} attempts to learn from; optimizing needs at least {practice.MIN_OPTIMIZE_ATTEMPTS} "
+                       "(attempts at questions after their first). Until then the current parameters are a better bet.",
                        QMessageBox.Icon.Information)
             return
         if self._optimizer is not None:
@@ -1045,12 +1047,12 @@ class MainWindow(QMainWindow):
         if importlib.util.find_spec("torch") is None:  # the optimizer's; importing it here would stall the GUI
             self._warn("Optimize FSRS parameters", "The optimizer needs PyTorch, which isn't installed.")
             return
-        progress = QProgressDialog(f"Fitting FSRS to {n} reviews…", None, 0, 0, self)
+        progress = QProgressDialog(f"Fitting FSRS to {n} attempts…", None, 0, 0, self)
         progress.setWindowTitle("Optimize FSRS parameters")
         progress.setMinimumDuration(0)
         progress.setMinimumWidth(380)
         progress.show()
-        self._optimizer = _Optimizer(srs.review_logs(self.db), self)
+        self._optimizer = _Optimizer(practice.attempt_logs(self.db), self)
         self._optimizer.finished.connect(lambda weights, error: self._optimized(weights, error, progress))
         self._optimizer.start()
 
@@ -1060,55 +1062,55 @@ class MainWindow(QMainWindow):
         if error:
             self._warn("Optimize FSRS parameters", f"Optimizing failed: {error}")
             return
-        old = srs.parameters(self.db)
+        old = practice.parameters(self.db)
         changed = max(abs(a - b) for a, b in zip(old, weights)) if len(old) == len(weights) else 1
         if changed < 1e-4:
-            self._warn("Optimize FSRS parameters", "The current parameters already fit your reviews.",
+            self._warn("Optimize FSRS parameters", "The current parameters already fit your attempts.",
                        QMessageBox.Icon.Information)
             return
         answer = QMessageBox.question(
             self, "Optimize FSRS parameters",
-            "New parameters fitted to your reviews:\n\n" + ", ".join(f"{w:.4f}" for w in weights)
-            + "\n\nUse them? Cards keep their memory state; future intervals follow the new parameters.")
+            "New parameters fitted to your attempts:\n\n" + ", ".join(f"{w:.4f}" for w in weights)
+            + "\n\nUse them? Questions keep their memory state; future intervals follow the new parameters.")
         if answer == QMessageBox.StandardButton.Yes:
             try:
-                srs.set_parameters(self.db, weights)
+                practice.set_parameters(self.db, weights)
             except ValueError as e:
                 self._warn("Optimize FSRS parameters", f"These parameters can't be used: {e}")
                 return
-            self._on_cards_changed()
+            self._on_questions_changed()
 
     def _reset_parameters(self) -> None:
         if QMessageBox.question(self, "FSRS parameters", "Go back to FSRS's default parameters?") \
                 == QMessageBox.StandardButton.Yes:
-            srs.set_parameters(self.db, None)
-            self._on_cards_changed()
+            practice.set_parameters(self.db, None)
+            self._on_questions_changed()
 
     def _set_new_per_day(self) -> None:
         n, ok = QInputDialog.getInt(
-            self, "New review cards per day", "Cards never reviewed before, introduced per day across all books:",
-            srs.new_per_day(self.db), 0, 9999,
+            self, "New questions per day", "Questions never practiced before, introduced per day across all books:",
+            practice.new_per_day(self.db), 0, 9999,
         )
         if ok:
-            self.db.set_setting(srs.NEW_PER_DAY_SETTING, str(n))
-            self._on_cards_changed()
+            self.db.set_setting(practice.NEW_PER_DAY_SETTING, str(n))
+            self._on_questions_changed()
 
     def _set_rewards(self, on: bool) -> None:
         self.db.set_setting(gamify.ENABLED_SETTING, "1" if on else "0")
-        self._on_cards_changed()
+        self._on_questions_changed()
 
     def _set_variants(self, on: bool) -> None:
         self.db.set_setting(variants.ENABLED_SETTING, "1" if on else "0")
-        self._on_cards_changed()
+        self._on_questions_changed()
 
     def _set_daily_goal(self) -> None:
         n, ok = QInputDialog.getInt(
-            self, "Daily goal", "Reviews a day that meet the daily goal (reviewing everything due meets it too):",
+            self, "Daily goal", "Questions answered a day that meet the daily goal (practicing everything due meets it too):",
             gamify.daily_goal(self.db), 1, 9999,
         )
         if ok:
             self.db.set_setting(gamify.GOAL_SETTING, str(n))
-            self._on_cards_changed()
+            self._on_questions_changed()
 
     def _show_chat(self, then) -> None:
         if not self.chat_action.isChecked():
@@ -1170,9 +1172,9 @@ class MainWindow(QMainWindow):
         self.read_aloud.shutdown()
         self._save_position()
         if self.browser is not None:
-            self.browser.save_note()
-        self.phone_sync.sync()  # what was reviewed here, for the phone
-        for panel in (self.chat, self.review_chat):
+            self.browser.save_question()
+        self.phone_sync.sync()  # what was practiced here, for the phone
+        for panel in (self.chat, self.practice_chat):
             panel.close_throwaway()
         self.worker.shutdown()
         super().closeEvent(event)
@@ -1206,7 +1208,7 @@ class _Optimizer(QObject):
 
     def _run(self) -> None:
         try:
-            self.finished.emit(srs.fit(self.logs), "")
+            self.finished.emit(practice.fit(self.logs), "")
         except Exception as e:  # noqa: BLE001 - reported to the user
             self.finished.emit([], str(e) or type(e).__name__)
 

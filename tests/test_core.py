@@ -95,8 +95,8 @@ def test_old_database_gets_chat_model_column(tmp_path):
 
 
 
-def test_book_review_panel_settings_migrate(tmp_path):
-    """The book's Review panel is gone: books that had it open show chats, or the calculator that sat under it."""
+def test_old_book_practice_panel_settings_migrate(tmp_path):
+    """The book's own practice panel (stored as "review") is gone: books that had it open show chats, or the calculator that sat under it."""
     path = tmp_path / "t.db"
     db = Database(path)
     for i, panel in enumerate(("review", "calc+review", "notes", ""), 1):
@@ -397,22 +397,22 @@ def test_edit_and_regenerate_branch_the_chat(chat_panel):
     assert worker.jobs[1].chat_session_id == "s1" and worker.jobs[1].resume_at is None
     q1, a1, q2, a2 = db.messages(chat)
 
-    # Regenerate the last reply: forks at the reply before its question.
+    # Regenerate the last reply: forks at the reply before its message.
     panel.regenerate(a2["id"])
     job = worker.jobs[-1]
-    assert (job.question, job.chat_session_id, job.resume_at) == ("q2", "s1", "u1")
+    assert (job.message, job.chat_session_id, job.resume_at) == ("q2", "s1", "u1")
     assert job.history == [("user", "q1"), ("assistant", "a1")]
     assert [m["text"] for m in db.messages(chat)] == ["q1", "a1", "q2"] and db.chat(chat)["session_id"] is None
     worker.done.emit(chat, "s3", "a3", "u3")
 
-    # Edit the first question: its snippet comes along, the draft is set aside, and sending starts over.
+    # Edit the first message: its snippet comes along, the draft is set aside, and sending starts over.
     panel.input.setPlainText("draft")
     panel.edit_message(q1["id"])
     assert panel.input.toPlainText() == "q1" and len(panel._pending) == 1 and panel.pending_snippets() == []
     panel.input.setPlainText("q1 again")
     panel.send()
     job = worker.jobs[-1]
-    assert (job.question, job.chat_session_id, job.resume_at, job.history) == ("q1 again", None, None, [])
+    assert (job.message, job.chat_session_id, job.resume_at, job.history) == ("q1 again", None, None, [])
     assert [s.text for s in job.snippets] == ["quote"]
     msgs = db.messages(chat)
     assert [m["text"] for m in msgs] == ["q1 again"] and msgs[0]["snippets"][0]["text"] == "quote"
@@ -607,7 +607,7 @@ def test_clean_title():
 
 
 def run_job(service, events, **kw):
-    asyncio.run(service.ask(cs.Job(question="Q?", **kw)))
+    asyncio.run(service.ask(cs.Job(message="Q?", **kw)))
     return events
 
 

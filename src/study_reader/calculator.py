@@ -273,8 +273,8 @@ class _Bridge(QObject):
 
 class CalculatorPanel(QWidget):
     """Header and hint in Qt; history and the math-field input in calculator.html. There are two:
-    the open book's, and the Review page's (shared=True), which shows the history of the book of
-    the card under review and, for a card with no book, a shared one (book_id None). closable: a
+    the open book's, and the Practice page's (shared=True), which shows the history of the book of
+    the question being practiced and, for a question with no book, a shared one (book_id None). closable: a
     button in the header asks to hide it (closeRequested)."""
 
     historyChanged = Signal(object)  # the book id (None: the shared history) whose saved history changed
@@ -387,10 +387,10 @@ class CalculatorPanel(QWidget):
         return self.book_id is not None or self.shared
 
     def set_book(self, book_id: int | None) -> None:
-        """Show a book's history (None: none, or for the Review page's, the shared one); the input clears."""
+        """Show a book's history (None: none, or for the Practice page's, the shared one); the input clears."""
         self.book_id = book_id
         self.clear_btn.setToolTip("Clear this book's calculator history" if book_id is not None
-                                  else "Clear the calculator history of cards with no book")
+                                  else "Clear the calculator history of questions with no book")
         self._load()
         self._set_input("")
 

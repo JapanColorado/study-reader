@@ -1,11 +1,11 @@
-"""Anki-style card search for the card browser: a query like `deck:Physics tag:exam -is:new`
-compiled to SQL over cards (c), their fields and tags (n, card_notes), decks (d) and books (b).
-Qt-free.
+"""Anki-style question search for the question browser: a query like `deck:Physics tag:exam -is:new`
+compiled to SQL over questions (c), their groups' fields and tags (n, question_groups), decks (d) and
+books (b). Qt-free.
 
 Terms are ANDed unless joined by OR; parentheses group, and `-` negates a term or group.
-Bare words search the cards' text (`*` any run, `_` one character). `type:` takes a card type
-(cardmodel.TYPES; `type:flashcard` is only one-sided flashcards, `type:reversed` the others);
-see KEYS for the rest."""
+Bare words search the questions' text (`*` any run, `_` one character). `type:` takes a question
+type (question_model.TYPES; `type:self_check` is only one-sided self-checks, `type:both_ways` the
+others) or a name it had before (TYPE_ALIASES); see KEYS for the rest."""
 
 from __future__ import annotations
 
@@ -13,17 +13,19 @@ import re
 import time
 from functools import lru_cache
 
-from . import cardmodel, srs
+from . import question_model, practice
 
-FROM = ("cards c JOIN card_notes n ON n.id=c.note_id JOIN decks d ON d.id=c.deck_id "
+FROM = ("questions c JOIN question_groups n ON n.id=c.group_id JOIN decks d ON d.id=c.deck_id "
         "LEFT JOIN books b ON b.id=c.book_id")
 
 KEYS = ("deck", "tag", "type", "note", "book", "flag", "is", "cid", "nid", "added", "edited", "rated",
         "introduced", "prop", "re")
-# Older names searches may still use: `note:` was what `type:` is, with the kinds basic, reverse
-# and quiz (any question that is answered), and written answers were free responses.
-TYPE_ALIASES = {"basic": ("flashcard",), "reverse": ("reversed",), "quiz": cardmodel.QUESTION_TYPES,
-                "free": ("written",)}
+# Older names searches may still use: the types' names before (question_model.KIND_ALIASES:
+# flashcard, reversed, cloze, occlusion, numeric, written, and before those basic, reverse and free),
+# quiz for any question that is answered, and `note:` for `type:`. Spellings with a hyphen or a
+# space work too (self-check, fill-in).
+TYPE_ALIASES = {**{old: (new,) for old, new in question_model.KIND_ALIASES.items()},
+                "quiz": question_model.QUESTION_TYPES}
 PROPS = ("ivl", "due", "reps", "lapses", "s", "d", "r")
 PROP = re.compile(r"^(\w+)(<=|>=|!=|=|<|>)(-?\d+(?:\.\d+)?)$")
 
@@ -32,17 +34,17 @@ SORTS: dict[str, str] = {
     "question": "n.sort_text COLLATE NOCASE",
     "deck": "d.name COLLATE NOCASE",
     "type": "n.kind",
-    # Scheduled cards by due date, then new ones in the order they were added.
+    # Scheduled questions by due date, then new ones in the order they were added.
     "due": "CASE WHEN c.stage=0 THEN 1e12 + c.created_at ELSE c.due END",
-    "interval": "CASE WHEN c.stage>0 THEN c.due - c.last_review END",
+    "interval": "CASE WHEN c.stage>0 THEN c.due - c.last_attempt END",
     "stability": "c.stability",
     "difficulty": "c.difficulty",
-    "retrievability": "retrievability(c.stability, c.last_review, ?)",
+    "retrievability": "retrievability(c.stability, c.last_attempt, ?)",
     "reps": "c.reps",
     "lapses": "c.lapses",
     "added": "c.created_at",
     "modified": "MAX(c.updated_at, n.updated_at)",
-    "reviewed": "c.last_review",
+    "attempted": "c.last_attempt",  # the browser's Last attempt column
     "tags": "n.tags COLLATE NOCASE",
     "book": "b.title COLLATE NOCASE",
 }
@@ -65,7 +67,7 @@ def _regexp(pattern: str, text) -> bool:
 def register_functions(conn, decay: float) -> None:
     """The SQL functions compiled queries use: REGEXP, and retrievability on FSRS-6's forgetting curve."""
     conn.create_function("regexp", 2, _regexp, deterministic=True)
-    conn.create_function("retrievability", 3, lambda s, last, now: srs.recall(s, last, now, decay), deterministic=True)
+    conn.create_function("retrievability", 3, lambda s, last, now: practice.recall(s, last, now, decay), deterministic=True)
 
 
 # -- reading a query -----------------------------------------------------------------------
@@ -167,7 +169,7 @@ class _Parser:
     def since(self, value: str, key: str) -> float:
         if not value.isdigit() or int(value) < 1:
             raise SearchError(f"{key}: needs a number of days, 1 or more (1 = today).")
-        return srs.day_start(self.now) - (int(value) - 1) * 86400
+        return practice.day_start(self.now) - (int(value) - 1) * 86400
 
     def term(self, text: str) -> str:
         m = re.match(r"^([A-Za-z_]+):(.*)$", text, re.DOTALL)
@@ -200,10 +202,10 @@ class _Parser:
         return f"n.tags REGEXP {self.arg(pattern)}"
 
     def _type(self, value: str) -> str:
-        value = value.lower()
-        types = TYPE_ALIASES.get(value) or ((value,) if value in cardmodel.TYPES else None)
+        value = value.lower().replace("-", "_").replace(" ", "_")
+        types = TYPE_ALIASES.get(value) or ((value,) if value in question_model.TYPES else None)
         if types is None:
-            raise SearchError(f"type: is one of {', '.join(cardmodel.TYPES)}.")
+            raise SearchError(f"type: is one of {', '.join(question_model.TYPES)}.")
         if len(types) == 1:
             return f"n.kind={self.arg(types[0])}"
         return f"n.kind IN ({', '.join(self.arg(t) for t in types)})"
@@ -228,14 +230,14 @@ class _Parser:
             return "c.stage=0"
         if value == "learn":
             return "c.stage IN (1,3)"
-        if value == "review":
+        if value in ("learned", "review"):  # review: the old name
             return "c.stage IN (2,3)"
         if value == "suspended":
             return "c.suspended=1"
         if value == "due":
-            self.args += [srs.next_day(self.now), self.now]
-            return f"({srs.due_sql('c.')})"
-        raise SearchError("is: is one of new, learn, review, due, suspended.")
+            self.args += [practice.next_day(self.now), self.now]
+            return f"({practice.due_sql('c.')})"
+        raise SearchError("is: is one of new, learn, learned, due, suspended.")
 
     def _ids(self, value: str, key: str, column: str) -> str:
         try:
@@ -250,7 +252,7 @@ class _Parser:
         return self._ids(value, "cid", "c.id")
 
     def _nid(self, value: str) -> str:
-        return self._ids(value, "nid", "c.note_id")
+        return self._ids(value, "nid", "c.group_id")
 
     def _added(self, value: str) -> str:
         return f"c.created_at>={self.arg(self.since(value, 'added'))}"
@@ -260,15 +262,15 @@ class _Parser:
 
     def _rated(self, value: str) -> str:
         days, _, rating = value.partition(":")
-        sql = f"EXISTS (SELECT 1 FROM reviews r WHERE r.card_id=c.id AND r.reviewed_at>={self.arg(self.since(days, 'rated'))}"
+        sql = f"EXISTS (SELECT 1 FROM attempts r WHERE r.question_id=c.id AND r.attempted_at>={self.arg(self.since(days, 'rated'))}"
         if rating:
             if rating not in ("1", "2", "3", "4"):
-                raise SearchError("rated:days:rating takes a rating from 1 (again) to 4 (easy).")
+                raise SearchError("rated:days:rating takes a rating from 1 (missed) to 4 (easy).")
             sql += f" AND r.rating={self.arg(int(rating))}"
         return sql + ")"
 
     def _introduced(self, value: str) -> str:
-        return (f"(SELECT MIN(r.reviewed_at) FROM reviews r WHERE r.card_id=c.id)>="
+        return (f"(SELECT MIN(r.attempted_at) FROM attempts r WHERE r.question_id=c.id)>="
                 f"{self.arg(self.since(value, 'introduced'))}")
 
     def _prop(self, value: str) -> str:
@@ -279,10 +281,10 @@ class _Parser:
         if prop == "due":
             return self._due_days(op, number)
         if prop == "r":
-            expr = f"retrievability(c.stability, c.last_review, {self.arg(self.now)})"
+            expr = f"retrievability(c.stability, c.last_attempt, {self.arg(self.now)})"
         else:
             expr = {
-                "ivl": "ROUND((c.due - c.last_review) / 86400.0)",
+                "ivl": "ROUND((c.due - c.last_attempt) / 86400.0)",
                 "reps": "c.reps",
                 "lapses": "c.lapses",
                 "s": "c.stability",
@@ -292,8 +294,8 @@ class _Parser:
         return f"(c.stage>0 AND {sql})" if prop == "ivl" else sql
 
     def _due_days(self, op: str, number: float) -> str:
-        """Due in whole days from today's start (0 today, -1 yesterday), scheduled cards only."""
-        start = srs.day_start(self.now)
+        """Due in whole days from today's start (0 today, -1 yesterday), scheduled questions only."""
+        start = practice.day_start(self.now)
         lo, hi = number, number + 1
 
         def at_least(v: float) -> str:
@@ -349,11 +351,11 @@ def compile(query: str, now: float | None = None) -> tuple[str, list]:
     return parser.parse(), parser.args
 
 
-def card_ids(db, query: str, sort: str = "added", descending: bool = False, now: float | None = None) -> list[int]:
-    """The ids of the cards a query finds, sorted by a browser column (SORTS)."""
+def question_ids(db, query: str, sort: str = "added", descending: bool = False, now: float | None = None) -> list[int]:
+    """The ids of the questions a query finds, sorted by a browser column (SORTS)."""
     now = time.time() if now is None else now
     where, args = compile(query, now)
-    register_functions(db.conn, srs.decay(db))
+    register_functions(db.conn, practice.decay(db))
     order = SORTS.get(sort, SORTS["added"])
     order_args = [now] * order.count("?")
     direction = "DESC" if descending else "ASC"

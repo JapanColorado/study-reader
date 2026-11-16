@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout,
 )
 
-from . import phone_sync, srs
+from . import phone_sync, practice
 from .db import Database
 
 INTERVAL_MS = 2 * 60_000
@@ -23,10 +23,10 @@ class PhoneSync(QObject):
     synced = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, db: Database, after_review=None, parent=None):
+    def __init__(self, db: Database, after_attempt=None, parent=None):
         super().__init__(parent)
         self.db = db
-        self.after_review = after_review  # called with each card id the phone reviewed (new numbers)
+        self.after_attempt = after_attempt  # called with each question id the phone attempted (new numbers)
         self.last_error = ""
         self._timer = QTimer(self, interval=INTERVAL_MS)
         self._timer.timeout.connect(self.sync)
@@ -47,9 +47,9 @@ class PhoneSync(QObject):
             self.failed.emit(self.last_error)
             return None
         self.last_error = ""
-        if self.after_review is not None:
-            for card_id in dict.fromkeys(result.reviewed):
-                self.after_review(card_id)
+        if self.after_attempt is not None:
+            for question_id in dict.fromkeys(result.attempted):
+                self.after_attempt(question_id)
         if result.applied or result.exported:
             self.synced.emit(result)
         return result
@@ -64,9 +64,9 @@ class PhoneSyncDialog(QDialog):
         self.setMinimumWidth(520)
         layout = QVBoxLayout(self)
         intro = QLabel(
-            "Review cards on your phone with the Study Reader Review app. Both share a folder that "
-            "<a href='https://syncthing.net'>Syncthing</a> keeps in step: this computer writes your cards "
-            "into it, and the phone writes back what you reviewed, which is applied here. Pick the folder "
+            "Practice questions on your phone with the Study Practice app. Both share a folder that "
+            "<a href='https://syncthing.net'>Syncthing</a> keeps in step: this computer writes your questions "
+            "into it, and the phone writes back what you practiced, which is applied here. Pick the folder "
             "Syncthing shares with the phone (an empty folder of its own is best), then choose the same folder "
             "in the app."
         )
@@ -124,10 +124,10 @@ class PhoneSyncDialog(QDialog):
             lines.append(f"<span style='color:#c0392b'>{self.sync.last_error}</span>")
         if s["last"]:
             ago = time.time() - s["last"]
-            lines.append("Last synced just now." if ago < 60 else f"Last synced {srs.format_interval(ago)} ago.")
+            lines.append("Last synced just now." if ago < 60 else f"Last synced {practice.format_interval(ago)} ago.")
         if result is not None:
             lines.append(f"Just now: {result.applied} change{'s' * (result.applied != 1)} from the phone applied"
-                         + (", cards written for the phone." if result.exported else "."))
+                         + (", questions written for the phone." if result.exported else "."))
             lines += [f"Couldn't read yet: {e}" for e in result.errors[:3]]
         lines.append("Phones that have synced: " + (str(s["phones"]) if s["phones"] else "none yet") + ".")
         self.status.setText("<br>".join(lines))

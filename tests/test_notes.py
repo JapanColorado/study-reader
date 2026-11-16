@@ -89,7 +89,7 @@ def test_taking_a_note_highlights_it(pdf_path, tmp_path, monkeypatch):
 
 
 def test_ctrl_enter_asks_only_from_the_reader(pdf_path, tmp_path, monkeypatch):
-    """Ctrl+Enter sends the selection only while the reader has focus, so the review, quiz and
+    """Ctrl+Enter sends the selection only while the reader has focus, so the practice, quiz and
     note pages (and the composer) still get it."""
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))

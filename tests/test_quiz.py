@@ -16,7 +16,7 @@ QUIZ = r'''Here's a quiz.
   {"type": "choice", "question": "How many legs?", "choices": ["Six", "Seven", "$\frac{15}{2}$"], "answer": 1,
    "page": 1, "explanation": "Page 1 says seven."},
   {"type": "truefalse", "question": "Store it near a window?", "answer": false},
-  {"type": "numeric", "question": "Rinse time in $\theta$ units?", "answer": "41", "unit": "s"},
+  {"type": "calculation", "question": "Rinse time in $\theta$ units?", "answer": "41", "unit": "s"},
   {"type": "free", "question": "Why rinse?", "answer": "To calibrate.", "rubric": "mentions tea"}
 ]}
 ```'''
@@ -31,8 +31,8 @@ def test_split_replaces_fences_and_forgives_latex_backslashes():
     text, quizzes = quiz.split(QUIZ)
     assert "```quiz\n#0\n```" in text and "questions" not in text and text.startswith("Here's a quiz.")
     (q,) = quizzes
-    # "free" (in older replies) is a written answer.
-    assert q["title"] == "Zorblatts" and [x["type"] for x in q["questions"]] == ["choice", "truefalse", "numeric", "written"]
+    # "free" (in older replies) is a short answer.
+    assert q["title"] == "Zorblatts" and [x["type"] for x in q["questions"]] == ["choice", "truefalse", "calculation", "short_answer"]
     # \frac and \theta would otherwise be a form feed and a tab.
     assert q["questions"][0]["choices"][2] == r"$\frac{15}{2}$" and r"$\theta$" in q["questions"][2]["question"]
     assert q["questions"][0]["page"] == 1 and q["questions"][1]["page"] is None
@@ -44,30 +44,36 @@ def test_split_replaces_fences_and_forgives_latex_backslashes():
 def test_unreadable_quiz_keeps_its_source():
     text, (q,) = quiz.split("```quiz Broken\n{\"questions\": [{\"type\": \"essay\", \"question\": \"x\"}]}\n```")
     assert text == "```quiz\n#0\n```" and q["title"] == "Broken" and "essay" in q["error"] and "essay" in q["raw"]
-    _, (q,) = quiz.split('```quiz\n[{"type": "written", "question": "Why?", "rubric": ["tea", "static"]}]\n```')
+    _, (q,) = quiz.split('```quiz\n[{"type": "short_answer", "question": "Why?", "rubric": ["tea", "static"]}]\n```')
     assert q["questions"][0]["rubric"] == "- tea\n- static"
     _, (q,) = quiz.split("```quiz\nnot json\n```")
     assert "error" in q and q["raw"] == "not json"
     assert quiz.split("```python\nprint(1)\n```") == ("```python\nprint(1)\n```", [])
 
 
+def test_old_type_names_still_parse():
+    old = [{"type": t, "question": "Q?", "answer": "1"} for t in ("flashcard", "numeric", "written", "free", "self-check")]
+    _, (q,) = quiz.split("```quiz\n" + json.dumps(old) + "\n```")
+    assert [x["type"] for x in q["questions"]] == ["self_check", "calculation", "short_answer", "short_answer", "self_check"]
+
+
 # -- grading ----------------------------------------------------------------------------
 def test_local_grading():
-    choice, tf, numeric, written = quiz.quizzes(QUIZ)[0]["questions"]
+    choice, tf, calculation, _ = quiz.quizzes(QUIZ)[0]["questions"]
     assert quiz.grade(choice, {"choice": 1}) == "correct" and quiz.grade(choice, {"choice": 0}) == "incorrect"
     assert quiz.grade(tf, {"value": False}) == "correct" and quiz.grade(tf, {"value": True}) == "incorrect"
-    assert quiz.grade(numeric, {"latex": "41"}) == "correct"
-    assert quiz.grade(numeric, {"latex": r"\frac{82}{2}"}) == "correct"
-    assert quiz.grade(numeric, {"latex": "40.7"}) == "correct"  # within 1%
-    assert quiz.grade(numeric, {"latex": "40"}) == "incorrect"
-    assert quiz.grade({**numeric, "tolerance": 1.5}, {"latex": "40"}) == "correct"
-    root = {"type": "numeric", "answer": "sqrt(2)/2"}
+    assert quiz.grade(calculation, {"latex": "41"}) == "correct"
+    assert quiz.grade(calculation, {"latex": r"\frac{82}{2}"}) == "correct"
+    assert quiz.grade(calculation, {"latex": "40.7"}) == "correct"  # within 1%
+    assert quiz.grade(calculation, {"latex": "40"}) == "incorrect"
+    assert quiz.grade({**calculation, "tolerance": 1.5}, {"latex": "40"}) == "correct"
+    root = {"type": "calculation", "answer": "sqrt(2)/2"}
     assert quiz.grade(root, {"latex": r"\frac{\sqrt{2}}{2}"}) == "correct"
     assert quiz.grade(root, {"latex": "0.7071"}) == "correct"
     with pytest.raises(quiz.AnswerError):
-        quiz.grade(numeric, {"latex": r"\frac{1}{"})
+        quiz.grade(calculation, {"latex": r"\frac{1}{"})
     with pytest.raises(quiz.AnswerError):
-        quiz.grade(numeric, {"latex": ""})
+        quiz.grade(calculation, {"latex": ""})
 
 
 def test_grade_reply_parsing():
@@ -133,7 +139,7 @@ def test_grading_forks_from_the_quiz_reply(monkeypatch, tmp_path, pdf_path):
     fake.uuids.add("quiz-reply")
     events = []
     svc = cs.ChatService(lambda *a: events.append(a), tmp_path)
-    job = cs.Job(chat_id=1, book=book(pdf_path, "base", "full"), chat_session_id="chat", question="Grade it",
+    job = cs.Job(chat_id=1, book=book(pdf_path, "base", "full"), chat_session_id="chat", message="Grade it",
                  resume_at="quiz-reply", history=[("user", "Quiz me"), ("assistant", "quiz")], detached=True)
     asyncio.run(svc.grade(job, 9))
     assert fake.calls == [{"text": "Grade it", "resume": "chat", "fork": True, "resume_at": "quiz-reply"}]
@@ -141,7 +147,7 @@ def test_grading_forks_from_the_quiz_reply(monkeypatch, tmp_path, pdf_path):
 
     # Without a branch point it still forks rather than continuing the chat's session.
     asyncio.run(svc.grade(cs.Job(chat_id=1, book=book(pdf_path, "base", "full"), chat_session_id="chat",
-                                 question="Grade it", detached=True), 10))
+                                 message="Grade it", detached=True), 10))
     assert fake.calls[-1]["resume"] == "chat" and fake.calls[-1]["fork"] is True
 
     # A pruned chat session: fork from the book and replay the chat up to the quiz.
@@ -158,7 +164,7 @@ def test_answering_a_quiz_in_the_chat_panel(chat_panel):
     panel.send()
     chat = panel.chat_id
     (job,) = worker.jobs
-    assert job.question == "Quiz me on page 2." and job.page == 1 and job.context == ""
+    assert job.message == "Quiz me on page 2." and job.page == 1 and job.context == ""
     assert db.chat(chat)["title"] == "Quiz: page 2"
     worker.done.emit(chat, "s1", QUIZ, "u1")
     msg = db.messages(chat)[1]["id"]
@@ -171,7 +177,7 @@ def test_answering_a_quiz_in_the_chat_panel(chat_panel):
 
     grading, answer_id = worker.gradings[-1]
     assert grading.detached and (grading.chat_session_id, grading.resume_at) == ("s1", "u1")
-    assert "Because tea." in grading.question and [r for r, _ in grading.history] == ["user", "assistant"]
+    assert "Because tea." in grading.message and [r for r, _ in grading.history] == ["user", "assistant"]
     worker.graded.emit(answer_id, '{"verdict": "partial", "feedback": "Say why tea."}')
     row = db.quiz_answer(answer_id)
     assert (row["status"], row["verdict"], row["feedback"]) == ("done", "partial", "Say why tea.")
@@ -200,11 +206,11 @@ def test_answering_a_quiz_in_the_chat_panel(chat_panel):
 def test_quiz_on_a_selected_passage(chat_panel):
     panel, worker, db, book_id = chat_panel
     snippet = {"kind": "text", "page": 2, "text": "Never store a zorblatt\nnear a window.", "rects": [], "png": None}
-    question, title = quiz.snippet_request(snippet)
-    panel.start_quiz(question, title, snippet["page"], snippet)
+    message, title = quiz.snippet_request(snippet)
+    panel.start_quiz(message, title, snippet["page"], snippet)
     panel.send()
     (job,) = worker.jobs
-    assert job.question == "Quiz me on this passage" and [s.text for s in job.snippets] == [snippet["text"]]
+    assert job.message == "Quiz me on this passage" and [s.text for s in job.snippets] == [snippet["text"]]
     assert db.chat(panel.chat_id)["title"] == "Quiz: Never store a zorblatt near a window."
     assert db.messages(panel.chat_id)[0]["snippets"][0]["page"] == 2
 
@@ -233,12 +239,12 @@ def test_quiz_me_drafts_in_the_composer_until_sent(chat_panel):
     panel.input.insertPlainText(", only derivations")
     panel.send()
     (job,) = worker.jobs
-    assert job.question == "Quiz me on the section “6.4 Energy” (pages 12–15), only derivations" and job.page == 11
+    assert job.message == "Quiz me on the section “6.4 Energy” (pages 12–15), only derivations" and job.page == 11
     chat = db.chat(panel.chat_id)
     assert chat["title"] == "Quiz: 6.4 Energy" and panel.chat_id not in panel._untitled
     (m,) = db.messages(panel.chat_id)
     assert (m["page_from"], m["page_to"]) == (11, 14)
-    # The composer gets back what it held, and the next send is an ordinary question.
+    # The composer gets back what it held, and the next send is an ordinary message.
     assert panel._quiz is None and panel.input.toPlainText() == "half a question" and panel.chips.count() == 0
 
 
@@ -247,11 +253,11 @@ def test_quiz_me_with_the_request_deleted_or_empty(chat_panel):
     panel.start_quiz("Quiz me on page 2", "Quiz: page 2", 1)
     panel.input.setPlainText("harder please")
     panel.send()
-    assert worker.jobs[-1].question == "Quiz me on page 2\n\nharder please"
+    assert worker.jobs[-1].message == "Quiz me on page 2\n\nharder please"
     panel.start_quiz("Quiz me on page 3", "Quiz: page 3", 2)
     panel.input.clear()
     panel.send()
-    assert worker.jobs[-1].question == "Quiz me on page 3" and db.chat(panel.chat_id)["title"] == "Quiz: page 3"
+    assert worker.jobs[-1].message == "Quiz me on page 3" and db.chat(panel.chat_id)["title"] == "Quiz: page 3"
 
 
 def test_removing_the_quiz_chip_cancels_it(chat_panel):
@@ -268,7 +274,7 @@ def test_removing_the_quiz_chip_cancels_it(chat_panel):
     assert panel._quiz is None and marks == [1, 0] and panel.input.toPlainText() == "" and panel.chips.count() == 0
     panel.input.setPlainText("What is a zorblatt?")
     panel.send()
-    assert worker.jobs[-1].question == "What is a zorblatt?" and worker.jobs[-1].snippets == []
+    assert worker.jobs[-1].message == "What is a zorblatt?" and worker.jobs[-1].snippets == []
     assert db.chat(panel.chat_id)["title"] == "What is a zorblatt?"  # an ordinary chat, named later
 
     # Leaving for another chat (or a new one) cancels a drafted quiz too, leaving no empty chat.
@@ -291,7 +297,7 @@ def test_quiz_me_on_a_reply_drafts_in_the_same_chat(chat_panel):
     panel.input.insertPlainText(" with three questions")
     panel.send()
     job = worker.jobs[-1]
-    assert job.chat_id == chat and job.question == "Quiz me on your last reply with three questions"
+    assert job.chat_id == chat and job.message == "Quiz me on your last reply with three questions"
     assert [m["role"] for m in db.messages(chat)] == ["user", "assistant", "user"]
     assert db.chat(chat)["title"] == "Explain friction."
 

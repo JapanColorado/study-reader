@@ -87,8 +87,8 @@ def chat_panel(tmp_path, monkeypatch):
         def submit_grade(self, job, answer_id):
             self.gradings.append((job, answer_id))
 
-        def submit_variant(self, job, card_id):
-            self.variants.append((job, card_id))
+        def submit_variant(self, job, question_id):
+            self.variants.append((job, question_id))
 
         def submit_title(self, chat_id, question, passage, reply):
             self.titles.append((chat_id, question, passage, reply))

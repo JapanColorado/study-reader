@@ -1,5 +1,5 @@
-// Review progress widgets shared by home.html and review.html: the rewards row (gamify.py's
-// level, streak and daily goal), the calendar of reviews per day, and the forecast of cards due.
+// Practice progress widgets shared by home.html and practice.html: the rewards row (gamify.py's
+// level, streak and daily goal), the calendar of attempts per day, and the forecast of questions due.
 // Needs esc() (markdown.js or the page's own).
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -12,30 +12,30 @@ function setTheme(colors, dark) {
   for (const [k, v] of Object.entries(colors)) root.style.setProperty(`--${k.replace(/_/g, "-")}`, v);
 }
 
-// Level and XP, the streak and the daily goal; a nudge under them when the streak needs a card.
+// Level and XP, the streak and the daily goal; a nudge under them when the streak needs a question.
 function playerHtml(g) {
   const r = 17, C = 2 * Math.PI * r, frac = Math.min(g.today / g.goal, 1);
   const met = g.goal_met;
   let html = `<div class="player">`
-    + `<div class="lvl" title="${comma(g.xp)} XP in all: 10 a card, 15 a new one, times your combo multiplier">`
+    + `<div class="lvl" title="${comma(g.xp)} XP in all: 10 a question, 15 a new one, times your combo multiplier">`
     + `<div class="top"><span class="badge">Lv ${g.level}</span><span class="title">${esc(g.title)}</span></div>`
     + `<div class="xpbar"><i style="width:${(100 * g.into / g.need).toFixed(1)}%"></i></div>`
     + `<div class="l">${comma(g.into)} / ${comma(g.need)} XP to level ${g.level + 1}</div></div>`
-    + `<div class="streak${g.streak ? "" : " off"}" title="Days in a row with at least one review. A streak freeze `
+    + `<div class="streak${g.streak ? "" : " off"}" title="Days in a row with at least one attempt. A streak freeze `
     + `covers a missed day; you earn one every ${g.freeze_every} days of streak (at most 2).">`
     + `<span class="flame">🔥</span><div><div class="n">${g.streak}</div>`
     + `<div class="l">day streak${g.freezes ? ` · ${"❄️".repeat(g.freezes)}` : ""}</div></div></div>`
-    + `<div class="ring" title="Daily goal: ${g.goal} reviews (change it under Settings › Review settings). Reviewing everything due meets it too.">`
+    + `<div class="ring" title="Daily goal: ${g.goal} attempts (change it under Settings › Practice settings). Practicing everything due meets it too.">`
     + `<svg viewBox="0 0 42 42"><circle class="track" cx="21" cy="21" r="${r}"/>`
     + `<circle class="fill" cx="21" cy="21" r="${r}" stroke-dasharray="${C.toFixed(2)}" stroke-dashoffset="${(C * (1 - (met ? 1 : frac))).toFixed(2)}"/></svg>`
     + `<div><div class="n">${g.today}<small> / ${g.goal}</small></div><div class="l">${met ? "goal met ✓" : "today's goal"}</div></div></div>`
     + `</div>`;
-  if (g.at_risk) html += `<div class="nudge" style="margin-top:10px">Keep your ${g.streak}-day streak going: even one card today counts.</div>`;
-  else if (g.lapsed) html += `<div class="nudge" style="margin-top:10px">A fresh start: one card begins a new streak.</div>`;
+  if (g.at_risk) html += `<div class="nudge" style="margin-top:10px">Keep your ${g.streak}-day streak going: even one question today counts.</div>`;
+  else if (g.lapsed) html += `<div class="nudge" style="margin-top:10px">A fresh start: one question begins a new streak.</div>`;
   return html;
 }
 
-// Reviews per day, a column a week; days a streak freeze covered show a snowflake.
+// Attempts per day, a column a week; days a streak freeze covered show a snowflake.
 // opts.size: a cell's side in pixels; opts.fit: show only the latest weeks that fit the box.
 function heatmap(el, heat, opts = {}) {
   const counts = Object.fromEntries(heat.days.map(d => [d.date, d.count]));
@@ -76,20 +76,20 @@ function heatmap(el, heat, opts = {}) {
       const opacity = n ? (0.3 + 0.7 * Math.sqrt(n / max)).toFixed(2) : 0.55;
       const style = `fill:var(${n ? "--accent" : "--border"})${iso === heat.end ? ";stroke:var(--muted)" : ""}`;
       cells += `<rect x="${px}" y="${py}" width="${size}" height="${size}" rx="2.5" style="${style}"`
-        + ` fill-opacity="${opacity}"><title>${esc(label)}: ${plural(n, "review")}</title></rect>`;
+        + ` fill-opacity="${opacity}"><title>${esc(label)}: ${plural(n, "attempt")}</title></rect>`;
     }
   }
   const days = ["", "Mon", "", "Wed", "", "Fri", ""].map((l, d) => l ? `<text x="0" y="${top + d * (size + gap) + size - 2}" font-size="10" style="fill:var(--muted)">${l}</text>` : "").join("");
   el.innerHTML = `<svg width="${left + x * (size + gap)}" height="${top + 7 * (size + gap)}">${months}${days}${cells}</svg>`;
 }
 
-// Cards due on each of the coming days (dashboard.forecast), as bars.
+// Questions due on each of the coming days (dashboard.forecast), as bars.
 function forecastHtml(days) {
   const max = Math.max(1, ...days.map(d => d.count));
   return `<div class="forecast">` + days.map((d, i) => {
     const day = new Date(d.date + "T12:00");
     const label = i === 0 ? "Tmrw" : day.toLocaleDateString(undefined, { weekday: "narrow" });
-    const title = `${day.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}: ${plural(d.count, "card")}`;
+    const title = `${day.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}: ${plural(d.count, "question")}`;
     return `<div class="col" title="${esc(title)}"><span class="v">${d.count || ""}</span>`
       + `<div class="bar${d.count ? "" : " zero"}" style="height:${d.count ? Math.max(4, 70 * d.count / max) : 2}px"></div>`
       + `<span class="d">${label}</span></div>`;
