@@ -66,7 +66,6 @@ echo $? > exit
 # Snippets run on the VM by ``Colab.exec``: each defines _main(), whose result comes back.
 _ALIVE = """
 def _alive(R):
-    import os
     try:
         pid = int(open(R + "/runner.pid").read())
         with open(f"/proc/{pid}/stat") as f:
@@ -403,8 +402,8 @@ class Watcher:
                     return self._give_up(f"Colab didn't answer for {self.failures} tries: {e}")
                 self.save(message=f"Can't reach Colab ({e}); trying again.")
                 more = True
-            if not more:
-                return
+            if not more and not pending(self.base) and not (self.base / "stop").exists():
+                return  # (a book queued while the VM was being released is picked up instead)
             sleep(poll)
 
     def _give_up(self, reason: str, release: bool = True) -> None:
@@ -413,48 +412,68 @@ class Watcher:
         (self.base / "failed").write_text(reason)
         self.save("failed", reason)
 
-    def _release(self, everything: bool = False) -> None:
+    def _release(self, everything: bool = False) -> bool:
         """Stop our VM (``everything``: and any other in our sessions, say one whose start
-        was cut short before it was written down)."""
-        names = {self.state.get("session")} - {None}
+        was cut short before it was written down). Whether they all stopped: one that didn't
+        stays written down, so it is tried again rather than left running."""
+        ours = self.state.get("session")
+        names = {ours} - {None}
         if everything:
             names |= self.cli.sessions()
+        left = set()
         for name in sorted(names):
             try:
                 self.cli.stop(name)
             except CliError as e:
                 self.log(f"couldn't stop {name}: {e}")
-        self.state.update(session=None, runs={})
+                try:
+                    gone = name not in self.cli.sessions()
+                except CliError:
+                    gone = False
+                if not gone:
+                    left.add(name)
+        self.state["runs"] = {}
+        if ours not in left:
+            self.state["session"] = min(left) if left else None
+        return not left
 
     def step(self) -> bool:
         """One look: start, upload, download, finish; whether there is more to do."""
         if (self.base / "stop").exists():
-            self._release()
+            if not self._release(everything=True):
+                raise CliError("the Colab VM didn't stop")
             for req in pending(self.base):
                 (self.base / "requests" / f"{req['key']}.json").unlink(missing_ok=True)
             (self.base / "stop").unlink(missing_ok=True)
+            (self.base / "failed").unlink(missing_ok=True)  # what went wrong before is over with
             self.save("stopped", "Stopped, and the Colab GPU was released.")
             return False
         reqs = pending(self.base)
         if not reqs:
             had = self.state.get("session")
-            self._release(everything=True)
+            if not self._release(everything=True):
+                raise CliError("the Colab VM didn't stop")
             if had:
                 self.save("done", "All rendered, and the Colab GPU was released.")
             return False
-        for req in reqs:  # sent again with nothing new to render: no VM needed
-            if self.state["runs"].get(req["key"], {}).get("id") != req["id"] and not self._todo(req):
-                self._finish(req)
+        todos = {}  # book key → (request, sentences to send), for the ones not on the VM yet
+        for req in reqs:
+            if self.state["runs"].get(req["key"], {}).get("id") != req["id"]:
+                if todo := self._todo(req):
+                    todos[req["key"]] = (req, todo)
+                else:  # sent again with nothing new to render: no VM needed
+                    self._finish(req)
         reqs = pending(self.base)
         if not reqs:
             return self.step()
+        live = self.cli.sessions()
         name = self.state.get("session")
-        if name and name not in self.cli.sessions():
+        if name and name not in live:
             self.state.update(session=None, runs={})
             self.save(message="Colab ended the VM; starting another to carry on.")
             name = None
         if not name:
-            ours = sorted(self.cli.sessions())
+            ours = sorted(live)
             if ours:  # one whose start was cut short: use it
                 name = ours[0]
                 self.state.update(session=name, runs={})
@@ -466,9 +485,10 @@ class Watcher:
                 self.save("starting", f"Starting a {gpu} on Colab…")
                 self.cli.new(name, gpu)
                 self.save()
-        self._upload([r for r in reqs if self.state["runs"].get(r["key"], {}).get("id") != r["id"]])
+                todos = None  # that took minutes: audio may have come in meanwhile
+        self._upload([r for r in reqs if self.state["runs"].get(r["key"], {}).get("id") != r["id"]], todos)
         if not self.state["runs"]:
-            return bool(pending(self.base))
+            return True  # all here already: the next look releases the VM
         status = self.cli.exec(name, STATUS)
         for key in list(self.state["runs"]):
             if key in status["books"]:
@@ -482,10 +502,13 @@ class Watcher:
         self.save(*self._describe(status))
         return True
 
-    def _upload(self, reqs: list[dict]) -> None:
+    def _upload(self, reqs: list[dict], todos: dict | None = None) -> None:
+        """Send the requests to the VM (``todos``: what each has left to render, if just
+        worked out) and start rendering them."""
         name, sends = self.state["session"], []
         for req in reqs:
-            todo = self._todo(req)
+            known = (todos or {}).get(req["key"])
+            todo = known[1] if known and known[0]["id"] == req["id"] else self._todo(req)
             if not todo:
                 self._finish(req)
                 continue
@@ -522,14 +545,15 @@ class Watcher:
         return [s for s in req["sentences"] if s[0] not in have]
 
     def _collect(self, name: str, key: str, remote: dict) -> None:
-        """Download the book's finished parts; finish it when they're all here."""
+        """Download the book's finished parts (also those of a run the book's newer request
+        stopped short, which are still good audio); finish it when its run's are all here."""
         run = self.state["runs"][key]["run"]
         book, folder = self.state["books"][key], self.audio / key
         folder.mkdir(parents=True, exist_ok=True)
         status = remote.get("status") or {}
         mine = status.get("run") == run
         parts = [p for p in remote.get("parts", []) if p.startswith(f"part-{run}-")]
-        for part in parts:
+        for part in remote.get("parts", []):
             if (folder / f"{part}.json").exists():
                 continue
             for ext in (".opus", ".json"):  # the audio first: an index is only there with its audio

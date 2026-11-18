@@ -5,7 +5,8 @@ stats.html. Qt-free."""
 from __future__ import annotations
 
 import time
-from datetime import date, datetime, timedelta
+from bisect import bisect_right
+from datetime import date, datetime, time as clock, timedelta
 
 from . import practice
 from .db import SUBTREE, Database
@@ -30,6 +31,45 @@ RETRIEVABILITY_BUCKETS = (
 def day_of(t: float) -> date:
     """The practice day a moment falls on (days roll over at 4 am local time, as in practice.py)."""
     return datetime.fromtimestamp(practice.day_start(t)).date()
+
+
+# Moments this close before a day's end may already be the next day once rounded to microseconds.
+DAY_EDGE = 0.001
+
+
+def day_spans(lo: float, hi: float) -> list[tuple[date, float, float, bool]]:
+    """The practice days from the one holding lo to the one holding hi, as (day, start, end,
+    steady). A steady day is 24 hours of one UTC offset starting at 4 am, so every moment from
+    start to end - DAY_EDGE falls on it (day_of(t) is day); for any other moment ask day_of."""
+    out = []
+    four = clock(practice.DAY_STARTS_AT_HOUR)
+    first, last = day_of(lo), day_of(hi)
+    for i in range((last - first).days + 1):
+        day = first + timedelta(days=i)
+        start = datetime.combine(day, four).timestamp()
+        end = datetime.combine(day + timedelta(days=1), four).timestamp()
+        steady = end - start == 86400 and datetime.fromtimestamp(start) == datetime.combine(day, four) \
+            and len({time.localtime(x).tm_gmtoff for x in (start, start + 43200, end - 1)}) == 1
+        out.append((day, start, end, steady))
+    return out
+
+
+class Days:
+    """day_of for many moments, the same but much faster: the days from lo to hi are worked out
+    once (day_spans) and looked up; moments outside them, or on a day a clock change touches, go
+    through day_of."""
+
+    def __init__(self, lo: float, hi: float):
+        self.spans = day_spans(lo, hi) if lo <= hi else []
+        self.starts = [s[1] for s in self.spans]
+
+    def __call__(self, t: float) -> date:
+        i = bisect_right(self.starts, t) - 1
+        if i >= 0:
+            day, _, end, steady = self.spans[i]
+            if steady and t < end - DAY_EDGE:
+                return day
+        return day_of(t)
 
 
 def _scope(deck_id: int | None, book_id: int | None) -> tuple[str, tuple]:
@@ -65,6 +105,11 @@ def compute(db: Database, deck_id: int | None = None, book_id: int | None = None
     today = day_of(now)
     where, args = _scope(deck_id, book_id)
     decay = practice.decay(db)
+    # day_of for the many moments below (calling it for each row took seconds on a long log)
+    first = db.conn.execute(
+        "SELECT MIN(t) FROM (SELECT MIN(attempted_at) AS t FROM attempts UNION ALL SELECT MIN(created_at) FROM questions)"
+    ).fetchone()[0]
+    on_day = Days(max(first if first is not None else now, now - 20 * 365 * 86400), now + (FORECAST_DAYS + 1) * 86400)
 
     # -- questions ---------------------------------------------------------------------
     counts = {"new": 0, "learning": 0, "relearning": 0, "young": 0, "mature": 0, "suspended": 0, "total": 0}
@@ -76,7 +121,7 @@ def compute(db: Database, deck_id: int | None = None, book_id: int | None = None
         args,
     ):
         counts["total"] += 1
-        created = day_of(c["created_at"])
+        created = on_day(c["created_at"])
         if (today - created).days < RECENT_DAYS:
             added[created] = added.get(created, 0) + 1
         if c["suspended"]:
@@ -95,7 +140,7 @@ def compute(db: Database, deck_id: int | None = None, book_id: int | None = None
             counts["mature" if interval is not None and interval >= MATURE_DAYS else "young"] += 1
         if stage in (2, 3) and interval is not None:
             intervals.append(interval)
-        ahead = max((day_of(c["due"]) - today).days, 0)
+        ahead = max((on_day(c["due"]) - today).days, 0)
         if ahead < FORECAST_DAYS:
             forecast[ahead] += 1
         if c["stability"]:
@@ -107,22 +152,23 @@ def compute(db: Database, deck_id: int | None = None, book_id: int | None = None
 
     # -- attempts ----------------------------------------------------------------------
     calendar: dict[date, int] = {}
-    recent = {(today - timedelta(days=i)): {"first": 0, "missed": 0, "passed": 0, "minutes": 0.0}
+    # (minutes are summed in ms while counting, so the order attempts come in can't change them)
+    recent = {(today - timedelta(days=i)): {"first": 0, "missed": 0, "passed": 0, "minutes": 0}
               for i in range(RECENT_DAYS)}
-    today_stats = {"attempts": 0, "minutes": 0.0, "missed": 0, "passed": 0, "new": 0}
+    today_stats = {"attempts": 0, "minutes": 0, "missed": 0, "passed": 0, "new": 0}
     retention = {name: {"young": [0, 0], "mature": [0, 0]} for name, _ in RETENTION_PERIODS}
     total_attempts = 0
-    prev_question, prev_time = None, None
+    last: dict[int, tuple[float, date]] = {}  # each question's latest attempt so far, and its day
     for r in db.conn.execute(
         f"SELECT r.question_id, r.rating, r.attempted_at, r.duration FROM attempts r JOIN questions c ON c.id=r.question_id "
-        f"WHERE {where} ORDER BY r.question_id, r.attempted_at, r.id",
+        f"WHERE {where} ORDER BY r.attempted_at, r.id",
         args,
     ):
         total_attempts += 1
-        first = r["question_id"] != prev_question
-        previous = None if first else prev_time
-        prev_question, prev_time = r["question_id"], r["attempted_at"]
-        day = day_of(r["attempted_at"])
+        day = on_day(r["attempted_at"])
+        previous, previous_day = last.get(r["question_id"], (None, None))
+        first = previous is None
+        last[r["question_id"]] = r["attempted_at"], day
         ago = (today - day).days
         passed = r["rating"] > 1
         if 0 <= ago < CALENDAR_DAYS:
@@ -130,13 +176,13 @@ def compute(db: Database, deck_id: int | None = None, book_id: int | None = None
         if day in recent:
             bucket = recent[day]
             bucket["first" if first else "passed" if passed else "missed"] += 1
-            bucket["minutes"] += (r["duration"] or 0) / 60000
+            bucket["minutes"] += r["duration"] or 0
         if ago == 0:
             today_stats["attempts"] += 1
-            today_stats["minutes"] += (r["duration"] or 0) / 60000
+            today_stats["minutes"] += r["duration"] or 0
             today_stats["missed" if r["rating"] == 1 else "passed"] += 1
             today_stats["new"] += first
-        if previous is not None and day_of(previous) < day:
+        if previous is not None and previous_day < day:
             kind = "young" if (r["attempted_at"] - previous) / 86400 < MATURE_DAYS else "mature"
             for name, days in RETENTION_PERIODS:
                 if 0 <= ago < days:
@@ -161,7 +207,7 @@ def compute(db: Database, deck_id: int | None = None, book_id: int | None = None
     estimated = sum(retrievabilities)
     return {
         "today": {
-            **today_stats, "minutes": round(today_stats["minutes"], 1),
+            **today_stats, "minutes": round(today_stats["minutes"] / 60000, 1),
             "pass_rate": today_stats["passed"] / n if n else None,
         },
         "counts": counts,
@@ -174,7 +220,7 @@ def compute(db: Database, deck_id: int | None = None, book_id: int | None = None
             "studied_pct": len(calendar) / span if span else None,
         },
         "attempts": [
-            {"date": d.isoformat(), **{k: (round(v, 1) if k == "minutes" else v) for k, v in recent[d].items()}}
+            {"date": d.isoformat(), **{k: (round(v / 60000, 1) if k == "minutes" else v) for k, v in recent[d].items()}}
             for d in sorted(recent)
         ],
         "forecast": [{"day": i, "date": (today + timedelta(days=i)).isoformat(), "count": forecast[i]}

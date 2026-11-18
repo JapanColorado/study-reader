@@ -1,4 +1,4 @@
-"""Speech engines for reading aloud: Kokoro (a neural voice, run on a worker thread and
+"""Speech engines for reading aloud: Kokoro (a neural voice, run in a worker process and
 played through a QAudioSink, with word timings) and the system's speech-dispatcher
 through QTextToSpeech (sentence by sentence, no word timings)."""
 
@@ -9,6 +9,7 @@ import math
 import os
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QIODevice, QObject, QTimer, Signal
@@ -42,7 +43,6 @@ class Engine(QObject):
     outputChanged = Signal()  # sound now goes elsewhere (say, headphones connected): what was queued is gone
     lookahead = 0  # utterances to queue beyond the one playing
     lookahead_chars = 0  # ...or more, until this much text is queued
-    word_timing = False
     skips_silence = False  # set_skip_silence does something
     name = ""
 
@@ -64,7 +64,9 @@ class Engine(QObject):
         """Get ready to speak (load models) before the first sentence is asked for."""
 
     def enqueue(self, uid: int, text: str, pause: float) -> None: ...
-    def clear(self, keep_current: bool = False) -> None: ...
+    def clear(self, keep_current: bool = False) -> int | None:
+        """Drop what is queued (``keep_current``: except what has begun playing, which may
+        already be the start of the next utterance); the uid of the last one kept, if any."""
     def pause(self) -> None: ...
     def resume(self) -> None: ...
     def is_paused(self) -> bool:
@@ -133,9 +135,6 @@ class PcmQueue:
         self.total += n
         return bytes(out)
 
-    def pending(self) -> bool:
-        return any(s.pos < len(s.data) for s in self.segs)
-
     def buffered(self) -> float:
         """Seconds of audio queued and not yet handed out."""
         return sum(len(s.data) - s.pos for s in self.segs) / self.bytes_per_second
@@ -175,11 +174,11 @@ class PcmQueue:
             break
         return out
 
-    def current(self) -> _Segment | None:
-        return next((s for s in self.segs if s.start is not None), None)
-
-    def drop_unstarted(self) -> None:
+    def drop_unstarted(self) -> int | None:
+        """Drop the segments not handed out yet; the uid of the last one kept. That can be
+        the one after the segment audible now: the device is handed audio ahead of hearing it."""
         self.segs = [s for s in self.segs if s.start is not None]
+        return self.segs[-1].uid if self.segs else None
 
     def reset(self) -> None:
         self.segs, self.total, self.hold = [], 0, True
@@ -313,6 +312,17 @@ def job_audio(job, cache, kokoro) -> tuple[np.ndarray, list]:
         return silence, []
 
 
+def _cache_for(cache: AudioCache | None, folder: str | None) -> AudioCache | None:
+    """The cache of ``folder``: ``cache`` brought up to date when it is that folder's (reading
+    only the parts new since), else a new one (None for no folder)."""
+    if not folder:
+        return None
+    if cache is not None and cache.folder == Path(folder):
+        cache.refresh()
+        return cache
+    return AudioCache(folder)
+
+
 def kokoro_worker(jobs, results, gen, cache_dir: str | None) -> None:
     """Kokoro's own process: makes each job's audio (from the Colab cache when it can),
     skipping jobs from before the app's latest clear() (``gen`` is shared with it).
@@ -334,7 +344,7 @@ def kokoro_worker(jobs, results, gen, cache_dir: str | None) -> None:
     while (job := jobs.get()) is not None:
         try:
             if job[0] == "cache":
-                cache = AudioCache(job[1]) if job[1] else None
+                cache = _cache_for(cache, job[1])
                 continue
             if job[0] == "warm":
                 kokoro.load(job[1])
@@ -359,7 +369,6 @@ class _Bridge(QObject):
 class KokoroEngine(Engine):
     lookahead = 1
     lookahead_chars = 600  # about 40 s of speech
-    word_timing = True
     skips_silence = True
     name = "kokoro"
 
@@ -445,7 +454,7 @@ class KokoroEngine(Engine):
     def _ensure_sink(self) -> bool:
         if self._sink is not None:
             return True
-        from PySide6.QtMultimedia import QAudio, QAudioFormat, QAudioSink, QMediaDevices
+        from PySide6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices
 
         device = QMediaDevices.defaultAudioOutput()
         if self._devices is None:
@@ -471,7 +480,6 @@ class KokoroEngine(Engine):
         self._sink = QAudioSink(device, fmt, self)
         self._sink.setBufferSize(int(self._pcm.bytes_per_second * 0.1))
         self._sink.stateChanged.connect(self._sink_state)
-        self._audio_error = QAudio.Error.NoError
         self._dev = _PcmDevice(self._pcm, self)
         self._dev.open(QIODevice.OpenModeFlag.ReadOnly)
         self._sink.start(self._dev)
@@ -536,7 +544,7 @@ class KokoroEngine(Engine):
 
     def set_cache(self, folder) -> None:
         self._cache_dir = str(folder) if folder else None
-        self.cache = AudioCache(folder)
+        self.cache = _cache_for(self.cache, self._cache_dir) or AudioCache(None)
         if self._proc is not None:
             self._jobs.put(("cache", self._cache_dir))
 
@@ -555,15 +563,15 @@ class KokoroEngine(Engine):
         self._pcm.append(uid, to_format(samples, rate, channels, kind), words)
         self._pcm.settle(self._waiting)
 
-    def clear(self, keep_current: bool = False) -> None:
+    def clear(self, keep_current: bool = False) -> int | None:
         self._bump()
         self._waiting = 0
         if self._sink is None:
-            return
+            return None
         if keep_current:
-            self._pcm.drop_unstarted()
-            return
+            return self._pcm.drop_unstarted()
         self._drop_sink()
+        return None
 
     def pause(self) -> None:
         self._paused = True
@@ -673,10 +681,10 @@ class SpeechdEngine(Engine):
         self._queue.append((uid, text))
         self._next()
 
-    def clear(self, keep_current: bool = False) -> None:
+    def clear(self, keep_current: bool = False) -> int | None:
         self._queue = []
         if keep_current or self.tts is None:
-            return
+            return self._uid if keep_current else None
         if self._uid is not None:
             self._uid = None
             self._stopping = True

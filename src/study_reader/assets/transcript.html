@@ -411,7 +411,6 @@ function speechBlocks(id) {
   if (!msg) return [];
   const out = [];
   sayBlocks(msg).forEach((el, n) => {
-    el.dataset.say = n;
     const copy = el.cloneNode(true);
     copy.querySelectorAll("ul, ol, pre, table, .viz, .quiz").forEach(e => e.remove());
     copy.querySelectorAll(SAY_BLOCKS).forEach(e => e.remove());

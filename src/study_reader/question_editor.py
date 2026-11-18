@@ -21,6 +21,8 @@ from .db import Database, media_dir
 # Types a question can be switched between in the editor (their text carries over); a
 # fill-in-the-blank or an image labels question stays what it is.
 SWITCHABLE = ("self_check", "both_ways", *question_model.QUESTION_TYPES)
+# The editor's tolerance box at this value: the calculation gives none (1% of the answer counts).
+NO_TOLERANCE = -1.0
 # Types the Add dialog makes (image labels come only from Anki).
 ADD_TYPES = tuple(t for t in question_model.TYPES if t != "image_labels")
 
@@ -167,7 +169,9 @@ class QuestionEditor(QWidget):
         self.q_answer = FieldEdit("The answer (Markdown)")
         self.q_number = QLineEdit(placeholderText="e.g. 0.25, 3/8 or sqrt(2)/2")
         self.q_unit = QLineEdit(placeholderText="optional, e.g. m/s")
-        self.q_tolerance = QDoubleSpinBox(decimals=6, maximum=1e12, specialValueText="1% of the answer")
+        # -1 (its lowest) is no tolerance given, 1% of the answer; 0 is an exact answer.
+        self.q_tolerance = QDoubleSpinBox(decimals=6, minimum=NO_TOLERANCE, maximum=1e12, specialValueText="1% of the answer",
+                                          toolTip="How far off an answer may be and still count; 0 for exact")
         self.q_rubric = FieldEdit("The key points a full answer covers, shown when you rate it (optional)")
         self.q_explanation = FieldEdit("Why the answer is right (shown after answering)")
         self.q_varies = QCheckBox("New numbers after each attempt")  # text and tooltip: _question_rows
@@ -188,7 +192,7 @@ class QuestionEditor(QWidget):
             w.textChanged.connect(self._changed)
         self.q_correct.valueChanged.connect(self._changed)
         self.q_tf.currentIndexChanged.connect(self._changed)
-        self.q_tolerance.valueChanged.connect(self._changed)
+        self.q_tolerance.valueChanged.connect(self._tolerance_changed)
 
         self.pages = QStackedWidget()
         self.pages.addWidget(self.text_page)
@@ -288,7 +292,7 @@ class QuestionEditor(QWidget):
         for w in (self.q_question, self.q_choices, self.q_answer, self.q_rubric, self.q_explanation, self.q_number,
                   self.q_unit):
             w.clear()
-        self.q_tolerance.setValue(0)
+        self.q_tolerance.setValue(NO_TOLERANCE)
         self.q_correct.setValue(1)
         self._extra = {}
         self._varies = None
@@ -305,7 +309,8 @@ class QuestionEditor(QWidget):
         self.q_answer.setPlainText(str(answer) if q.get("type") == "short_answer" and answer is not None else "")
         self.q_number.setText(str(answer) if q.get("type") == "calculation" else "")
         self.q_unit.setText(str(q.get("unit", "")))
-        self.q_tolerance.setValue(float(q.get("tolerance") or 0))
+        tolerance = q.get("tolerance")
+        self.q_tolerance.setValue(float(tolerance) if isinstance(tolerance, (int, float)) and tolerance >= 0 else NO_TOLERANCE)
         self.q_rubric.setPlainText(str(q.get("rubric", "")))
         self.q_varies.setChecked(self._varies is not False and not self._skipped)
 
@@ -382,6 +387,12 @@ class QuestionEditor(QWidget):
                 self.q_choices.setPlainText(answer + "\n")  # the right one; the others are to add
                 self.q_correct.setValue(1)
 
+    def _tolerance_changed(self, value: float) -> None:
+        if NO_TOLERANCE < value < 0:  # typed between "none given" and exact: none given
+            self.q_tolerance.setValue(NO_TOLERANCE)
+            return
+        self._changed()
+
     def _varies_clicked(self, on: bool) -> None:
         self._varies = on
         self._changed()
@@ -447,7 +458,7 @@ class QuestionEditor(QWidget):
             except ValueError:
                 raw["answer"] = text
             raw["unit"] = self.q_unit.text().strip()
-            if self.q_tolerance.value() > 0:
+            if self.q_tolerance.value() >= 0:
                 raw["tolerance"] = self.q_tolerance.value()
         else:
             raw["answer"] = self.q_answer.toPlainText().strip()
@@ -455,9 +466,12 @@ class QuestionEditor(QWidget):
         if t in ("calculation", "short_answer", "choice") and self._varies is not None:
             raw["varies"] = self._varies
         try:
-            return quiz.validate_question(raw)
+            q = quiz.validate_question(raw)
         except (ValueError, TypeError, KeyError) as e:
             raise question_model.QuestionError(_sentence(str(e))) from None
+        # Typed here, like a self-check's fields, so it may hold HTML and pasted images (q.html in quiz.js).
+        q["html"] = True
+        return q
 
     def save(self) -> bool:
         """Store the edits to the loaded question (and its siblings). Raises question_model.QuestionError if they
@@ -557,9 +571,11 @@ class DeckBox(QComboBox):
 
     def reload(self, current: str | None = None) -> None:
         current = current if current is not None else self.currentText()
+        blocked = self.blockSignals(True)  # the text is the same afterwards; filling the list isn't a choice of its first deck
         self.clear()
         self.addItems([d["name"] for d in self.db.decks()])
         self.setCurrentText(current)
+        self.blockSignals(blocked)
 
     def deck_name(self) -> str:
         from .db import deck_name

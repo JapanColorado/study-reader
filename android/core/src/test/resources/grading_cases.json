@@ -347,7 +347,7 @@
 {
 "latex": "\\sqrt{}",
 "expr": "sqrt()",
-"error": "Wrong number of values for that function"
+"error": "'sqrt' needs a value — try sqrt(…)"
 },
 {
 "latex": "\\sqrt",
@@ -750,12 +750,12 @@
 {
 "latex": "|",
 "expr": "abs()",
-"error": "Wrong number of values for that function"
+"error": "'abs' needs a value — try abs(…)"
 },
 {
 "latex": "||",
 "expr": "abs()",
-"error": "Wrong number of values for that function"
+"error": "'abs' needs a value — try abs(…)"
 },
 {
 "latex": "2\\cdot3",
@@ -1183,7 +1183,7 @@
 {
 "latex": "\\artanh -0.5",
 "expr": "atanh()-0.5",
-"error": "Wrong number of values for that function"
+"error": "'atanh' needs a value — try atanh(…)"
 },
 {
 "latex": "\\ln\\left(e\\right)",
@@ -1208,7 +1208,7 @@
 {
 "latex": "\\ln",
 "expr": "ln()",
-"error": "Wrong number of values for that function"
+"error": "'ln' needs a value — try ln(…)"
 },
 {
 "latex": "\\ln 10^{400}",
@@ -1218,12 +1218,12 @@
 {
 "latex": "\\log\\left(100\\right)",
 "expr": "log(100)",
-"value": 4.605170185988092
+"value": 2.0
 },
 {
 "latex": "\\log 8",
 "expr": "log(8)",
-"value": 2.0794415416798357
+"value": 0.9030899869919435
 },
 {
 "latex": "\\log_2 8",
@@ -1253,7 +1253,7 @@
 {
 "latex": "\\log10(100)",
 "expr": "log(10*(100))",
-"value": 6.907755278982137
+"value": 3.0
 },
 {
 "latex": "\\exp\\left(1\\right)",
@@ -1303,7 +1303,7 @@
 {
 "latex": "\\min()",
 "expr": "min()",
-"error": "Wrong number of values for that function"
+"error": "'min' needs a value — try min(…)"
 },
 {
 "latex": "\\gcd\\left(12,18\\right)",
@@ -1333,12 +1333,12 @@
 {
 "latex": "\\operatorname{lcm}()",
 "expr": "lcm()",
-"value": 1.0
+"error": "'lcm' needs a value — try lcm(…)"
 },
 {
 "latex": "\\operatorname{gcd}()",
 "expr": "gcd()",
-"value": 0.0
+"error": "'gcd' needs a value — try gcd(…)"
 },
 {
 "latex": "\\operatorname{perm}\\left(5,2\\right)",
@@ -1353,7 +1353,7 @@
 {
 "latex": "\\operatorname{perm}(-1)",
 "expr": "perm(-1)",
-"error": "Factorial() not defined for negative values"
+"error": "factorial needs a non-negative whole number"
 },
 {
 "latex": "\\operatorname{perm}(3,5)",
@@ -1363,7 +1363,7 @@
 {
 "latex": "\\operatorname{round}\\left(2.5\\right)",
 "expr": "round(2.5)",
-"value": 2.0
+"value": 3.0
 },
 {
 "latex": "\\operatorname{round}\\left(3.5\\right)",
@@ -1373,7 +1373,7 @@
 {
 "latex": "\\operatorname{round}\\left(-2.5\\right)",
 "expr": "round(-2.5)",
-"value": -2.0
+"value": -3.0
 },
 {
 "latex": "\\operatorname{round}\\left(3.14159,2\\right)",
@@ -1383,7 +1383,7 @@
 {
 "latex": "\\operatorname{round}\\left(1250,-2\\right)",
 "expr": "round(1250,-2)",
-"value": 1200.0
+"value": 1300.0
 },
 {
 "latex": "\\operatorname{round}\\left(\\sqrt{2},3\\right)",
@@ -1413,7 +1413,7 @@
 {
 "latex": "\\operatorname{round}()",
 "expr": "round()",
-"error": "Wrong number of values for that function"
+"error": "'round' needs a value — try round(…)"
 },
 {
 "latex": "\\operatorname{abs}\\left(-2\\right)",
@@ -1463,7 +1463,7 @@
 {
 "latex": "\\operatorname{hypot}()",
 "expr": "hypot()",
-"value": 0.0
+"error": "'hypot' needs a value — try hypot(…)"
 },
 {
 "latex": "\\operatorname{atan2}(1,1)",
@@ -1674,7 +1674,7 @@
 {
 "latex": "\\sin^{2}",
 "expr": "(sin())^(2)",
-"error": "sin takes one value"
+"error": "'sin' needs a value — try sin(…)"
 },
 {
 "latex": "\\sin^2x",
@@ -1817,7 +1817,7 @@
 {
 "latex": "sin",
 "expr": "sin()",
-"error": "sin takes one value"
+"error": "'sin' needs a value — try sin(…)"
 },
 {
 "latex": "max(1)",
@@ -2377,7 +2377,7 @@
 {
 "latex": "\\sin",
 "expr": "sin()",
-"error": "sin takes one value"
+"error": "'sin' needs a value — try sin(…)"
 },
 {
 "latex": "\\sin^",
@@ -2469,7 +2469,7 @@
 {
 "latex": "-\\log^2\\left(\\exponentialE\\right)",
 "expr": "-(log(e))^(2)",
-"value": -1.0
+"value": -0.18861169701161393
 },
 {
 "latex": "\\sqrt{4\\pi\\bmod5\\pi\\div\\exponentialE\\bmod\\cos\\left(\\sqrt[3]{7\\times10^{-1}}\\right)}",
@@ -2509,7 +2509,7 @@
 {
 "latex": "\\log 62.31\\div8\\times10^{-4}-2.3e-2",
 "expr": "log(62.31)/8*10^(-4)-2.3e-2",
-"value": -0.02294834847591805
+"value": -0.022977568028109314
 },
 {
 "latex": "\\log_{6}\\left(\\infty\\right)",
@@ -2653,7 +2653,7 @@
 {
 "latex": "\\left(\\infty\\right)^{\\operatorname{log2}\\left(\\log^{-1}\\left(\\pi+\\exponentialE\\right)\\right)}",
 "expr": "(inf)^(log2((log(pi+e))^(-1)))",
-"value": 0.0
+"value": "inf"
 },
 {
 "latex": "\\ln 146",
@@ -2792,7 +2792,7 @@
 {
 "latex": "\\sqrt{\\tau}+\\frac{\\log\\left(\\left\\lfloor60.87\\right\\rfloor\\right)}{8.1e-1}\\pi",
 "expr": "sqrt(tau)+(log(floor(60.87)))/(8.1e-1)*pi",
-"value": 18.386582346164666
+"value": 9.403204700775147
 },
 {
 "latex": "\\left\\lceil4!\\right\\rceil",
@@ -2847,7 +2847,7 @@
 {
 "latex": "\\log^2\\left(\\log_{6}\\left(\\operatorname{hypot}\\left(21.39,7\\right)\\right)\\right)",
 "expr": "(log(log(hypot(21.39,7), 6)))^(2)",
-"value": 0.3054151575815675
+"value": 0.05760487116452893
 },
 {
 "latex": "6\\pi",
@@ -2857,7 +2857,7 @@
 {
 "latex": "\\log\\left(\\ln^{-1}\\left(\\max\\left(4!,7\\pi\\div981\\right)\\right)\\right)",
 "expr": "log((ln(max(factorial(4),7*pi/981)))^(-1))",
-"value": -1.1562690064065475
+"value": -0.5021612490781193
 },
 {
 "latex": "\\frac{176}{\\frac{-12}{\\sqrt[3]{\\infty}\\%}}",
@@ -2972,7 +2972,7 @@
 {
 "latex": "\\left\\lfloor\\sinh -6\\pi\\right\\rfloor",
 "expr": "floor(sinh()-6*pi)",
-"error": "Wrong number of values for that function"
+"error": "'sinh' needs a value — try sinh(…)"
 },
 {
 "latex": "\\sqrt[3]{\\max\\left(\\left(5.3e-3\\right)^{97.87},e\\times18\\right)}\\cdot\\left\\lceil86.89\\right\\rceil",
@@ -3355,7 +3355,7 @@
 {
 "latex": "\\exp\\left(\\log 6\\left(\\left(9\\pi\\right)^{2}\\right)\\right)",
 "expr": "exp(log(6*((9*pi)^(2))))",
-"value": 4796.62773892943
+"value": 39.683521051253784
 },
 {
 "latex": "\\frac{\\lg^{-1}\\left(5\\right)}{\\left\\lfloor\\min\\left(6.8e-5,\\exponentialE\\right)\\right\\rfloor}",
@@ -3665,7 +3665,7 @@
 {
 "latex": "\\frac{\\log\\left(e\\right)}{\\left|\\left(\\sqrt{292}\\right)^{\\left\\lfloor\\exponentialE\\right\\rfloor}\\right|}",
 "expr": "(log(e))/(abs((sqrt(292))^(floor(e))))",
-"value": 0.003424657534246576
+"value": 0.0014873098695316845
 },
 {
 "latex": "\\log_{4}\\left(\\pi\\bmod\\frac{326}{3.7e-5}\\right)+-\\tau",
@@ -3775,7 +3775,7 @@
 {
 "latex": "\\log^{-1}\\left(\\max\\left(7!,\\sqrt\\left(\\exponentialE\\right)\\right)\\right)",
 "expr": "(log(max(factorial(7),sqrt((e)))))^(-1)",
-"value": 0.11729983253654533
+"value": 0.2700928458093472
 },
 {
 "latex": "\\min\\left(\\operatorname{trunc}\\left(\\log_{3}\\left(1\\pi\\right)\\div\\sqrt[2]{\\exponentialE}\\right),\\arctan\\left(\\operatorname{hypot}\\left(\\sqrt[2]{7.6e-4},\\exponentialE\\times765\\right)\\right)\\right)",
@@ -3950,7 +3950,7 @@
 {
 "latex": "\\log\\left(\\left\\lceil\\sinh \\tau\\right\\rceil\\right)",
 "expr": "log(ceil(sinh(tau)))",
-"value": 5.5909869805108565
+"value": 2.428134794028789
 },
 {
 "latex": "35.18",
@@ -4030,7 +4030,7 @@
 {
 "latex": "\\log e-139",
 "expr": "log(e)-139",
-"value": -138.0
+"value": -138.56570551809673
 },
 {
 "latex": "\\left\\lfloor\\sqrt \\tan 10!\\%\\right\\rfloor",
@@ -4397,7 +4397,7 @@
 {
 "latex": "\\log^{-1}\\left(\\pi\\right)",
 "expr": "(log(pi))^(-1)",
-"value": 0.8735685268302319
+"value": 2.0114658675880612
 },
 {
 "latex": "\\max\\left(\\exp^{-1}\\left(\\ln^2\\left(\\infty\\right)\\right),10\\right)^{4}",
@@ -4486,7 +4486,7 @@
 {
 "latex": "\\log\\left(9.5e-4\\right)",
 "expr": "log(9.5e-4)",
-"value": -6.959048573369688
+"value": -3.0222763947111524
 },
 {
 "latex": "\\left\\lfloor\\tan^2\\left(\\frac{7.9e-2}{\\pi}\\div\\operatorname{hypot}\\left(\\exponentialE,8\\pi\\right)\\right)\\right\\rfloor",
@@ -4644,7 +4644,7 @@
 {
 "latex": "\\log\\left(6\\pi\\right)",
 "expr": "log(6*pi)",
-"value": 2.9364893550774553
+"value": 1.2753011230777775
 },
 {
 "latex": "\\lg \\operatorname{hypot}\\left(9!,\\infty\\right)^{-1}^{-1}",
@@ -5097,7 +5097,7 @@
 {
 "latex": "\\log\\left(\\sqrt[3]{17^{4}}\\right)",
 "expr": "log(cbrt(17^(4)))",
-"value": 3.7776177920749547
+"value": 1.6405985618376986
 },
 {
 "latex": "6\\left(9\\right)",
@@ -5122,7 +5122,7 @@
 {
 "latex": "\\exp -\\left(\\min\\left(3\\times10^{4},\\pi\\right)\\right)^{\\exponentialE}",
 "expr": "exp()-(min(3*10^(4),pi))^(e)",
-"error": "Wrong number of values for that function"
+"error": "'exp' needs a value — try exp(…)"
 },
 {
 "latex": "\\frac{\\infty}{-\\infty\\dive\\cdot\\pi}",
@@ -5176,7 +5176,7 @@
 {
 "latex": "\\frac{\\sqrt[3]{\\left(\\max\\left(17.17,5.5e-4\\right)\\right)}}{\\log \\operatorname{round}\\left(e,1\\right)}",
 "expr": "(cbrt((max(17.17,5.5e-4))))/(log(round(e,1)))",
-"value": 2.597351635577948
+"value": 5.9806231573454856
 },
 {
 "latex": "\\sqrt\\left(\\sqrt[3]{\\tau}\\right)",
@@ -5423,7 +5423,7 @@
 {
 "latex": "\\sqrt\\left(\\operatorname{log2}\\left(\\log^2\\left(6!^{-1}\\right)\\right)\\right)",
 "expr": "sqrt((log2((log(factorial(6)^(-1)))^(2))))",
-"value": 2.3314902527924386
+"value": 1.7404993115387049
 },
 {
 "latex": "\\min\\left(\\max\\left(\\min\\left(8!,4\\pi\\right)+\\min\\left(\\pi,8!\\right),4\\times10^{-1}\\right),\\left\\lceil\\log_{5}\\left(\\frac{\\pi}{1\\pi}\\right)\\right\\rceil\\right)",
@@ -5488,7 +5488,7 @@
 {
 "latex": "\\frac{\\sqrt{\\sinh\\left(\\min\\left(\\pi,\\tau\\right)\\right)}}{\\operatorname{round}\\left(\\log\\left(8.0e-4\\right),3\\right)}\\pi",
 "expr": "(sqrt(sinh(min(pi,tau))))/(round(log(8.0e-4),3))*pi",
-"value": -1.4971548660616387
+"value": -3.447275217915901
 },
 {
 "latex": "9\\left(\\max\\left(\\min\\left(\\infty,\\frac{352}{8!}\\right),\\pi\\right)\\right)",
@@ -5643,7 +5643,7 @@
 {
 "latex": "\\log 5.98",
 "expr": "log(5.98)",
-"value": 1.7884205679625405
+"value": 0.7767011839884108
 },
 {
 "latex": "\\log_{8}\\left(\\sinh\\left(\\left\\lfloor612+\\exponentialE\\right\\rfloor\\right)\\right)",
@@ -6137,7 +6137,7 @@
 {
 "latex": "\\sqrt[3]{\\lg\\lfloor\\sqrt{\\exp10sin",
 "expr": "cbrt(log10(floor(sqrt(exp(10*sin())))))",
-"error": "sin takes one value"
+"error": "'sin' needs a value — try sin(…)"
 },
 {
 "latex": "\\operatorname{\\log_{7^\\infty\\rfloorlog\\log_{\\right.",
@@ -6207,7 +6207,7 @@
 {
 "latex": "3e\\sinh\\lvert",
 "expr": "3*e*sinh(abs())",
-"error": "Wrong number of values for that function"
+"error": "'abs' needs a value — try abs(…)"
 },
 {
 "latex": "^{-1})\\rfloor}\\cdot1\\rbrack\\gcd\\lceil",
@@ -6216,12 +6216,12 @@
 {
 "latex": " \\sinh",
 "expr": "sinh()",
-"error": "Wrong number of values for that function"
+"error": "'sinh' needs a value — try sinh(…)"
 },
 {
 "latex": "\\tan|e6sin^{-1}",
 "expr": "tan()*abs(e*6*asin())",
-"error": "tan takes one value"
+"error": "'tan' needs a value — try tan(…)"
 },
 {
 "latex": "\\placeholder{}}\\max\\right|",
@@ -6266,7 +6266,7 @@
 {
 "latex": "\\arcsin\\%4",
 "expr": "asin()%4",
-"error": "Wrong number of values for that function"
+"error": "'asin' needs a value — try asin(…)"
 },
 {
 "latex": "log[\\frac{sin",
@@ -6293,7 +6293,7 @@
 {
 "latex": "3e\\left\\ln2\\min",
 "expr": "3*e*(2*min())",
-"error": "Wrong number of values for that function"
+"error": "'min' needs a value — try min(…)"
 },
 {
 "latex": "sqrt\\rvert)e\\log4",
@@ -6372,7 +6372,7 @@
 {
 "latex": "3^{(21\\lceil\\tau\\lvert",
 "expr": "3^((21*ceil(tau*abs())))",
-"error": "Wrong number of values for that function"
+"error": "'abs' needs a value — try abs(…)"
 },
 {
 "latex": "_\\%\\rvert\\lg\\lg",
@@ -6421,7 +6421,7 @@
 {
 "latex": "\\min",
 "expr": "min()",
-"error": "Wrong number of values for that function"
+"error": "'min' needs a value — try min(…)"
 },
 {
 "latex": "01\\sqrt{a\\placeholder{}\\mathrm{^{\\deg2",
@@ -6430,7 +6430,7 @@
 {
 "latex": "\\sqrt{",
 "expr": "sqrt()",
-"error": "Wrong number of values for that function"
+"error": "'sqrt' needs a value — try sqrt(…)"
 },
 {
 "latex": "\\left(0\\,\\log}\\frac{^\\bmod}=",
@@ -6576,7 +6576,7 @@
 {
 "latex": "\\lceil",
 "expr": "ceil()",
-"error": "Wrong number of values for that function"
+"error": "'ceil' needs a value — try ceil(…)"
 },
 {
 "latex": "\\operatorname{\\sinh-",
@@ -6585,7 +6585,7 @@
 {
 "latex": "\\arcsin1-pi\\left|\\right)",
 "expr": "asin(1)-pi*abs()",
-"error": "Wrong number of values for that function"
+"error": "'abs' needs a value — try abs(…)"
 },
 {
 "latex": "E^{",
@@ -6694,7 +6694,7 @@
 {
 "latex": "\\log\\arcsin1",
 "expr": "log(asin(1))",
-"value": 0.4515827052894548
+"value": 0.19611987703015263
 },
 {
 "latex": "^\\rceil",
@@ -6827,7 +6827,7 @@
 {
 "latex": "e\\deg\\sqrt[3]{\\sin\\bmod\\max\\exponentialE",
 "expr": "e*deg(cbrt(sin()%max(e)))",
-"error": "sin takes one value"
+"error": "'sin' needs a value — try sin(…)"
 },
 {
 "latex": "\\lg-",
@@ -6846,7 +6846,7 @@
 {
 "latex": "\\sinh",
 "expr": "sinh()",
-"error": "Wrong number of values for that function"
+"error": "'sinh' needs a value — try sinh(…)"
 },
 {
 "latex": "E!}].\\lbrack\\sqrt[3]{sin^4",
@@ -6900,12 +6900,12 @@
 {
 "latex": "+3\\lg",
 "expr": "+3*log10()",
-"error": "Wrong number of values for that function"
+"error": "'log10' needs a value — try log10(…)"
 },
 {
 "latex": "\\max",
 "expr": "max()",
-"error": "Wrong number of values for that function"
+"error": "'max' needs a value — try max(…)"
 },
 {
 "latex": "3^^2\\sinh\\bmod.106[3",
@@ -6928,7 +6928,7 @@
 {
 "latex": "_\\bmod|\\lg\\arcsin|",
 "expr": "abs(log10(asin()))",
-"error": "Wrong number of values for that function"
+"error": "'asin' needs a value — try asin(…)"
 },
 {
 "latex": " ^\\placeholder{}",
@@ -7033,7 +7033,7 @@
 {
 "latex": "\\deg",
 "expr": "deg()",
-"error": "Wrong number of values for that function"
+"error": "'deg' needs a value — try deg(…)"
 },
 {
 "latex": "\\text{\\,58\\pi0",
@@ -7124,7 +7124,7 @@
 {
 "latex": "3\\sqrt{",
 "expr": "3*sqrt()",
-"error": "Wrong number of values for that function"
+"error": "'sqrt' needs a value — try sqrt(…)"
 },
 {
 "latex": "\\sin1a\\cdote\\placeholder{}\\min",
@@ -7171,7 +7171,7 @@
 {
 "latex": "\\tan",
 "expr": "tan()",
-"error": "tan takes one value"
+"error": "'tan' needs a value — try tan(…)"
 },
 {
 "latex": "\\tan\\sqrt[3]{2comb\\ln\\lbracklog2\\cos\\sqrt[",
@@ -7220,7 +7220,7 @@
 {
 "latex": "\\gcd^{",
 "expr": "(gcd())^()",
-"error": "Couldn't read that expression"
+"error": "'gcd' needs a value — try gcd(…)"
 },
 {
 "latex": "\\sqrt[3]{1,9",
@@ -7239,7 +7239,7 @@
 {
 "latex": "\\gcd^{-1}",
 "expr": "(gcd())^(-1)",
-"error": "Division by zero"
+"error": "'gcd' needs a value — try gcd(…)"
 },
 {
 "latex": "^{pi3\\divcomb\\placeholder{}]",
@@ -7308,7 +7308,7 @@
 {
 "latex": "\\cos",
 "expr": "cos()",
-"error": "cos takes one value"
+"error": "'cos' needs a value — try cos(…)"
 },
 {
 "latex": "88-",
@@ -7323,7 +7323,7 @@
 {
 "latex": "sqrt\\,",
 "expr": "sqrt()",
-"error": "Wrong number of values for that function"
+"error": "'sqrt' needs a value — try sqrt(…)"
 },
 {
 "latex": ".\\rfloor",
@@ -7439,7 +7439,7 @@
 {
 "latex": "\\min 3sin1\\lfloor0\\min",
 "expr": "min(3*sin(1*floor(0*min())))",
-"error": "Wrong number of values for that function"
+"error": "'min' needs a value — try min(…)"
 },
 {
 "latex": "(\\rfloor4\\times\\bmod\\gcd\\log\\rfloorsqrt.",
@@ -7463,7 +7463,7 @@
 {
 "latex": "\\lceil\\left|\\deg\\tau\\right|\\gcd\\cdot\\lfloor",
 "expr": "ceil(abs(deg(tau))*gcd()*floor())",
-"error": "Wrong number of values for that function"
+"error": "'gcd' needs a value — try gcd(…)"
 },
 {
 "latex": "7pi\\rvert0\\lg",
@@ -7472,7 +7472,7 @@
 {
 "latex": "\\left|",
 "expr": "abs()",
-"error": "Wrong number of values for that function"
+"error": "'abs' needs a value — try abs(…)"
 },
 {
 "latex": "\\cos\\log_{log\\rbrack",
@@ -7615,12 +7615,12 @@
 {
 "latex": "e\\min",
 "expr": "e*min()",
-"error": "Wrong number of values for that function"
+"error": "'min' needs a value — try min(…)"
 },
 {
 "latex": "pi\\lfloor",
 "expr": "pi*floor()",
-"error": "Wrong number of values for that function"
+"error": "'floor' needs a value — try floor(…)"
 },
 {
 "latex": "\\left.,\\right^{ee\\right\\right|",
@@ -7687,7 +7687,7 @@
 {
 "latex": "\\lfloor\\,\\sqrt[3]{25sqrt\\sin9\\exp\\lg",
 "expr": "floor(cbrt(25*sqrt(sin(9*exp(log10())))))",
-"error": "Wrong number of values for that function"
+"error": "'log10' needs a value — try log10(…)"
 },
 {
 "latex": "\\rfloor|22combpi7\\sin\\right.sin",
@@ -7710,7 +7710,7 @@
 {
 "latex": "\\lceil\\sqrt[3]{",
 "expr": "ceil(cbrt())",
-"error": "Wrong number of values for that function"
+"error": "'cbrt' needs a value — try cbrt(…)"
 },
 {
 "latex": "\\,\\max\\placeholder{}",
@@ -7750,7 +7750,7 @@
 {
 "latex": "7\\exp\\sqrt[3]{comb}log\\lvert",
 "expr": "7*exp(cbrt(comb())*log(abs()))",
-"error": "Wrong number of values for that function"
+"error": "'comb' needs a value — try comb(…)"
 },
 {
 "latex": "\\infty\\gcd]e\\sinh\\mathrm{-.\\sqrt[3]{",
@@ -7810,7 +7810,7 @@
 {
 "latex": "\\lg\\gcd",
 "expr": "log10(gcd())",
-"error": "Outside the function's domain"
+"error": "'gcd' needs a value — try gcd(…)"
 },
 {
 "latex": "=\\cos",
@@ -7858,7 +7858,7 @@
 {
 "latex": "25\\left|",
 "expr": "25*abs()",
-"error": "Wrong number of values for that function"
+"error": "'abs' needs a value — try abs(…)"
 },
 {
 "latex": "\\right.\\sqrt{\\operatorname{\\sinh24sqrt\\%\\text{",
@@ -7906,7 +7906,7 @@
 {
 "latex": "\\,\\max\\%\\sqrt{",
 "expr": "max()%sqrt()",
-"error": "Wrong number of values for that function"
+"error": "'max' needs a value — try max(…)"
 },
 {
 "latex": "\\right|\\rvert\\,E6comb\\%\\left(comb",
@@ -8011,7 +8011,7 @@
 {
 "latex": "\\lg",
 "expr": "log10()",
-"error": "Wrong number of values for that function"
+"error": "'log10' needs a value — try log10(…)"
 },
 {
 "latex": "log\\frac{{_",
@@ -8033,7 +8033,7 @@
 {
 "latex": "\\lfloor\\lg\\deg",
 "expr": "floor(log10(deg()))",
-"error": "Wrong number of values for that function"
+"error": "'deg' needs a value — try deg(…)"
 },
 {
 "latex": "\\infty\\,\\right|-\\lceil2",
@@ -8057,7 +8057,7 @@
 {
 "latex": "comb\\deg",
 "expr": "comb(deg())",
-"error": "Wrong number of values for that function"
+"error": "'deg' needs a value — try deg(…)"
 },
 {
 "latex": "|\\left|2^",
@@ -8066,7 +8066,7 @@
 {
 "latex": "[\\min\\lvert\\max",
 "expr": "(min(abs(max())))",
-"error": "Wrong number of values for that function"
+"error": "'max' needs a value — try max(…)"
 },
 {
 "latex": "e{\\min\\rceil5",
@@ -8092,7 +8092,7 @@
 {
 "latex": "69\\lfloor\\arcsin",
 "expr": "69*floor(asin())",
-"error": "Wrong number of values for that function"
+"error": "'asin' needs a value — try asin(…)"
 },
 {
 "latex": "8\\lbrack-\\ln10",
@@ -8106,7 +8106,7 @@
 {
 "latex": "-\\lvert",
 "expr": "-abs()",
-"error": "Wrong number of values for that function"
+"error": "'abs' needs a value — try abs(…)"
 },
 {
 "latex": "\\placeholder{}E\\deg1\\lfloor}+20,",
@@ -8132,7 +8132,7 @@
 {
 "latex": "_a2log",
 "expr": "2*log()",
-"error": "Wrong number of values for that function"
+"error": "'log' needs a value — try log(…)"
 },
 {
 "latex": "^{-1}",
@@ -8247,7 +8247,7 @@
 {
 "latex": "\\lceil\\vert\\sinh\\gcd",
 "expr": "ceil(abs(sinh(gcd())))",
-"value": 0.0
+"error": "'gcd' needs a value — try gcd(…)"
 },
 {
 "latex": "{\\cos\\right.\\mathrm{\\infty",
@@ -8348,7 +8348,7 @@
 {
 "latex": "3\\tan+\\vert",
 "expr": "3*tan()+abs()",
-"error": "tan takes one value"
+"error": "'tan' needs a value — try tan(…)"
 },
 {
 "latex": "\\rfloor.\\exponentialEcomb(\\sqrt{\\lfloor}\\%\\sqrt[",
@@ -8393,7 +8393,7 @@
 {
 "latex": " \\lceil\\cos",
 "expr": "ceil(cos())",
-"error": "cos takes one value"
+"error": "'cos' needs a value — try cos(…)"
 },
 {
 "latex": "\\operatorname{!\\bmod\\vert\\dege\\%\\sin\\right|",
@@ -8414,7 +8414,7 @@
 {
 "latex": "\\tau\\left|2\\log",
 "expr": "tau*abs(2*log())",
-"error": "Wrong number of values for that function"
+"error": "'log' needs a value — try log(…)"
 },
 {
 "latex": "-\\lbrack[{\\lg\\infty \\left",
@@ -8472,7 +8472,7 @@
 {
 "latex": "\\left!log\\sinh\\cdot\\sqrt[3]{23}\\left",
 "expr": "(log(sinh())*cbrt(23)*())",
-"error": "Wrong number of values for that function"
+"error": "'sinh' needs a value — try sinh(…)"
 },
 {
 "latex": "\\min-3\\times[\\%",
@@ -8687,7 +8687,7 @@
 {
 "latex": "\\vert\\sin",
 "expr": "abs(sin())",
-"error": "sin takes one value"
+"error": "'sin' needs a value — try sin(…)"
 },
 {
 "latex": "){\\right| \\div2\\text{0",
@@ -8735,7 +8735,7 @@
 {
 "latex": "3\\vert",
 "expr": "3*abs()",
-"error": "Wrong number of values for that function"
+"error": "'abs' needs a value — try abs(…)"
 },
 {
 "latex": "7\\operatorname{{",
@@ -8800,7 +8800,7 @@
 {
 "latex": "sqrt",
 "expr": "sqrt()",
-"error": "Wrong number of values for that function"
+"error": "'sqrt' needs a value — try sqrt(…)"
 },
 {
 "latex": "^{a!pi\\%^",
@@ -8881,7 +8881,7 @@
 {
 "latex": "00^\\vert",
 "expr": "00^(abs())",
-"error": "Wrong number of values for that function"
+"error": "'abs' needs a value — try abs(…)"
 },
 {
 "latex": "sin\\ln(\\frac{[\\right)",
@@ -8927,7 +8927,7 @@
 {
 "latex": "sqrt\\lceil",
 "expr": "sqrt(ceil())",
-"error": "Wrong number of values for that function"
+"error": "'ceil' needs a value — try ceil(…)"
 },
 {
 "latex": "e\\deg\\log_{e\\sqrt{\\mathrm{6\\min\\sin\\frac{",
@@ -8964,7 +8964,7 @@
 {
 "latex": "\\sin\\lfloor",
 "expr": "sin(floor())",
-"error": "Wrong number of values for that function"
+"error": "'floor' needs a value — try floor(…)"
 },
 {
 "latex": "\\tan\\%.\\frac{e\\log",
@@ -9052,7 +9052,7 @@
 {
 "latex": "2\\infty\\gcd",
 "expr": "2*inf*gcd()",
-"error": "Result is not a number"
+"error": "'gcd' needs a value — try gcd(…)"
 },
 {
 "latex": "\\min\\right)\\ln(\\rfloor",
@@ -9102,7 +9102,7 @@
 {
 "latex": "\\left.\\sqrt[3]{\\gcd",
 "expr": "(cbrt(gcd()))",
-"value": 0.0
+"error": "'gcd' needs a value — try gcd(…)"
 },
 {
 "latex": "\\operatorname{\\right1log\\sin!",
@@ -9293,7 +9293,7 @@
 {
 "latex": "2\\left\\sqrt[\\gcd",
 "expr": "2*((gcd()))",
-"value": 0.0
+"error": "'gcd' needs a value — try gcd(…)"
 },
 {
 "latex": "^{-1}\\lceil",
@@ -9303,12 +9303,12 @@
 {
 "latex": "7\\left\\mathrm{sqrt-\\left|",
 "expr": "7*((sqrt()-abs()))",
-"error": "Wrong number of values for that function"
+"error": "'sqrt' needs a value — try sqrt(…)"
 },
 {
 "latex": "\\vert|",
 "expr": "abs(abs())",
-"error": "Wrong number of values for that function"
+"error": "'abs' needs a value — try abs(…)"
 },
 {
 "latex": "sin-\\right",
@@ -9340,7 +9340,7 @@
 {
 "latex": "\\gcd\\sqrt{",
 "expr": "gcd(sqrt())",
-"error": "Wrong number of values for that function"
+"error": "'sqrt' needs a value — try sqrt(…)"
 },
 {
 "latex": "\\rfloorpi",
@@ -9528,7 +9528,7 @@
 {
 "latex": "2\\ln-\\,\\infty4\\deg",
 "expr": "2*ln()-inf*4*deg()",
-"error": "Wrong number of values for that function"
+"error": "'ln' needs a value — try ln(…)"
 },
 {
 "latex": "\\right|8",
@@ -9639,7 +9639,7 @@
 {
 "latex": "|0\\sqrt[3]{",
 "expr": "abs(0*cbrt())",
-"error": "Wrong number of values for that function"
+"error": "'cbrt' needs a value — try cbrt(…)"
 },
 {
 "latex": "\\gcd_\\tan-\\lfloor\\tau[=",
@@ -9714,7 +9714,7 @@
 {
 "latex": "\\gcd",
 "expr": "gcd()",
-"value": 0.0
+"error": "'gcd' needs a value — try gcd(…)"
 },
 {
 "latex": "\\pi,1x",
@@ -9762,7 +9762,7 @@
 {
 "latex": "6\\sqrt{",
 "expr": "6*sqrt()",
-"error": "Wrong number of values for that function"
+"error": "'sqrt' needs a value — try sqrt(…)"
 },
 {
 "latex": "x\\right)\\log\\frac{\\div|",
@@ -9775,7 +9775,7 @@
 {
 "latex": "(9. 0\\lg",
 "expr": "(9.0*log10())",
-"error": "Wrong number of values for that function"
+"error": "'log10' needs a value — try log10(…)"
 },
 {
 "latex": "\\right)\\gcd10\\expa\\arcsin\\lceil\\log\\lfloor3",
@@ -9922,7 +9922,7 @@
 },
 {
 "expr": "round(2.5)",
-"value": 2.0
+"value": 3.0
 },
 {
 "expr": "round(3.5)",
@@ -9930,7 +9930,7 @@
 },
 {
 "expr": "round(-2.5)",
-"value": -2.0
+"value": -3.0
 },
 {
 "expr": "round(2.675, 2)",
@@ -9942,11 +9942,11 @@
 },
 {
 "expr": "round(1250, -2)",
-"value": 1200.0
+"value": 1300.0
 },
 {
 "expr": "round(5/2)",
-"value": 2.0
+"value": 3.0
 },
 {
 "expr": "round(7/2, 0)",
@@ -9978,7 +9978,7 @@
 },
 {
 "expr": "round(5, 10^30)",
-"value": 5.0
+"error": "That is too many digits to round to"
 },
 {
 "expr": "round(1/3, 10)",
@@ -9994,7 +9994,7 @@
 },
 {
 "expr": "round(-5, -1)",
-"value": 0.0
+"value": -10.0
 },
 {
 "expr": "round(15, -1)",
@@ -10574,7 +10574,7 @@
 },
 {
 "expr": "log(10 ** 400)",
-"value": 921.0340371976182
+"value": 400.0
 },
 {
 "expr": "log(10 ** 400, 10)",
@@ -10614,7 +10614,7 @@
 },
 {
 "expr": "log()",
-"error": "Wrong number of values for that function"
+"error": "'log' needs a value — try log(…)"
 },
 {
 "expr": "log2(0.1)",
@@ -10694,7 +10694,7 @@
 },
 {
 "expr": "perm(-1)",
-"error": "Factorial() not defined for negative values"
+"error": "factorial needs a non-negative whole number"
 },
 {
 "expr": "perm(3, -1)",
@@ -10710,15 +10710,15 @@
 },
 {
 "expr": "perm(2.5)",
-"error": "'Fraction' object cannot be interpreted as an integer"
+"error": "factorial needs a non-negative whole number"
 },
 {
 "expr": "perm(sqrt(4))",
-"error": "'float' object cannot be interpreted as an integer"
+"value": 2.0
 },
 {
 "expr": "perm()",
-"error": "Wrong number of values for that function"
+"error": "'perm' needs a value — try perm(…)"
 },
 {
 "expr": "perm(5, 2, 1)",
@@ -10742,11 +10742,11 @@
 },
 {
 "expr": "min()",
-"error": "Wrong number of values for that function"
+"error": "'min' needs a value — try min(…)"
 },
 {
 "expr": "max()",
-"error": "Wrong number of values for that function"
+"error": "'max' needs a value — try max(…)"
 },
 {
 "expr": "min(1, 1.0)",
@@ -10798,7 +10798,7 @@
 },
 {
 "expr": "gcd()",
-"value": 0.0
+"error": "'gcd' needs a value — try gcd(…)"
 },
 {
 "expr": "gcd(12)",
@@ -10810,7 +10810,7 @@
 },
 {
 "expr": "lcm()",
-"value": 1.0
+"error": "'lcm' needs a value — try lcm(…)"
 },
 {
 "expr": "lcm(4, 6)",
@@ -10882,7 +10882,7 @@
 },
 {
 "expr": "round()",
-"error": "Wrong number of values for that function"
+"error": "'round' needs a value — try round(…)"
 },
 {
 "expr": "round(2.5, 1, 1)",
@@ -10890,11 +10890,11 @@
 },
 {
 "expr": "round(-0.5)",
-"value": 0.0
+"value": -1.0
 },
 {
 "expr": "round(0.5)",
-"value": 0.0
+"value": 1.0
 },
 {
 "expr": "round(1.5)",
@@ -10906,7 +10906,7 @@
 },
 {
 "expr": "round(sqrt(6.25))",
-"value": 2.0
+"value": 3.0
 },
 {
 "expr": "floor(inf - inf)",
@@ -10994,7 +10994,7 @@
 },
 {
 "expr": "factorial()",
-"error": "Wrong number of values for that function"
+"error": "'factorial' needs a value — try factorial(…)"
 },
 {
 "expr": "factorial(170) * 1.0",
@@ -11122,11 +11122,11 @@
 },
 {
 "expr": "sqrt()",
-"error": "Wrong number of values for that function"
+"error": "'sqrt' needs a value — try sqrt(…)"
 },
 {
 "expr": "abs()",
-"error": "Wrong number of values for that function"
+"error": "'abs' needs a value — try abs(…)"
 },
 {
 "expr": "abs(-2.5)",
@@ -12426,7 +12426,7 @@
 },
 {
 "expr": "log(e)",
-"value": 1.0
+"value": 0.4342944819032518
 },
 {
 "expr": "max(8.8e-4 % 1 - 8e-2, gcd(36, 85)) - pi",
@@ -12542,7 +12542,7 @@
 },
 {
 "expr": "log(hypot(tau − 20, 17) // 3.0e-5)",
-"value": 13.498229389125818
+"value": 5.862206539161644
 },
 {
 "expr": "factorial(11)",
@@ -17062,7 +17062,7 @@
 },
 {
 "expr": "deg()",
-"error": "Wrong number of values for that function"
+"error": "'deg' needs a value — try deg(…)"
 },
 {
 "expr": "min(exp(ln(trunc(5",
@@ -17079,2280 +17079,6 @@
 {
 "expr": "hypot(max(round(",
 "error": "Couldn't read that expression"
-}
-],
-"expr_to_latex": [
-{
-"expr": "2**10",
-"latex": "2^{10}"
-},
-{
-"expr": "2 ** -3",
-"latex": "2 ^{-3}"
-},
-{
-"expr": "2^x",
-"latex": "2^{x}"
-},
-{
-"expr": "x ** 2.5",
-"latex": "x ^{2.5}"
-},
-{
-"expr": "2 **(3)",
-"latex": "2 ^(3)"
-},
-{
-"expr": "a**b**c",
-"latex": "a^{b}^{c}"
-},
-{
-"expr": "50%",
-"latex": "50\\%"
-},
-{
-"expr": "10 % 3",
-"latex": "10 \\% 3"
-},
-{
-"expr": "2***3",
-"latex": "2*^{3}"
-},
-{
-"expr": "x**  -y",
-"latex": "x^{-y}"
-},
-{
-"expr": "**2",
-"latex": "^{2}"
-},
-{
-"expr": "2**-",
-"latex": "2^-"
-},
-{
-"expr": "2 ** - 3",
-"latex": "2 ^ - 3"
-},
-{
-"expr": "sqrt(2) * sin(pi/4) + 3^10 % 7",
-"latex": "sqrt(2) * sin(pi/4) + 3^{10} \\% 7"
-},
-{
-"expr": "log10(100) + 2**10 // 3",
-"latex": "log10(100) + 2^{10} // 3"
-},
-{
-"expr": "e**é",
-"latex": "e^{é}"
-},
-{
-"expr": "2**_a",
-"latex": "2^{_a}"
-},
-{
-"expr": "1**.5",
-"latex": "1^{.5}"
-},
-{
-"expr": "2**x²",
-"latex": "2^{x²}"
-},
-{
-"expr": "2^ x",
-"latex": "2^{x}"
-},
-{
-"expr": "",
-"latex": ""
-},
-{
-"expr": "plain",
-"latex": "plain"
-},
-{
-"expr": "3/8",
-"latex": "3/8"
-},
-{
-"expr": "sqrt(2)/2",
-"latex": "sqrt(2)/2"
-},
-{
-"expr": "2e-3",
-"latex": "2e-3"
-},
-{
-"expr": "1.5 × 10^3",
-"latex": "1.5 × 10^{3}"
-},
-{
-"expr": "6.02e23",
-"latex": "6.02e23"
-},
-{
-"expr": "pi/4",
-"latex": "pi/4"
-},
-{
-"expr": "-1/3",
-"latex": "-1/3"
-},
-{
-"expr": "2^-2",
-"latex": "2^{-2}"
-},
-{
-"expr": "0.1+0.2",
-"latex": "0.1+0.2"
-},
-{
-"expr": "1/3",
-"latex": "1/3"
-},
-{
-"expr": "(1+sqrt(5))/2",
-"latex": "(1+sqrt(5))/2"
-},
-{
-"expr": "e^2",
-"latex": "e^{2}"
-},
-{
-"expr": "ln(2)",
-"latex": "ln(2)"
-},
-{
-"expr": "log(8, 2)",
-"latex": "log(8, 2)"
-},
-{
-"expr": "log10(1000)",
-"latex": "log10(1000)"
-},
-{
-"expr": "100%7",
-"latex": "100\\%7"
-},
-{
-"expr": "7//2",
-"latex": "7//2"
-},
-{
-"expr": "10**-2",
-"latex": "10^{-2}"
-},
-{
-"expr": "3 ÷ 4",
-"latex": "3 ÷ 4"
-},
-{
-"expr": "−5",
-"latex": "−5"
-},
-{
-"expr": " 42 ",
-"latex": " 42 "
-},
-{
-"expr": "1,000",
-"latex": "1,000"
-},
-{
-"expr": "\\frac{3}{8}",
-"latex": "\\frac{3}{8}"
-},
-{
-"expr": "   ",
-"latex": "   "
-},
-{
-"expr": "1/3 + 1/6",
-"latex": "1/3 + 1/6"
-},
-{
-"expr": "gcd(8/2, 6)",
-"latex": "gcd(8/2, 6)"
-},
-{
-"expr": "abs(-3)",
-"latex": "abs(-3)"
-},
-{
-"expr": "round(2.5)",
-"latex": "round(2.5)"
-},
-{
-"expr": "round(3.5)",
-"latex": "round(3.5)"
-},
-{
-"expr": "round(-2.5)",
-"latex": "round(-2.5)"
-},
-{
-"expr": "round(2.675, 2)",
-"latex": "round(2.675, 2)"
-},
-{
-"expr": "round(1234, -2)",
-"latex": "round(1234, -2)"
-},
-{
-"expr": "round(1250, -2)",
-"latex": "round(1250, -2)"
-},
-{
-"expr": "round(5/2)",
-"latex": "round(5/2)"
-},
-{
-"expr": "round(7/2, 0)",
-"latex": "round(7/2, 0)"
-},
-{
-"expr": "round(7/3, 3)",
-"latex": "round(7/3, 3)"
-},
-{
-"expr": "round(1e300, 2)",
-"latex": "round(1e300, 2)"
-},
-{
-"expr": "round(sqrt(2), 400)",
-"latex": "round(sqrt(2), 400)"
-},
-{
-"expr": "round(sqrt(2), -400)",
-"latex": "round(sqrt(2), -400)"
-},
-{
-"expr": "round(123.456, -1)",
-"latex": "round(123.456, -1)"
-},
-{
-"expr": "round(10^20+0.5)",
-"latex": "round(10^{20}+0.5)"
-},
-{
-"expr": "round(5, 10^30)",
-"latex": "round(5, 10^{30})"
-},
-{
-"expr": "round(1/3, 10)",
-"latex": "round(1/3, 10)"
-},
-{
-"expr": "round(1/3, 30)",
-"latex": "round(1/3, 30)"
-},
-{
-"expr": "round(5, -3)",
-"latex": "round(5, -3)"
-},
-{
-"expr": "round(-5, -1)",
-"latex": "round(-5, -1)"
-},
-{
-"expr": "round(15, -1)",
-"latex": "round(15, -1)"
-},
-{
-"expr": "2 + 3 ^ 2",
-"latex": "2 + 3 ^{2}"
-},
-{
-"expr": "-2**2",
-"latex": "-2^{2}"
-},
-{
-"expr": "7 // 2 + 7 % 2",
-"latex": "7 // 2 + 7 \\% 2"
-},
-{
-"expr": "sqrt(16) + log(8, 2) + ln(e)",
-"latex": "sqrt(16) + log(8, 2) + ln(e)"
-},
-{
-"expr": "factorial(5) / comb(5, 2)",
-"latex": "factorial(5) / comb(5, 2)"
-},
-{
-"expr": "sin(pi / 6)",
-"latex": "sin(pi / 6)"
-},
-{
-"expr": "sin(pi)",
-"latex": "sin(pi)"
-},
-{
-"expr": "1/0",
-"latex": "1/0"
-},
-{
-"expr": "sqrt(-1)",
-"latex": "sqrt(-1)"
-},
-{
-"expr": "(-8) ^ (1/3)",
-"latex": "(-8) ^ (1/3)"
-},
-{
-"expr": "9 ^ 9 ^ 9",
-"latex": "9 ^{9} ^{9}"
-},
-{
-"expr": "factorial(100000)",
-"latex": "factorial(100000)"
-},
-{
-"expr": "__import__('os')",
-"latex": "__import__('os')"
-},
-{
-"expr": "x",
-"latex": "x"
-},
-{
-"expr": "sin",
-"latex": "sin"
-},
-{
-"expr": "2 +",
-"latex": "2 +"
-},
-{
-"expr": "(1).real",
-"latex": "(1).real"
-},
-{
-"expr": "[1, 2]",
-"latex": "[1, 2]"
-},
-{
-"expr": "True + 1",
-"latex": "True + 1"
-},
-{
-"expr": "abs(1, 2)",
-"latex": "abs(1, 2)"
-},
-{
-"expr": "6/3",
-"latex": "6/3"
-},
-{
-"expr": "sqrt(16)",
-"latex": "sqrt(16)"
-},
-{
-"expr": "-7 // 2",
-"latex": "-7 // 2"
-},
-{
-"expr": "-7 % 3",
-"latex": "-7 \\% 3"
-},
-{
-"expr": "7 % -3",
-"latex": "7 \\% -3"
-},
-{
-"expr": "-7.5 // 2",
-"latex": "-7.5 // 2"
-},
-{
-"expr": "7.5 % -2",
-"latex": "7.5 \\% -2"
-},
-{
-"expr": "-sqrt(2) // 1",
-"latex": "-sqrt(2) // 1"
-},
-{
-"expr": "sqrt(2) % -1",
-"latex": "sqrt(2) \\% -1"
-},
-{
-"expr": "inf % 2",
-"latex": "inf \\% 2"
-},
-{
-"expr": "inf // 1",
-"latex": "inf // 1"
-},
-{
-"expr": "2 % inf",
-"latex": "2 \\% inf"
-},
-{
-"expr": "-2 % inf",
-"latex": "-2 \\% inf"
-},
-{
-"expr": "1 // inf",
-"latex": "1 // inf"
-},
-{
-"expr": "-1 // inf",
-"latex": "-1 // inf"
-},
-{
-"expr": "inf - inf",
-"latex": "inf - inf"
-},
-{
-"expr": "inf * 0",
-"latex": "inf * 0"
-},
-{
-"expr": "0 * inf",
-"latex": "0 * inf"
-},
-{
-"expr": "inf / inf",
-"latex": "inf / inf"
-},
-{
-"expr": "1 / inf",
-"latex": "1 / inf"
-},
-{
-"expr": "(inf-inf) ** 0",
-"latex": "(inf-inf) ^{0}"
-},
-{
-"expr": "(-inf) ** 0.5",
-"latex": "(-inf) ^{0.5}"
-},
-{
-"expr": "(-inf) ** 3",
-"latex": "(-inf) ^{3}"
-},
-{
-"expr": "(-inf) ** -3",
-"latex": "(-inf) ^{-3}"
-},
-{
-"expr": "inf ** -1",
-"latex": "inf ^{-1}"
-},
-{
-"expr": "0.5 ** inf",
-"latex": "0.5 ^{inf}"
-},
-{
-"expr": "2 ** inf",
-"latex": "2 ^{inf}"
-},
-{
-"expr": "(-1) ** inf",
-"latex": "(-1) ^{inf}"
-},
-{
-"expr": "2 ** -inf",
-"latex": "2 ^{-inf}"
-},
-{
-"expr": "(-2) ** 3.0",
-"latex": "(-2) ^{3.0}"
-},
-{
-"expr": "(-2) ** 0.5",
-"latex": "(-2) ^{0.5}"
-},
-{
-"expr": "0 ** 0",
-"latex": "0 ^{0}"
-},
-{
-"expr": "0.0 ** 0",
-"latex": "0.0 ^{0}"
-},
-{
-"expr": "0 ** -1",
-"latex": "0 ^{-1}"
-},
-{
-"expr": "0.0 ** -1",
-"latex": "0.0 ^{-1}"
-},
-{
-"expr": "0.0 ** -0.5",
-"latex": "0.0 ^{-0.5}"
-},
-{
-"expr": "sqrt(0) ** -2",
-"latex": "sqrt(0) ^{-2}"
-},
-{
-"expr": "(-0.0) ** -1",
-"latex": "(-0.0) ^{-1}"
-},
-{
-"expr": "10.0 ** 400",
-"latex": "10.0 ^{400}"
-},
-{
-"expr": "10 ** 400",
-"latex": "10 ^{400}"
-},
-{
-"expr": "10 ** 4000",
-"latex": "10 ^{4000}"
-},
-{
-"expr": "10 ** 3000",
-"latex": "10 ^{3000}"
-},
-{
-"expr": "(10 ** 3000) ** 2",
-"latex": "(10 ^{3000}) ^{2}"
-},
-{
-"expr": "10 ** 3000 * 10 ** 3000",
-"latex": "10 ^{3000} * 10 ^{3000}"
-},
-{
-"expr": "2 ** 13999",
-"latex": "2 ^{13999}"
-},
-{
-"expr": "2 ** 14000",
-"latex": "2 ^{14000}"
-},
-{
-"expr": "2 ** 14001",
-"latex": "2 ^{14001}"
-},
-{
-"expr": "(1/2) ** 7000",
-"latex": "(1/2) ^{7000}"
-},
-{
-"expr": "(1/2) ** 7001",
-"latex": "(1/2) ^{7001}"
-},
-{
-"expr": "3 ** 0.5",
-"latex": "3 ^{0.5}"
-},
-{
-"expr": "4 ** (1/2)",
-"latex": "4 ^ (1/2)"
-},
-{
-"expr": "8 ** (1/3)",
-"latex": "8 ^ (1/3)"
-},
-{
-"expr": "27 ** (2/3)",
-"latex": "27 ^ (2/3)"
-},
-{
-"expr": "(1/4) ** (1/2)",
-"latex": "(1/4) ^ (1/2)"
-},
-{
-"expr": "(-1) ** (10**100)",
-"latex": "(-1) ^ (10^{100})"
-},
-{
-"expr": "(-1) ** (10**100 + 1)",
-"latex": "(-1) ^ (10^{100} + 1)"
-},
-{
-"expr": "1 ** (10 ** 100)",
-"latex": "1 ^ (10 ^{100})"
-},
-{
-"expr": "0 ** (10 ** 100)",
-"latex": "0 ^ (10 ^{100})"
-},
-{
-"expr": "0 ** -(10 ** 100)",
-"latex": "0 ^ -(10 ^{100})"
-},
-{
-"expr": "2 ** 0.5 ** 2",
-"latex": "2 ^{0.5} ^{2}"
-},
-{
-"expr": "1e308 * 10",
-"latex": "1e308 * 10"
-},
-{
-"expr": "1e308 * 10.5",
-"latex": "1e308 * 10.5"
-},
-{
-"expr": "1e400",
-"latex": "1e400"
-},
-{
-"expr": "-1e400",
-"latex": "-1e400"
-},
-{
-"expr": "1e-400",
-"latex": "1e-400"
-},
-{
-"expr": "1e-400 * 1e400",
-"latex": "1e-400 * 1e400"
-},
-{
-"expr": "float(1)",
-"latex": "float(1)"
-},
-{
-"expr": "1if 1 else 2",
-"latex": "1if 1 else 2"
-},
-{
-"expr": "2pi",
-"latex": "2pi"
-},
-{
-"expr": "1_000",
-"latex": "1_000"
-},
-{
-"expr": "1_000.5",
-"latex": "1_000.5"
-},
-{
-"expr": "0x1F",
-"latex": "0x1F"
-},
-{
-"expr": "0X1f",
-"latex": "0X1f"
-},
-{
-"expr": "0x_1f",
-"latex": "0x_1f"
-},
-{
-"expr": "0o17",
-"latex": "0o17"
-},
-{
-"expr": "0b101",
-"latex": "0b101"
-},
-{
-"expr": "0b2",
-"latex": "0b2"
-},
-{
-"expr": "0o8",
-"latex": "0o8"
-},
-{
-"expr": "0x",
-"latex": "0x"
-},
-{
-"expr": "01",
-"latex": "01"
-},
-{
-"expr": "00",
-"latex": "00"
-},
-{
-"expr": "0_0",
-"latex": "0_0"
-},
-{
-"expr": "1__0",
-"latex": "1__0"
-},
-{
-"expr": "1_",
-"latex": "1_"
-},
-{
-"expr": "1e",
-"latex": "1e"
-},
-{
-"expr": "1e+",
-"latex": "1e+"
-},
-{
-"expr": "1e5",
-"latex": "1e5"
-},
-{
-"expr": "1E5",
-"latex": "1E5"
-},
-{
-"expr": "1.e5",
-"latex": "1.e5"
-},
-{
-"expr": ".5",
-"latex": ".5"
-},
-{
-"expr": "5.",
-"latex": "5."
-},
-{
-"expr": "1.5j",
-"latex": "1.5j"
-},
-{
-"expr": "1j",
-"latex": "1j"
-},
-{
-"expr": "True",
-"latex": "True"
-},
-{
-"expr": "None",
-"latex": "None"
-},
-{
-"expr": "...",
-"latex": "..."
-},
-{
-"expr": "\"a\"",
-"latex": "\"a\""
-},
-{
-"expr": "1/0 + 'a'",
-"latex": "1/0 + 'a'"
-},
-{
-"expr": "[1]",
-"latex": "[1]"
-},
-{
-"expr": "f(x=1)",
-"latex": "f(x=1)"
-},
-{
-"expr": "sin(1,2)",
-"latex": "sin(1,2)"
-},
-{
-"expr": "atan2(1)",
-"latex": "atan2(1)"
-},
-{
-"expr": "ans",
-"latex": "ans"
-},
-{
-"expr": "ee",
-"latex": "ee"
-},
-{
-"expr": "eee",
-"latex": "eee"
-},
-{
-"expr": "pi(1)",
-"latex": "pi(1)"
-},
-{
-"expr": "ans(2)",
-"latex": "ans(2)"
-},
-{
-"expr": "foo(1/0)",
-"latex": "foo(1/0)"
-},
-{
-"expr": "foo(1)",
-"latex": "foo(1)"
-},
-{
-"expr": "sin(inf)",
-"latex": "sin(inf)"
-},
-{
-"expr": "tan(1e300)",
-"latex": "tan(1e300)"
-},
-{
-"expr": "sin(1e300)",
-"latex": "sin(1e300)"
-},
-{
-"expr": "cos(1e22)",
-"latex": "cos(1e22)"
-},
-{
-"expr": "exp(709)",
-"latex": "exp(709)"
-},
-{
-"expr": "exp(710)",
-"latex": "exp(710)"
-},
-{
-"expr": "exp(-inf)",
-"latex": "exp(-inf)"
-},
-{
-"expr": "exp(inf)",
-"latex": "exp(inf)"
-},
-{
-"expr": "log(0)",
-"latex": "log(0)"
-},
-{
-"expr": "log(-1)",
-"latex": "log(-1)"
-},
-{
-"expr": "log(inf)",
-"latex": "log(inf)"
-},
-{
-"expr": "log(-inf)",
-"latex": "log(-inf)"
-},
-{
-"expr": "log(10 ** 400)",
-"latex": "log(10 ^{400})"
-},
-{
-"expr": "log(10 ** 400, 10)",
-"latex": "log(10 ^{400}, 10)"
-},
-{
-"expr": "log10(10 ** 400)",
-"latex": "log10(10 ^{400})"
-},
-{
-"expr": "log2(2 ** 1100)",
-"latex": "log2(2 ^{1100})"
-},
-{
-"expr": "log2(10 ** 400)",
-"latex": "log2(10 ^{400})"
-},
-{
-"expr": "log(2 ** 1100 + 1/2)",
-"latex": "log(2 ^{1100} + 1/2)"
-},
-{
-"expr": "log(1/10 ** 400)",
-"latex": "log(1/10 ^{400})"
-},
-{
-"expr": "log(8, 1)",
-"latex": "log(8, 1)"
-},
-{
-"expr": "log(8, 0)",
-"latex": "log(8, 0)"
-},
-{
-"expr": "log(8, 2, 3)",
-"latex": "log(8, 2, 3)"
-},
-{
-"expr": "log()",
-"latex": "log()"
-},
-{
-"expr": "log2(0.1)",
-"latex": "log2(0.1)"
-},
-{
-"expr": "log2(1024)",
-"latex": "log2(1024)"
-},
-{
-"expr": "log2(2 ** -1074 * 1.0)",
-"latex": "log2(2 ^{-1074} * 1.0)"
-},
-{
-"expr": "log10(0.001)",
-"latex": "log10(0.001)"
-},
-{
-"expr": "hypot(1e308, 1e308)",
-"latex": "hypot(1e308, 1e308)"
-},
-{
-"expr": "hypot(3e307, 4e307)",
-"latex": "hypot(3e307, 4e307)"
-},
-{
-"expr": "hypot(inf, inf - inf)",
-"latex": "hypot(inf, inf - inf)"
-},
-{
-"expr": "hypot(inf - inf, 1)",
-"latex": "hypot(inf - inf, 1)"
-},
-{
-"expr": "hypot(-3)",
-"latex": "hypot(-3)"
-},
-{
-"expr": "hypot(1, 2, 3, 4)",
-"latex": "hypot(1, 2, 3, 4)"
-},
-{
-"expr": "hypot(10 ** 400)",
-"latex": "hypot(10 ^{400})"
-},
-{
-"expr": "comb(-1, 2)",
-"latex": "comb(-1, 2)"
-},
-{
-"expr": "comb(5, -1)",
-"latex": "comb(5, -1)"
-},
-{
-"expr": "comb(-1, -1)",
-"latex": "comb(-1, -1)"
-},
-{
-"expr": "comb(-1, 2.5)",
-"latex": "comb(-1, 2.5)"
-},
-{
-"expr": "comb(5, 7)",
-"latex": "comb(5, 7)"
-},
-{
-"expr": "comb(10 ** 30, 2)",
-"latex": "comb(10 ^{30}, 2)"
-},
-{
-"expr": "comb(1000, 500)",
-"latex": "comb(1000, 500)"
-},
-{
-"expr": "comb(10 ** 6, 5 * 10 ** 5)",
-"latex": "comb(10 ^{6}, 5 * 10 ^{5})"
-},
-{
-"expr": "perm(-1)",
-"latex": "perm(-1)"
-},
-{
-"expr": "perm(3, -1)",
-"latex": "perm(3, -1)"
-},
-{
-"expr": "perm(5)",
-"latex": "perm(5)"
-},
-{
-"expr": "perm(5, 0)",
-"latex": "perm(5, 0)"
-},
-{
-"expr": "perm(2.5)",
-"latex": "perm(2.5)"
-},
-{
-"expr": "perm(sqrt(4))",
-"latex": "perm(sqrt(4))"
-},
-{
-"expr": "perm()",
-"latex": "perm()"
-},
-{
-"expr": "perm(5, 2, 1)",
-"latex": "perm(5, 2, 1)"
-},
-{
-"expr": "perm(10 ** 6, 3)",
-"latex": "perm(10 ^{6}, 3)"
-},
-{
-"expr": "min(3)",
-"latex": "min(3)"
-},
-{
-"expr": "min(2.5)",
-"latex": "min(2.5)"
-},
-{
-"expr": "max(sqrt(2))",
-"latex": "max(sqrt(2))"
-},
-{
-"expr": "min()",
-"latex": "min()"
-},
-{
-"expr": "max()",
-"latex": "max()"
-},
-{
-"expr": "min(1, 1.0)",
-"latex": "min(1, 1.0)"
-},
-{
-"expr": "max(1.0, 1)",
-"latex": "max(1.0, 1)"
-},
-{
-"expr": "min(inf - inf, 1)",
-"latex": "min(inf - inf, 1)"
-},
-{
-"expr": "min(1, inf - inf)",
-"latex": "min(1, inf - inf)"
-},
-{
-"expr": "max(1/3, 0.3333333333333333)",
-"latex": "max(1/3, 0.3333333333333333)"
-},
-{
-"expr": "max(0.3333333333333333, 1/3)",
-"latex": "max(0.3333333333333333, 1/3)"
-},
-{
-"expr": "min(10 ** 400, inf)",
-"latex": "min(10 ^{400}, inf)"
-},
-{
-"expr": "max(-inf, -10 ** 400)",
-"latex": "max(-inf, -10 ^{400})"
-},
-{
-"expr": "gcd(2.5, 1)",
-"latex": "gcd(2.5, 1)"
-},
-{
-"expr": "gcd(sqrt(4), 2)",
-"latex": "gcd(sqrt(4), 2)"
-},
-{
-"expr": "gcd(-4, 6)",
-"latex": "gcd(-4, 6)"
-},
-{
-"expr": "gcd(0, 0)",
-"latex": "gcd(0, 0)"
-},
-{
-"expr": "gcd()",
-"latex": "gcd()"
-},
-{
-"expr": "gcd(12)",
-"latex": "gcd(12)"
-},
-{
-"expr": "gcd(12, 18, 8)",
-"latex": "gcd(12, 18, 8)"
-},
-{
-"expr": "lcm()",
-"latex": "lcm()"
-},
-{
-"expr": "lcm(4, 6)",
-"latex": "lcm(4, 6)"
-},
-{
-"expr": "lcm(0, 5)",
-"latex": "lcm(0, 5)"
-},
-{
-"expr": "lcm(-4, 6)",
-"latex": "lcm(-4, 6)"
-},
-{
-"expr": "lcm(4, 2.5)",
-"latex": "lcm(4, 2.5)"
-},
-{
-"expr": "round(2.5, 1.5)",
-"latex": "round(2.5, 1.5)"
-},
-{
-"expr": "round(2.5, -1.5)",
-"latex": "round(2.5, -1.5)"
-},
-{
-"expr": "round(2.5, sqrt(4))",
-"latex": "round(2.5, sqrt(4))"
-},
-{
-"expr": "round(2.5, -sqrt(4))",
-"latex": "round(2.5, -sqrt(4))"
-},
-{
-"expr": "round(250.5, -sqrt(4))",
-"latex": "round(250.5, -sqrt(4))"
-},
-{
-"expr": "round(sqrt(2), 2.5)",
-"latex": "round(sqrt(2), 2.5)"
-},
-{
-"expr": "round(sqrt(2), 2)",
-"latex": "round(sqrt(2), 2)"
-},
-{
-"expr": "round(inf)",
-"latex": "round(inf)"
-},
-{
-"expr": "round(inf - inf)",
-"latex": "round(inf - inf)"
-},
-{
-"expr": "round(inf, 2)",
-"latex": "round(inf, 2)"
-},
-{
-"expr": "round(1.7e308 * 10, -308)",
-"latex": "round(1.7e308 * 10, -308)"
-},
-{
-"expr": "round(1.7e308, -308)",
-"latex": "round(1.7e308, -308)"
-},
-{
-"expr": "round(sqrt(1.7e308)**2, -308)",
-"latex": "round(sqrt(1.7e308)^{2}, -308)"
-},
-{
-"expr": "round()",
-"latex": "round()"
-},
-{
-"expr": "round(2.5, 1, 1)",
-"latex": "round(2.5, 1, 1)"
-},
-{
-"expr": "round(-0.5)",
-"latex": "round(-0.5)"
-},
-{
-"expr": "round(0.5)",
-"latex": "round(0.5)"
-},
-{
-"expr": "round(1.5)",
-"latex": "round(1.5)"
-},
-{
-"expr": "round(-1.5)",
-"latex": "round(-1.5)"
-},
-{
-"expr": "round(sqrt(6.25))",
-"latex": "round(sqrt(6.25))"
-},
-{
-"expr": "floor(inf - inf)",
-"latex": "floor(inf - inf)"
-},
-{
-"expr": "floor(inf)",
-"latex": "floor(inf)"
-},
-{
-"expr": "floor(-inf)",
-"latex": "floor(-inf)"
-},
-{
-"expr": "floor(-2.5)",
-"latex": "floor(-2.5)"
-},
-{
-"expr": "floor(7/2)",
-"latex": "floor(7/2)"
-},
-{
-"expr": "floor(-7/2)",
-"latex": "floor(-7/2)"
-},
-{
-"expr": "ceil(-7/2)",
-"latex": "ceil(-7/2)"
-},
-{
-"expr": "ceil(sqrt(2))",
-"latex": "ceil(sqrt(2))"
-},
-{
-"expr": "trunc(-7/2)",
-"latex": "trunc(-7/2)"
-},
-{
-"expr": "trunc(-sqrt(2))",
-"latex": "trunc(-sqrt(2))"
-},
-{
-"expr": "trunc(inf - inf)",
-"latex": "trunc(inf - inf)"
-},
-{
-"expr": "floor(1e300)",
-"latex": "floor(1e300)"
-},
-{
-"expr": "floor(2, 3)",
-"latex": "floor(2, 3)"
-},
-{
-"expr": "factorial(inf)",
-"latex": "factorial(inf)"
-},
-{
-"expr": "factorial(inf - inf)",
-"latex": "factorial(inf - inf)"
-},
-{
-"expr": "factorial(2.5)",
-"latex": "factorial(2.5)"
-},
-{
-"expr": "factorial(5.0)",
-"latex": "factorial(5.0)"
-},
-{
-"expr": "factorial(sqrt(25))",
-"latex": "factorial(sqrt(25))"
-},
-{
-"expr": "factorial(-1)",
-"latex": "factorial(-1)"
-},
-{
-"expr": "factorial(1000)",
-"latex": "factorial(1000)"
-},
-{
-"expr": "factorial(1001)",
-"latex": "factorial(1001)"
-},
-{
-"expr": "factorial()",
-"latex": "factorial()"
-},
-{
-"expr": "factorial(170) * 1.0",
-"latex": "factorial(170) * 1.0"
-},
-{
-"expr": "factorial(171) * 1.0",
-"latex": "factorial(171) * 1.0"
-},
-{
-"expr": "atanh(1)",
-"latex": "atanh(1)"
-},
-{
-"expr": "atanh(-1)",
-"latex": "atanh(-1)"
-},
-{
-"expr": "atanh(0.5)",
-"latex": "atanh(0.5)"
-},
-{
-"expr": "atanh(1e-20)",
-"latex": "atanh(1e-20)"
-},
-{
-"expr": "asinh(1e-20)",
-"latex": "asinh(1e-20)"
-},
-{
-"expr": "asinh(-2)",
-"latex": "asinh(-2)"
-},
-{
-"expr": "asinh(1e300)",
-"latex": "asinh(1e300)"
-},
-{
-"expr": "acosh(0.5)",
-"latex": "acosh(0.5)"
-},
-{
-"expr": "acosh(1)",
-"latex": "acosh(1)"
-},
-{
-"expr": "acosh(1e300)",
-"latex": "acosh(1e300)"
-},
-{
-"expr": "acosh(1.5)",
-"latex": "acosh(1.5)"
-},
-{
-"expr": "sinh(1000)",
-"latex": "sinh(1000)"
-},
-{
-"expr": "cosh(1000)",
-"latex": "cosh(1000)"
-},
-{
-"expr": "tanh(1000)",
-"latex": "tanh(1000)"
-},
-{
-"expr": "sinh(-inf)",
-"latex": "sinh(-inf)"
-},
-{
-"expr": "asin(2)",
-"latex": "asin(2)"
-},
-{
-"expr": "acos(-1)",
-"latex": "acos(-1)"
-},
-{
-"expr": "atan(inf)",
-"latex": "atan(inf)"
-},
-{
-"expr": "atan2(0, -1)",
-"latex": "atan2(0, -1)"
-},
-{
-"expr": "atan2(-0.0, -1)",
-"latex": "atan2(-0.0, -1)"
-},
-{
-"expr": "atan2(inf, inf)",
-"latex": "atan2(inf, inf)"
-},
-{
-"expr": "deg(1e308)",
-"latex": "deg(1e308)"
-},
-{
-"expr": "deg(pi)",
-"latex": "deg(pi)"
-},
-{
-"expr": "rad(180)",
-"latex": "rad(180)"
-},
-{
-"expr": "deg(10 ** 400)",
-"latex": "deg(10 ^{400})"
-},
-{
-"expr": "sqrt(10 ** 400)",
-"latex": "sqrt(10 ^{400})"
-},
-{
-"expr": "sqrt(1e308 * 10)",
-"latex": "sqrt(1e308 * 10)"
-},
-{
-"expr": "cbrt(-27)",
-"latex": "cbrt(-27)"
-},
-{
-"expr": "cbrt(10 ** 400)",
-"latex": "cbrt(10 ^{400})"
-},
-{
-"expr": "sqrt()",
-"latex": "sqrt()"
-},
-{
-"expr": "abs()",
-"latex": "abs()"
-},
-{
-"expr": "abs(-2.5)",
-"latex": "abs(-2.5)"
-},
-{
-"expr": "abs(-inf)",
-"latex": "abs(-inf)"
-},
-{
-"expr": "abs(-7/2)",
-"latex": "abs(-7/2)"
-},
-{
-"expr": "sqrt(2)^10000",
-"latex": "sqrt(2)^{10000}"
-},
-{
-"expr": "sqrt(2) ** 2000",
-"latex": "sqrt(2) ^{2000}"
-},
-{
-"expr": "sqrt(2) ** 2047",
-"latex": "sqrt(2) ^{2047}"
-},
-{
-"expr": "sqrt(2) ** 2048",
-"latex": "sqrt(2) ^{2048}"
-},
-{
-"expr": "1.5e308 * 10",
-"latex": "1.5e308 * 10"
-},
-{
-"expr": "(1e308 * 10) * 1.0",
-"latex": "(1e308 * 10) * 1.0"
-},
-{
-"expr": "10 ** 309 * 1.0",
-"latex": "10 ^{309} * 1.0"
-},
-{
-"expr": "10 ** 309 + 0.5",
-"latex": "10 ^{309} + 0.5"
-},
-{
-"expr": "10 ** 308 / 0.1",
-"latex": "10 ^{308} / 0.1"
-},
-{
-"expr": "1 / 10 ** 400 * 1.0",
-"latex": "1 / 10 ^{400} * 1.0"
-},
-{
-"expr": "1 / 10 ** 400",
-"latex": "1 / 10 ^{400}"
-},
-{
-"expr": "x = 1",
-"latex": "x = 1"
-},
-{
-"expr": "1 # c",
-"latex": "1 # c"
-},
-{
-"expr": "# c",
-"latex": "# c"
-},
-{
-"expr": "(1\n+2)",
-"latex": "(1\n+2)"
-},
-{
-"expr": "1\n+2",
-"latex": "1\n+2"
-},
-{
-"expr": "1\n",
-"latex": "1\n"
-},
-{
-"expr": "1\\\n+2",
-"latex": "1\\\n+2"
-},
-{
-"expr": "1 \\",
-"latex": "1 \\"
-},
-{
-"expr": "'''a'''",
-"latex": "'''a'''"
-},
-{
-"expr": "await 1",
-"latex": "await 1"
-},
-{
-"expr": "lambda: 1",
-"latex": "lambda: 1"
-},
-{
-"expr": "lambda x, y=2: x",
-"latex": "lambda x, y=2: x"
-},
-{
-"expr": "1 if 2 else 3",
-"latex": "1 if 2 else 3"
-},
-{
-"expr": "not 1",
-"latex": "not 1"
-},
-{
-"expr": "1 and 2",
-"latex": "1 and 2"
-},
-{
-"expr": "1 or 2",
-"latex": "1 or 2"
-},
-{
-"expr": "a.b",
-"latex": "a.b"
-},
-{
-"expr": "x[1]",
-"latex": "x[1]"
-},
-{
-"expr": "x[1:2]",
-"latex": "x[1:2]"
-},
-{
-"expr": "x[::2, 1]",
-"latex": "x[::2, 1]"
-},
-{
-"expr": "{1}",
-"latex": "{1}"
-},
-{
-"expr": "{}",
-"latex": "{}"
-},
-{
-"expr": "{1: 2}",
-"latex": "{1: 2}"
-},
-{
-"expr": "{**a}",
-"latex": "{^{a}}"
-},
-{
-"expr": "{*a}",
-"latex": "{*a}"
-},
-{
-"expr": "()",
-"latex": "()"
-},
-{
-"expr": "(1,)",
-"latex": "(1,)"
-},
-{
-"expr": "1,2",
-"latex": "1,2"
-},
-{
-"expr": "1,",
-"latex": "1,"
-},
-{
-"expr": "*a",
-"latex": "*a"
-},
-{
-"expr": "*a, 1",
-"latex": "*a, 1"
-},
-{
-"expr": "f(*a)",
-"latex": "f(*a)"
-},
-{
-"expr": "f(**a)",
-"latex": "f(^{a})"
-},
-{
-"expr": "f(a, *b)",
-"latex": "f(a, *b)"
-},
-{
-"expr": "f(1/0, *b)",
-"latex": "f(1/0, *b)"
-},
-{
-"expr": "f(x=1, 2)",
-"latex": "f(x=1, 2)"
-},
-{
-"expr": "f(**a, *b)",
-"latex": "f(^{a}, *b)"
-},
-{
-"expr": "f(x for x in y)",
-"latex": "f(x for x in y)"
-},
-{
-"expr": "f(x for x in y, 1)",
-"latex": "f(x for x in y, 1)"
-},
-{
-"expr": "sin(x for x in y)",
-"latex": "sin(x for x in y)"
-},
-{
-"expr": "[x for x in y]",
-"latex": "[x for x in y]"
-},
-{
-"expr": "{x: 1 for x in y}",
-"latex": "{x: 1 for x in y}"
-},
-{
-"expr": "(x for x in y if z)",
-"latex": "(x for x in y if z)"
-},
-{
-"expr": "1 < 2",
-"latex": "1 < 2"
-},
-{
-"expr": "1 < 2 < 3",
-"latex": "1 < 2 < 3"
-},
-{
-"expr": "1 is not 2",
-"latex": "1 is not 2"
-},
-{
-"expr": "1 not in 2",
-"latex": "1 not in 2"
-},
-{
-"expr": "1 in 2",
-"latex": "1 in 2"
-},
-{
-"expr": "yield",
-"latex": "yield"
-},
-{
-"expr": "(yield)",
-"latex": "(yield)"
-},
-{
-"expr": "(yield 1)",
-"latex": "(yield 1)"
-},
-{
-"expr": "(yield from x)",
-"latex": "(yield from x)"
-},
-{
-"expr": "x := 1",
-"latex": "x := 1"
-},
-{
-"expr": "(x := 1)",
-"latex": "(x := 1)"
-},
-{
-"expr": "f(x := 1)",
-"latex": "f(x := 1)"
-},
-{
-"expr": "1/0 + (yield)",
-"latex": "1/0 + (yield)"
-},
-{
-"expr": "1/0+[1+]",
-"latex": "1/0+[1+]"
-},
-{
-"expr": "1/0 + (1 < 2)",
-"latex": "1/0 + (1 < 2)"
-},
-{
-"expr": "(1 < 2) + 1/0",
-"latex": "(1 < 2) + 1/0"
-},
-{
-"expr": "1/0 @ 2",
-"latex": "1/0 @ 2"
-},
-{
-"expr": "2 @ 1/0",
-"latex": "2 @ 1/0"
-},
-{
-"expr": "1 @ 2",
-"latex": "1 @ 2"
-},
-{
-"expr": "~1",
-"latex": "~1"
-},
-{
-"expr": "-~1",
-"latex": "-~1"
-},
-{
-"expr": "1 | 2",
-"latex": "1 | 2"
-},
-{
-"expr": "1 & 2",
-"latex": "1 & 2"
-},
-{
-"expr": "1 << 2",
-"latex": "1 << 2"
-},
-{
-"expr": "1 >> 2",
-"latex": "1 >> 2"
-},
-{
-"expr": "b'a'",
-"latex": "b'a'"
-},
-{
-"expr": "b'é'",
-"latex": "b'é'"
-},
-{
-"expr": "f'a{1}'",
-"latex": "f'a{1}'"
-},
-{
-"expr": "u'a'",
-"latex": "u'a'"
-},
-{
-"expr": "rb'a'",
-"latex": "rb'a'"
-},
-{
-"expr": "'a' 'b'",
-"latex": "'a' 'b'"
-},
-{
-"expr": "'a' b'b'",
-"latex": "'a' b'b'"
-},
-{
-"expr": "'a",
-"latex": "'a"
-},
-{
-"expr": "'a\nb'",
-"latex": "'a\nb'"
-},
-{
-"expr": "'a\\'b'",
-"latex": "'a\\'b'"
-},
-{
-"expr": "1andx",
-"latex": "1andx"
-},
-{
-"expr": "1 and x",
-"latex": "1 and x"
-},
-{
-"expr": "1or 2",
-"latex": "1or 2"
-},
-{
-"expr": "1else",
-"latex": "1else"
-},
-{
-"expr": "1is 2",
-"latex": "1is 2"
-},
-{
-"expr": "1in x",
-"latex": "1in x"
-},
-{
-"expr": "1not in x",
-"latex": "1not in x"
-},
-{
-"expr": "1for",
-"latex": "1for"
-},
-{
-"expr": "0x1for",
-"latex": "0x1for"
-},
-{
-"expr": "2x",
-"latex": "2x"
-},
-{
-"expr": "1abc",
-"latex": "1abc"
-},
-{
-"expr": "1e5j",
-"latex": "1e5j"
-},
-{
-"expr": "1_2.3_4e1_0",
-"latex": "1_2.3_4e1_0"
-},
-{
-"expr": "α",
-"latex": "α"
-},
-{
-"expr": "x1",
-"latex": "x1"
-},
-{
-"expr": "_",
-"latex": "_"
-},
-{
-"expr": "__debug__",
-"latex": "__debug__"
-},
-{
-"expr": "ｘ",
-"latex": "ｘ"
-},
-{
-"expr": "１",
-"latex": "１"
-},
-{
-"expr": "ℯ",
-"latex": "ℯ"
-},
-{
-"expr": "π",
-"latex": "π"
-},
-{
-"expr": "x²",
-"latex": "x²"
-},
-{
-"expr": "a²",
-"latex": "a²"
-},
-{
-"expr": "ﬁ",
-"latex": "ﬁ"
-},
-{
-"expr": "1\u0000",
-"latex": "1\u0000"
-},
-{
-"expr": "1 +2",
-"latex": "1 +2"
-},
-{
-"expr": " 1+2 ",
-"latex": " 1+2 "
-},
-{
-"expr": " 1",
-"latex": " 1"
-},
-{
-"expr": "1\u000b+2",
-"latex": "1\u000b+2"
-},
-{
-"expr": "1\f+2",
-"latex": "1\f+2"
-},
-{
-"expr": "1\t+2",
-"latex": "1\t+2"
-},
-{
-"expr": "2 ** -1",
-"latex": "2 ^{-1}"
-},
-{
-"expr": "7 // 0",
-"latex": "7 // 0"
-},
-{
-"expr": "7.5 % 0",
-"latex": "7.5 \\% 0"
-},
-{
-"expr": "sqrt(2) % 0",
-"latex": "sqrt(2) \\% 0"
-},
-{
-"expr": "sqrt(2) // 0",
-"latex": "sqrt(2) // 0"
-},
-{
-"expr": "0 % 0",
-"latex": "0 \\% 0"
-},
-{
-"expr": "1 / 0.0",
-"latex": "1 / 0.0"
-},
-{
-"expr": "1.0 / 0",
-"latex": "1.0 / 0"
-},
-{
-"expr": "0.0 / 0.0",
-"latex": "0.0 / 0.0"
-},
-{
-"expr": "1 // 0.0",
-"latex": "1 // 0.0"
-},
-{
-"expr": "1 % 0.0",
-"latex": "1 \\% 0.0"
-},
-{
-"expr": "-(-1)",
-"latex": "-(-1)"
-},
-{
-"expr": "+-+1",
-"latex": "+-+1"
-},
-{
-"expr": "--1",
-"latex": "--1"
-},
-{
-"expr": "- 1",
-"latex": "- 1"
-},
-{
-"expr": "(((1)))",
-"latex": "(((1)))"
-},
-{
-"expr": "((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((1))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))",
-"latex": "((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((1))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))"
-},
-{
-"expr": "(((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((1)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))",
-"latex": "(((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((1)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))"
-},
-{
-"expr": "------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------1",
-"latex": "------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------1"
-},
-{
-"expr": "1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1",
-"latex": "1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1"
-},
-{
-"expr": "f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(1))))))))))))))))))))))))))))))))))))))))))))))))))",
-"latex": "f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(1))))))))))))))))))))))))))))))))))))))))))))))))))"
-},
-{
-"expr": "1)",
-"latex": "1)"
-},
-{
-"expr": "(1",
-"latex": "(1"
-},
-{
-"expr": "[1)",
-"latex": "[1)"
-},
-{
-"expr": "1]",
-"latex": "1]"
-},
-{
-"expr": "1 2",
-"latex": "1 2"
-},
-{
-"expr": "1 (2)",
-"latex": "1 (2)"
-},
-{
-"expr": "2(3)",
-"latex": "2(3)"
-},
-{
-"expr": "(2)(3)",
-"latex": "(2)(3)"
-},
-{
-"expr": "sin(1)(2)",
-"latex": "sin(1)(2)"
-},
-{
-"expr": "(sin)(pi/2)",
-"latex": "(sin)(pi/2)"
-},
-{
-"expr": "((sin))(pi/2)",
-"latex": "((sin))(pi/2)"
-},
-{
-"expr": "sin (pi/2)",
-"latex": "sin (pi/2)"
-},
-{
-"expr": "sin\t(pi/2)",
-"latex": "sin\t(pi/2)"
-},
-{
-"expr": "sin.x",
-"latex": "sin.x"
-},
-{
-"expr": "$",
-"latex": "$"
-},
-{
-"expr": "?",
-"latex": "?"
-},
-{
-"expr": "`1`",
-"latex": "`1`"
-},
-{
-"expr": "!1",
-"latex": "!1"
-},
-{
-"expr": "1!",
-"latex": "1!"
-},
-{
-"expr": "1 != 2",
-"latex": "1 != 2"
-},
-{
-"expr": "1 <> 2",
-"latex": "1 <> 2"
-},
-{
-"expr": "1 -> 2",
-"latex": "1 -> 2"
-},
-{
-"expr": "1; 2",
-"latex": "1; 2"
-},
-{
-"expr": "1 = 2",
-"latex": "1 = 2"
-},
-{
-"expr": "1 == 2",
-"latex": "1 == 2"
-},
-{
-"expr": "1 += 2",
-"latex": "1 += 2"
-},
-{
-"expr": "1 ^ 2",
-"latex": "1 ^{2}"
-},
-{
-"expr": "1 ^^ 2",
-"latex": "1 ^^{2}"
-},
-{
-"expr": "1 ^* 2",
-"latex": "1 ^* 2"
-},
-{
-"expr": "2 **",
-"latex": "2 ^"
-},
-{
-"expr": "** 2",
-"latex": "^{2}"
-},
-{
-"expr": "e ** 2",
-"latex": "e ^{2}"
-},
-{
-"expr": "e^-1",
-"latex": "e^{-1}"
-},
-{
-"expr": "pi^e",
-"latex": "pi^{e}"
-},
-{
-"expr": "tau/2 - pi",
-"latex": "tau/2 - pi"
-},
-{
-"expr": "inf - 1",
-"latex": "inf - 1"
-},
-{
-"expr": "-inf",
-"latex": "-inf"
-},
-{
-"expr": "1/inf",
-"latex": "1/inf"
-},
-{
-"expr": "0.1 + 0.2 - 0.3",
-"latex": "0.1 + 0.2 - 0.3"
-},
-{
-"expr": "10 ** 20 + 1 - 10 ** 20",
-"latex": "10 ^{20} + 1 - 10 ^{20}"
-},
-{
-"expr": "1e20 + 1 - 1e20",
-"latex": "1e20 + 1 - 1e20"
-},
-{
-"expr": "2 ** 0.5 * 2 ** 0.5",
-"latex": "2 ^{0.5} * 2 ^{0.5}"
-},
-{
-"expr": "1/3 * 3",
-"latex": "1/3 * 3"
-},
-{
-"expr": "(1/3) ** -2",
-"latex": "(1/3) ^{-2}"
-},
-{
-"expr": "(-2/3) ** -3",
-"latex": "(-2/3) ^{-3}"
-},
-{
-"expr": "0.5 ** -1",
-"latex": "0.5 ^{-1}"
-},
-{
-"expr": "(2/3) ** 0.5",
-"latex": "(2/3) ^{0.5}"
-},
-{
-"expr": "(-8) ** (1/3)",
-"latex": "(-8) ^ (1/3)"
-},
-{
-"expr": "(-8.0) ** 3",
-"latex": "(-8.0) ^{3}"
-},
-{
-"expr": "(-1/8) ** (1/3)",
-"latex": "(-1/8) ^ (1/3)"
-},
-{
-"expr": "(-0.5) ** 2.5",
-"latex": "(-0.5) ^{2.5}"
-},
-{
-"expr": "1 ** inf",
-"latex": "1 ^{inf}"
-},
-{
-"expr": "1.0 ** (inf - inf)",
-"latex": "1.0 ^ (inf - inf)"
-},
-{
-"expr": "(inf - inf) ** 1",
-"latex": "(inf - inf) ^{1}"
-},
-{
-"expr": "hypot(1.7e308, 1.7e308)",
-"latex": "hypot(1.7e308, 1.7e308)"
-},
-{
-"expr": "hypot(5e-324, 5e-324)",
-"latex": "hypot(5e-324, 5e-324)"
-},
-{
-"expr": "hypot(3, 4, 12)",
-"latex": "hypot(3, 4, 12)"
-},
-{
-"expr": "hypot(pi, 8 * pi)",
-"latex": "hypot(pi, 8 * pi)"
-},
-{
-"expr": "cbrt(5e-324)",
-"latex": "cbrt(5e-324)"
-},
-{
-"expr": "cbrt(-1e-310)",
-"latex": "cbrt(-1e-310)"
-},
-{
-"expr": "cbrt(44.22)",
-"latex": "cbrt(44.22)"
-},
-{
-"expr": "cbrt(sinh(67.65))",
-"latex": "cbrt(sinh(67.65))"
-},
-{
-"expr": "cbrt(-inf)",
-"latex": "cbrt(-inf)"
-},
-{
-"expr": "log2(80)",
-"latex": "log2(80)"
-},
-{
-"expr": "log2(1.0000001)",
-"latex": "log2(1.0000001)"
-},
-{
-"expr": "log2(0.7)",
-"latex": "log2(0.7)"
-},
-{
-"expr": "log2(5e-324)",
-"latex": "log2(5e-324)"
-},
-{
-"expr": "log2(3 * 2 ** 1000)",
-"latex": "log2(3 * 2 ^{1000})"
-},
-{
-"expr": "(-2) ** 1e10",
-"latex": "(-2) ^{1e10}"
-},
-{
-"expr": "(-2) ** 1e10.5",
-"latex": "(-2) ^{1e10.5}"
-},
-{
-"expr": "(-2) ** 10000.5",
-"latex": "(-2) ^{10000.5}"
-},
-{
-"expr": "(-0.5) ** 10000.5",
-"latex": "(-0.5) ^{10000.5}"
-},
-{
-"expr": "(-589) ^ 1e3.5",
-"latex": "(-589) ^{1e3.5}"
-},
-{
-"expr": "(-1.5) ** 1750.5",
-"latex": "(-1.5) ^{1750.5}"
-},
-{
-"expr": "(-1.5) ** 1751.5",
-"latex": "(-1.5) ^{1751.5}"
 }
 ],
 "grade": [
@@ -20034,6 +17760,30 @@
 },
 {
 "question": {
+"type": "flashcard",
+"question": "Why?",
+"answer": "Because"
+},
+"response": {
+"text": "x"
+},
+"error": "ValueError",
+"message": "short answers are graded by Claude"
+},
+{
+"question": {
+"type": "numeric",
+"question": "Why?",
+"answer": "Because"
+},
+"response": {
+"text": "x"
+},
+"error": "ValueError",
+"message": "short answers are graded by Claude"
+},
+{
+"question": {
 "type": "",
 "question": "Why?",
 "answer": "Because"
@@ -20336,8 +18086,8 @@
 "response": {
 "latex": "10^{400}"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "AnswerError",
+"message": "Result is too large"
 },
 {
 "question": {
@@ -33843,8 +31593,8 @@
 "response": {
 "latex": "41"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -33854,8 +31604,8 @@
 "response": {
 "latex": "40.6"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -33865,8 +31615,8 @@
 "response": {
 "latex": "0"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -33876,8 +31626,8 @@
 "response": {
 "latex": "-41"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -33887,8 +31637,8 @@
 "response": {
 "latex": "1e-9"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -33898,8 +31648,8 @@
 "response": {
 "latex": "\\frac{3}{8}"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -33909,8 +31659,8 @@
 "response": {
 "latex": "0.375"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -33920,8 +31670,8 @@
 "response": {
 "latex": "0.37"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -33931,8 +31681,8 @@
 "response": {
 "latex": "0.371"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -33942,8 +31692,8 @@
 "response": {
 "latex": "0.38"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -33953,8 +31703,8 @@
 "response": {
 "latex": "0.379"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -33964,8 +31714,8 @@
 "response": {
 "latex": "\\frac{\\sqrt{2}}{2}"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -33975,8 +31725,8 @@
 "response": {
 "latex": "0.7071"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -33986,8 +31736,8 @@
 "response": {
 "latex": "0.707"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -33997,8 +31747,8 @@
 "response": {
 "latex": "0.714"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34008,8 +31758,8 @@
 "response": {
 "latex": "0.7"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34019,8 +31769,8 @@
 "response": {
 "latex": "0.002"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34030,8 +31780,8 @@
 "response": {
 "latex": "0.00202"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34041,8 +31791,8 @@
 "response": {
 "latex": "0.0021"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34052,8 +31802,8 @@
 "response": {
 "latex": "1500"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34063,8 +31813,8 @@
 "response": {
 "latex": "1.5\\times10^{3}"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34074,8 +31824,8 @@
 "response": {
 "latex": "6.02e23"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34085,8 +31835,8 @@
 "response": {
 "latex": "6.02\\times10^{23}"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34096,8 +31846,8 @@
 "response": {
 "latex": "\\frac{\\pi}{4}"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34107,8 +31857,8 @@
 "response": {
 "latex": "0.785"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34118,8 +31868,8 @@
 "response": {
 "latex": "0.0015"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34129,8 +31879,8 @@
 "response": {
 "latex": "2\\pi"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34140,8 +31890,8 @@
 "response": {
 "latex": "6.28"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34151,8 +31901,8 @@
 "response": {
 "latex": "\\infty"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34162,8 +31912,8 @@
 "response": {
 "latex": "-\\infty"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34173,8 +31923,8 @@
 "response": {
 "latex": "1000"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34184,8 +31934,8 @@
 "response": {
 "latex": "7"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34195,8 +31945,8 @@
 "response": {
 "latex": "e"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34206,8 +31956,8 @@
 "response": {
 "latex": "\\exponentialE^{2}"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34217,8 +31967,8 @@
 "response": {
 "latex": "7.389"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34228,8 +31978,8 @@
 "response": {
 "latex": "0.3"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34239,8 +31989,8 @@
 "response": {
 "latex": "3"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34250,8 +32000,8 @@
 "response": {
 "latex": "100"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34261,8 +32011,8 @@
 "response": {
 "latex": "101"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34272,8 +32022,8 @@
 "response": {
 "latex": "99"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34283,8 +32033,8 @@
 "response": {
 "latex": "101.0000001"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34294,8 +32044,8 @@
 "response": {
 "latex": "1e300"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34305,8 +32055,8 @@
 "response": {
 "latex": "10^{300}"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -34316,8 +32066,8 @@
 "response": {
 "latex": "1.01e300"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "question": {
@@ -40421,8 +38171,8 @@
 "response": {
 "latex": "10^{400}\\cdot1.0"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "AnswerError",
+"message": "Result is too large"
 },
 {
 "question": {
@@ -40432,8 +38182,8 @@
 "response": {
 "latex": "10^{400}"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "AnswerError",
+"message": "Result is too large"
 },
 {
 "question": {
@@ -40443,8 +38193,8 @@
 "response": {
 "latex": "1"
 },
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10^400' is too large"
 }
 ],
 "expected_value": [
@@ -40556,13 +38306,13 @@
 },
 {
 "answer": "10**400",
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**400' is too large"
 },
 {
 "answer": "10**309",
-"error": "OverflowError",
-"message": "int too large to convert to float"
+"error": "ValueError",
+"message": "the calculation's answer '10**309' is too large"
 },
 {
 "answer": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,

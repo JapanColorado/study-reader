@@ -317,3 +317,17 @@ def test_quiz_me_in_the_window_only_drafts(pdf_path, tmp_path, monkeypatch):
     assert win.chat.isVisible() and win.chat._quiz is not None and db.chats(win.book_id) == []
     assert win.chat.input.toPlainText().startswith("Quiz me on ") and win.focusWidget() is win.chat.input
     win.close()
+
+
+@pytest.mark.parametrize("body", [
+    '{"questions": ["How many legs?"]}', "[1, 2]",
+    '[{"type": "calculation", "question": "q", "answer": "10^400"}]',
+])
+def test_a_malformed_quiz_is_an_error_not_a_crash(body):
+    (parsed,) = quiz.quizzes(f"```quiz Z\n{body}\n```")
+    assert parsed["error"] and "questions" not in parsed
+
+
+def test_a_calculation_answer_too_large_to_grade_is_an_input_error():
+    with pytest.raises(quiz.AnswerError):
+        quiz.grade({"type": "calculation", "question": "q", "answer": "2"}, {"latex": "10^{400}"})

@@ -99,12 +99,12 @@ def test_a_queued_book_is_rendered_downloaded_and_the_vm_released(colab):
     state = cr.read_state(base)
     assert state["books"][KEY]["copied"] == 1 and state["books"][KEY]["hash"] == HASH
     assert "2 of 3 sentences · 30× real time" in state["message"]
-    assert AudioCache(audio / KEY).count(sentence_key("af_heart", t) for t in TEXTS) == 3
+    assert sum(AudioCache(audio / KEY).has("af_heart", t) for t in TEXTS) == 3
     assert not list((audio / KEY).glob("*.tmp"))
     fake.render(TEXTS[3:], done=True, number=1)
     assert w.step()
     assert cr.request(base, HASH)["done"] and cr.pending(base) == []
-    assert AudioCache(audio / KEY).count(sentence_key("af_heart", t) for t in TEXTS) == 4
+    assert sum(AudioCache(audio / KEY).has("af_heart", t) for t in TEXTS) == 4
     assert not w.step()
     assert fake.alive == set() and cr.read_state(base)["phase"] == "done" and cr.read_state(base)["session"] is None
 
@@ -189,6 +189,109 @@ def test_stop_releases_the_vm_and_drops_the_queue(colab):
     assert not (base / "stop").exists()
 
 
+def test_a_vm_that_wont_stop_stays_written_down_and_is_tried_again(colab):
+    base, audio, fake, w = colab
+    cr.queue(base, HASH, "Fish", "af_heart", 1.3, "T4", TEXTS)
+    w.step()
+    name = cr.read_state(base)["session"]
+    real_stop = fake.stop
+    fake.stop = lambda n: (_ for _ in ()).throw(cr.CliError("network down"))
+    cr.request_stop(base)
+    with pytest.raises(cr.CliError):
+        w.step()
+    w.save()
+    assert cr.read_state(base)["session"] == name and (base / "stop").exists()  # not forgotten
+    fake.stop = real_stop
+    assert not w.step() and not fake.alive
+    assert cr.read_state(base)["session"] is None and cr.read_state(base)["phase"] == "stopped"
+
+
+def test_a_vm_left_running_after_giving_up_is_stopped_by_stop(colab):
+    base, audio, fake, w = colab
+    cr.queue(base, HASH, "Fish", "af_heart", 1.3, "T4", TEXTS)
+    w.step()
+    name = cr.read_state(base)["session"]
+    real_stop = fake.stop
+    fake.stop = lambda n: (_ for _ in ()).throw(cr.CliError("network down"))
+    fake.finish(1)
+    (fake.vm / "runner.pid").write_text("999999999")
+    w.run(sleep=lambda s: None)  # the render failed, and the VM wouldn't stop
+    assert cr.failure(base) and cr.read_state(base)["session"] == name and name in fake.alive
+    fake.stop = real_stop
+    cr.request_stop(base)  # the dialog's Stop rendering, which starts a watcher
+    cr.Watcher(base, audio, fake, log=lambda m: None).run(sleep=lambda s: None)
+    assert not fake.alive and cr.read_state(base)["session"] is None
+    assert cr.failure(base) is None and cr.read_state(base)["phase"] == "stopped"
+
+
+def test_a_book_sent_again_mid_render_keeps_what_its_old_run_finished(colab):
+    base, audio, fake, w = colab
+    cr.queue(base, HASH, "Fish", "af_heart", 1.0, "T4", TEXTS)
+    w.step()
+    old = fake.request()["run"]
+    fake.render(TEXTS[:2])  # finished on the VM, not downloaded yet
+    cr.queue(base, HASH, "Fish", "af_heart", 1.2, "T4", TEXTS)  # say, at another speed
+    assert w.step()
+    assert fake.request()["run"] != old and (audio / KEY / f"part-{old}-0000.json").exists()
+    assert (audio / KEY / f"part-{old}-0000.opus").exists()
+
+
+def test_each_step_works_out_whats_left_and_asks_for_sessions_once(colab):
+    base, audio, fake, w = colab
+    cr.queue(base, HASH, "Fish", "af_heart", 1.0, "T4", TEXTS)
+    w.step()
+    other = "ab" * 32
+    cr.queue(base, other, "Other", "af_heart", 1.0, "T4", ["Another sentence."])
+    real_todo, todos = w._todo, []
+    w._todo = lambda req: todos.append(req["key"]) or real_todo(req)
+    fake.calls.clear()
+    assert w.step()
+    assert todos == [book_key(other)] and fake.calls.count(("sessions",)) == 1
+    fake.alive.clear()  # Colab reclaimed the VM
+    fake.calls.clear()
+    assert w.step()
+    assert fake.calls.count(("sessions",)) == 1 and ("new", "T4") in fake.calls
+
+
+def test_audio_that_arrives_while_the_vm_starts_still_releases_it(colab):
+    base, audio, fake, w = colab
+    cr.queue(base, HASH, "Fish", "af_heart", 1.3, "T4", TEXTS)
+    real_new = fake.new
+
+    def new(name, gpu):  # the audio is copied in from elsewhere meanwhile
+        real_new(name, gpu)
+        _part(audio / KEY, "part-0000", {t: 0.3 for t in TEXTS}, speed=1.3)
+
+    fake.new = new
+    w.run(sleep=lambda s: None)
+    assert not fake.alive and cr.read_state(base)["session"] is None
+
+
+def test_a_book_queued_while_the_vm_is_released_is_not_left_behind(colab):
+    base, audio, fake, w = colab
+    _part(audio / KEY, "part-0000", {t: 0.3 for t in TEXTS}, speed=1.3)
+    cr.queue(base, HASH, "Fish", "af_heart", 1.3, "T4", TEXTS)  # nothing to render: straight to the release
+    other = "ab" * 32
+    real_sessions, queued = fake.sessions, []
+
+    def sessions():
+        if not queued:
+            queued.append(cr.queue(base, other, "Other", "af_heart", 1.3, "T4", ["Another sentence."]))
+        return real_sessions()
+
+    fake.sessions = sessions
+    steps = []
+
+    def sleep(s):
+        steps.append(s)
+        if len(steps) > 3:
+            cr.request_stop(base)
+
+    w.run(sleep=sleep)
+    assert ("new", "T4") in fake.calls  # the watcher went on to the second book
+    assert not fake.alive
+
+
 def test_colab_unreachable_is_retried_then_given_up(colab, monkeypatch):
     base, audio, fake, w = colab
     cr.queue(base, HASH, "Fish", "af_heart", 1.0, "T4", TEXTS)
@@ -219,6 +322,57 @@ def test_vm_snippets_and_script_parse():
         ast.parse(snippet)
     ast.parse(cr.RENDER_SCRIPT.read_text())
     assert f"kokoro_render.py \"$PWD\" {cr.PART_SENTENCES} {cr.OPUS_QUALITY}" in cr.RUN_SH
+
+
+def test_the_vm_script_stops_a_run_its_book_was_sent_again_over(tmp_path, monkeypatch):
+    """kokoro_render.py with stand-ins for torch and Kokoro: a new request.json for the book
+    stops the old run at the next sentence, keeping what it finished."""
+    import runpy
+    import sys
+    import types
+
+    import numpy as np
+
+    root = tmp_path / "vm"
+    book = root / "books" / KEY
+    book.mkdir(parents=True)
+    spoken = []
+
+    def request(run, voice):
+        path = book / "request.json"
+        path.write_text(json.dumps({"run": run, "title": "Fish", "voice": voice, "speed": 1.0,
+                                    "sentences": [[sentence_key(voice, t), t] for t in TEXTS]}))
+        os.utime(path, ns=(time.time_ns(), time.time_ns() + len(spoken)))  # a new mtime, however coarse
+
+    class Pipeline:
+        def __init__(self, **kw):
+            pass
+
+        def __call__(self, text, voice, speed, split_pattern):
+            spoken.append((voice, text))
+            if len(spoken) == 2:
+                request("bbbbbb", "am_michael")  # sent again while this sentence renders
+            audio = np.zeros(2400, np.float32)
+            tensor = types.SimpleNamespace(detach=lambda: types.SimpleNamespace(cpu=lambda: types.SimpleNamespace(numpy=lambda: audio)))
+            yield types.SimpleNamespace(audio=tensor, tokens=[])
+
+    torch = types.ModuleType("torch")
+    torch.cuda = types.SimpleNamespace(is_available=lambda: True)
+    kokoro = types.ModuleType("kokoro")
+    kokoro.KPipeline = Pipeline
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "kokoro", kokoro)
+    monkeypatch.setattr(sys, "argv", ["kokoro_render.py", str(root), "300", "0.9"])
+    request("aaaaaa", "af_heart")
+    runpy.run_path(str(cr.RENDER_SCRIPT))
+    assert [v for v, _ in spoken] == ["af_heart"] * 2 + ["am_michael"] * 4  # not the old run's other two
+    old = json.loads((book / "audio" / "part-aaaaaa-0000.json").read_text())["items"]
+    assert set(old) == {sentence_key("af_heart", t) for t in TEXTS[:2]}
+    assert (book / "audio" / "part-aaaaaa-0000.opus").exists()
+    new = json.loads((book / "audio" / "part-bbbbbb-0000.json").read_text())["items"]
+    assert len(new) == 4
+    status = json.loads((book / "status.json").read_text())
+    assert status["run"] == "bbbbbb" and status["done"]
 
 
 def _fake_cli(tmp_path, script: str) -> cr.Colab:
@@ -315,10 +469,20 @@ def test_render_dialog_queues_the_book_and_reports_progress(pdf_path, tmp_path, 
     (colab.base / "failed").write_text("Colab wouldn't start a L4.")
     dlg.refresh()
     _wait(app, lambda: "stopped with an error" in dlg.status.text(), msg=dlg.status.text)
-    assert "Colab wouldn" in dlg.status.text() and dlg.send_btn.isEnabled() and not dlg.stop_btn.isEnabled()
+    assert "Colab wouldn" in dlg.status.text() and dlg.send_btn.isEnabled()
+    # The VM is still written down and no watcher is at it: Stop can try to release it again.
+    assert "may still be running" in dlg.status.text() and dlg.stop_btn.isEnabled()
+    dlg.stop()
+    assert len(_no_colab) == 3 and (colab.base / "stop").exists()
+    state.pop("session")
+    (colab.base / "state.json").write_text(json.dumps(state))
+    dlg.refresh()
+    _wait(app, lambda: "stopped with an error" in dlg.status.text() and not dlg.stop_btn.isEnabled(),
+          msg=dlg.status.text)
+    assert "may still be running" not in dlg.status.text()
     colab2 = ColabRender()
     colab2.resume()
-    assert len(_no_colab) == 2  # the stop request started one; a failure doesn't resume
+    assert len(_no_colab) == 3  # the stop requests started them; a failure doesn't resume
 
 
 def test_render_dialog_says_whether_colab_is_working_on_the_book(pdf_path, tmp_path, monkeypatch, _no_colab):

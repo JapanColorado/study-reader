@@ -18,11 +18,12 @@ from . import question_model, practice
 FROM = ("questions c JOIN question_groups n ON n.id=c.group_id JOIN decks d ON d.id=c.deck_id "
         "LEFT JOIN books b ON b.id=c.book_id")
 
-KEYS = ("deck", "tag", "type", "note", "book", "flag", "is", "cid", "nid", "added", "edited", "rated",
+KEYS = ("deck", "tag", "type", "note", "book", "flag", "is", "qid", "gid", "cid", "nid", "added", "edited", "rated",
         "introduced", "prop", "re")
 # Older names searches may still use: the types' names before (question_model.KIND_ALIASES:
 # flashcard, reversed, cloze, occlusion, numeric, written, and before those basic, reverse and free),
-# quiz for any question that is answered, and `note:` for `type:`. Spellings with a hyphen or a
+# quiz for any question that is answered, `note:` for `type:`, and `cid:`/`nid:` for `qid:` (question
+# ids) and `gid:` (the ids of groups of sibling questions). Spellings with a hyphen or a
 # space work too (self-check, fill-in).
 TYPE_ALIASES = {**{old: (new,) for old, new in question_model.KIND_ALIASES.items()},
                 "quiz": question_model.QUESTION_TYPES}
@@ -169,7 +170,7 @@ class _Parser:
     def since(self, value: str, key: str) -> float:
         if not value.isdigit() or int(value) < 1:
             raise SearchError(f"{key}: needs a number of days, 1 or more (1 = today).")
-        return practice.day_start(self.now) - (int(value) - 1) * 86400
+        return practice.day_after(self.now, 1 - int(value))
 
     def term(self, text: str) -> str:
         m = re.match(r"^([A-Za-z_]+):(.*)$", text, re.DOTALL)
@@ -248,11 +249,13 @@ class _Parser:
             raise SearchError(f"{key}: takes ids separated by commas.")
         return f"{column} IN ({', '.join(self.arg(i) for i in ids)})"
 
-    def _cid(self, value: str) -> str:
-        return self._ids(value, "cid", "c.id")
+    def _qid(self, value: str) -> str:
+        return self._ids(value, "qid", "c.id")
 
-    def _nid(self, value: str) -> str:
-        return self._ids(value, "nid", "c.group_id")
+    def _gid(self, value: str) -> str:
+        return self._ids(value, "gid", "c.group_id")
+
+    _cid, _nid = _qid, _gid  # the old names
 
     def _added(self, value: str) -> str:
         return f"c.created_at>={self.arg(self.since(value, 'added'))}"
@@ -295,14 +298,13 @@ class _Parser:
 
     def _due_days(self, op: str, number: float) -> str:
         """Due in whole days from today's start (0 today, -1 yesterday), scheduled questions only."""
-        start = practice.day_start(self.now)
         lo, hi = number, number + 1
 
         def at_least(v: float) -> str:
-            return f"c.due>={self.arg(start + v * 86400)}"
+            return f"c.due>={self.arg(practice.day_after(self.now, v))}"
 
         def below(v: float) -> str:
-            return f"c.due<{self.arg(start + v * 86400)}"
+            return f"c.due<{self.arg(practice.day_after(self.now, v))}"
 
         if op == "=":
             cond = f"({at_least(lo)} AND {below(hi)})"

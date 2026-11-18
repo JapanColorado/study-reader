@@ -37,6 +37,19 @@ def test_fill_in_math_holding_closing_braces():
     assert question_model.fill_in_side(text, 2, False).endswith(r'\(\frac{1}{\sqrt{LC}}\), called <span class="cloze">[what]</span>')
 
 
+def test_unclosed_blank_before_much_math_is_fast():
+    import time
+    start = time.perf_counter()
+    for math in (r"\(x\) ", r"\[x\] ", "$$x$$ ", "$x$ "):
+        text = "{{c1::" + math * 2000
+        assert question_model.question_ords("fill_in", {"text": text}) == []
+        assert question_model.fill_in_side(text + "}}", 1, True).startswith('<span class="cloze">' + math)
+        assert question_model.renumber_next(text) == 1
+    assert time.perf_counter() - start < 1  # backtracking took seconds at 18 spans
+    # math that doesn't close before the last }} is just characters
+    assert question_model.plain(r"{{c1::\(a}} b") == r"\(a b"
+
+
 def test_math_spans_hold_escaped_dollars():
     text = r"Pizza ($q_1$) at $p_1 = \$1$, income $Y = \$50$; it costs \$5 or $5 and $6."
     assert [text[a:b] for a, b in question_model.math_spans(text)] == ["$q_1$", r"$p_1 = \$1$", r"$Y = \$50$"]
@@ -73,6 +86,9 @@ def test_groups_decks_and_editing(db):
     db.add_tags([group], ["new"])
     db.remove_tags([group], ["CH1"])
     assert db.question_group(group)["tags"].split() == ["exam", "new"]
+    db.add_tags([group], ["EXAM", "New", "late", "LATE"])  # tags are told apart without case
+    assert db.question_group(group)["tags"].split() == ["exam", "new", "late"]
+    db.remove_tags([group], ["late"])
     db.rename_tag("exam", "test::final")
     assert db.all_tags() == ["new", "test::final"]
 
@@ -448,8 +464,8 @@ def test_deck_counts_and_deck_scoped_queue(db):
     counts = practice.deck_counts(db, NOW)
     top = db.deck_by_name("Top")["id"]
     assert counts[top]["new"] == 3 and counts[a]["new"] == 1 and counts[b]["total"] == 2
-    assert practice.counts(db, None, NOW, deck=b)["new"] == 2
-    question = practice.next_question(db, None, NOW, deck=a)
+    assert practice.counts(db, NOW, picks=[{"deck": b}])["new"] == 2
+    question = practice.next_question(db, NOW, picks=[{"deck": a}])
     assert question["deck_id"] == a
 
 
@@ -511,6 +527,101 @@ def test_browser_saves_after_a_pause(db, chat_panel):
     QTest.qWait(browser._save_timer.interval() + 200)
     assert json.loads(db.question_group(group)["fields"])["back"] == "changed"
     assert browser.editor_status.text().startswith("Saved")
+
+
+def test_browser_autosave_adding_a_blank_leaves_the_editor_alone(db, chat_panel):
+    """A save that makes or drops questions re-runs the search, without loading the editor again
+    (which would move the caret to the start and lose the undo history mid-typing)."""
+    from PySide6.QtGui import QTextCursor
+    from PySide6.QtTest import QTest
+    from study_reader.browser import QuestionBrowser
+
+    group = db.add_question_group("fill_in", {"text": "The {{c1::mitochondria}} is the powerhouse"}, db.ensure_deck("Bio"))
+    browser = QuestionBrowser(db)
+    browser.set_search("")
+    browser.table.selectRow(0)
+    loads = []
+    real_load = browser.editor.load
+    browser.editor.load = lambda group_id: loads.append(group_id) or real_load(group_id)
+    edit = browser.editor.fields["text"]
+    edit.setFocus()
+    cursor = edit.textCursor()
+    cursor.movePosition(QTextCursor.MoveOperation.End)
+    cursor.insertText(" of the {{c2::cell}}")  # as typed: undoable
+    cursor.movePosition(QTextCursor.MoveOperation.Left, n=4)
+    edit.setTextCursor(cursor)
+    QTest.qWait(browser._save_timer.interval() + 200)
+    assert len(db.group_questions(group)) == 2 and len(browser.model.ids) == 2
+    assert loads == [] and edit.textCursor().position() == cursor.position()
+    assert edit.document().isUndoAvailable() and browser.editor_status.text().startswith("Saved")
+    # A removed blank whose question was current: its sibling becomes current, the editor stays.
+    second = next(c["id"] for c in db.group_questions(group) if c["ord"] == 1)
+    browser.table.selectRow(browser.model.ids.index(second))
+    loads.clear()
+    edit.setPlainText("The {{c2::mitochondria}} is the powerhouse")
+    browser.save_question()
+    QTest.qWait(50)
+    first = [c["id"] for c in db.group_questions(group)]
+    assert loads == [] and browser.model.ids == first and browser._question_id in first
+    assert browser.editor.group_id == group
+    browser.close()
+
+
+def test_browser_search_loads_the_current_question_once(db, chat_panel):
+    from study_reader.browser import QuestionBrowser
+
+    deck = db.ensure_deck("D")
+    for i in range(3):
+        db.add_question_group("self_check", {"front": f"front {i}", "back": "b"}, deck)
+    browser = QuestionBrowser(db)
+    browser.table.selectRow(1)
+    loads = []
+    real_load = browser.editor.load
+    browser.editor.load = lambda group_id: loads.append(group_id) or real_load(group_id)
+    browser.search()
+    assert len(loads) == 1 and browser.editor.group_id == loads[0]
+    loads.clear()
+    browser.set_search("front 2")
+    assert len(loads) == 1 and browser.editor.fields["front"].toPlainText() == "front 2"
+    loads.clear()
+    browser.set_search("nothing like it")
+    assert len(loads) == 1 and browser.editor.group_id is None
+    browser.close()
+
+
+def test_editor_keeps_an_exact_tolerance_and_allows_html(db, chat_panel):
+    """A calculation's tolerance 0 is an exact answer, not "none given" (1%); and questions typed in
+    the editor may hold HTML and images, as self-checks do."""
+    from study_reader import quiz
+    from study_reader.question_editor import NO_TOLERANCE, QuestionEditor
+
+    deck = db.ensure_deck("D")
+    exact = db.add_question_group("calculation", {"type": "calculation", "question": "2+2?", "answer": 4, "tolerance": 0.0}, deck)
+    loose = db.add_question_group("calculation", {"type": "calculation", "question": "3+3?", "answer": 6}, deck)
+    editor = QuestionEditor(db)
+    editor.load(exact)
+    assert editor.q_tolerance.value() == 0
+    editor.q_question.setPlainText("2+2? ![](sum.png)")
+    editor.save()
+    fields = json.loads(db.question_group(exact)["fields"])
+    assert fields["tolerance"] == 0 and fields["html"] is True
+    data = json.loads(db.group_questions(exact)[0]["data"])
+    assert data["html"] is True and quiz.grade(data, {"latex": "4.01"}) == "incorrect"
+    editor.load(loose)
+    assert editor.q_tolerance.value() == NO_TOLERANCE
+    editor.q_tolerance.setValue(-0.5)  # between "none given" and exact
+    assert editor.q_tolerance.value() == NO_TOLERANCE
+    editor.save()
+    assert "tolerance" not in json.loads(db.question_group(loose)["fields"])
+
+
+def test_flag_colors_are_the_browsers(db):
+    import re
+    from study_reader.browser import ASSETS, FLAGS
+
+    page = (ASSETS / "practice.html").read_text()
+    colors = re.search(r"const FLAG_COLORS = \{(.*?)\};", page).group(1)
+    assert {int(n): c for n, c in re.findall(r'(\d): "(#\w+)"', colors)} == {n: c for n, (_, c) in FLAGS.items()}
 
 
 def test_browser_search_edit_and_bulk_actions(db, chat_panel, monkeypatch):
@@ -587,8 +698,7 @@ def test_browser_search_edit_and_bulk_actions(db, chat_panel, monkeypatch):
     assert [types.child(i).text(0) for i in range(types.childCount())] == [
         question_model.TYPE_LABELS[t] for t in question_model.TYPES]
     assert types.child(0).data(0, Qt.ItemDataRole.UserRole) == "type:self_check"
-    menus = [a.text() for a in browser.menuBar().actions()]
-    assert "&Notes" not in menus and "&Questions" in menus
+    assert [a.text() for a in browser.menuBar().actions()] == ["&File", "&Edit", "&Questions", "C&laude", "&Go"]
     browser.close()
 
 
@@ -627,22 +737,46 @@ def test_add_dialog_makes_questions(db, chat_panel):
 
 
 def test_anki_dialog_migrates_picked_decks(db, chat_panel, tmp_path, monkeypatch):
+    from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QMessageBox
     from study_reader import anki_import
-    from study_reader.anki_dialog import AnkiImportDialog
+    from study_reader.anki_dialog import NAME_ROLE, AnkiImportDialog
     from test_anki_import import make_collection
 
     path = make_collection(tmp_path)
     monkeypatch.setattr(anki_import, "find_collections", lambda: [("User 1", path)])
     monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: None)
     dialog = AnkiImportDialog(db)
-    dialog.check_decks(["Physics"])
+    next(i for i in dialog._items() if i.data(0, NAME_ROLE) == "Physics").setCheckState(0, Qt.CheckState.Checked)
     assert "4 decks" not in dialog.picked.text() and dialog.migrate_button.isEnabled()
     dialog.migrate()
     # It closes once done (it's modal, so the browser it leads to couldn't be used otherwise).
     assert dialog.result() == dialog.DialogCode.Accepted and dialog.collection is None
     assert dialog.report.cards >= 6 and dialog.query == 'deck:"Physics"'
     assert db.deck_by_name("Physics::Lesson 1") and not db.deck_by_name("Japanese")
+
+
+def test_anki_dialog_parameters_follow_the_profile(db, chat_panel, tmp_path, monkeypatch):
+    import shutil
+    import sqlite3
+    from study_reader import anki_import
+    from study_reader.anki_dialog import AnkiImportDialog
+    from test_anki_import import make_collection
+
+    fsrs = make_collection(tmp_path)
+    plain = tmp_path / "Plain" / "collection.anki2"
+    plain.parent.mkdir()
+    shutil.copy(fsrs, plain)
+    with sqlite3.connect(plain) as c:
+        c.execute("UPDATE config SET val = ? WHERE key = 'fsrs'", (b"false",))
+    monkeypatch.setattr(anki_import, "find_collections", lambda: [("Plain", plain), ("FSRS", fsrs)])
+    dialog = AnkiImportDialog(db)
+    assert not dialog.parameters.isEnabled() and not dialog.parameters.isChecked()
+    dialog.profile.setCurrentIndex(1)
+    assert dialog.parameters.isEnabled() and dialog.parameters.isChecked() and not dialog.parameters.toolTip()
+    dialog.profile.setCurrentIndex(0)
+    assert not dialog.parameters.isEnabled() and "FSRS is off" in dialog.parameters.toolTip()
+    dialog.reject()
 
 
 def test_main_window_questions_page(pdf_path, tmp_path, monkeypatch):
@@ -667,7 +801,7 @@ def test_main_window_questions_page(pdf_path, tmp_path, monkeypatch):
     assert win.web_action.isEnabled()
     win.practice.start()
     win.practice.act(win.practice.question_id, "edit")
-    assert win.page() == "questions" and browser.search_box.text().startswith("cid:")
+    assert win.page() == "questions" and browser.search_box.text().startswith("qid:")
     win.show_stats(deck)
     assert win.page() == "stats" and win.stats_window.isVisible() and not win.stats_window.isWindow()
     assert win.stats_window.scope.currentData() == ("deck", deck)
@@ -843,3 +977,13 @@ def test_switching_a_questions_type_in_the_browser(db, chat_panel):
     show(short)
     assert browser.editor_status.text() == "" and e.type_box.currentData() == "choice"
     browser.close()
+
+
+def test_find_replace_refuses_a_bad_regex_before_changing_anything(db):
+    import re
+    from study_reader.browser import find_replace
+    group = db.add_question_group("self_check", {"front": "a (b)", "back": "c"}, db.ensure_deck("Default"))
+    for find, replace in (("(", "x"), ("a", r"\1")):
+        with pytest.raises(re.error):
+            find_replace(db, [group], find, replace, regex=True)
+    assert json.loads(db.question_group(group)["fields"])["front"] == "a (b)"

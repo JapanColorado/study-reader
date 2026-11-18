@@ -3,7 +3,7 @@ phone_sync.export_snapshot, and records what the desktop's practice.py and gamif
 the Kotlin port can be checked against the real thing (QueueTest.kt).
 
 Run with the desktop's Python (from android/):
-    PYTHONPATH=../src /home/russell/Projects/study-reader/.pixi/envs/default/bin/python scripts/queue_fixtures.py
+    PYTHONPATH=../src /home/russell/Projects/study-reader/.pixi/envs/default/bin/python scripts/queue_fixtures.py [out_dir]
 Writes core/src/test/resources/queue_snapshot.db and queue_cases.json. Times are local: run the
 tests in the same time zone (TZ is pinned to UTC here and in the Gradle test task).
 """
@@ -28,7 +28,8 @@ os.environ["STUDY_READER_DATA"] = str(tmp / "data")
 from study_reader import gamify, phone_sync, practice  # noqa: E402
 from study_reader.db import Database  # noqa: E402
 
-OUT = HERE.parent / "core" / "src" / "test" / "resources"
+# The folder to write to (tests/test_android_fixtures.py writes elsewhere to compare).
+OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE.parent / "core" / "src" / "test" / "resources"
 NOW = 1_800_000_000.0  # 2027-01-15 08:00 UTC
 DAY = 86400
 random.seed(7)
@@ -107,13 +108,14 @@ for b, secs in practice.sections(db, NOW).items():
 cases = {"now": NOW, "new_left_today": practice.new_left_today(db, NOW), "scopes": [], "previews": {}, "sections": {},
          "deck_counts": {str(k): v for k, v in practice.deck_counts(db, NOW).items()}}
 for sc in scopes:
-    args = dict(deck=sc["deck"], tag=sc["tag"])
-    first = practice.next_question(db, sc["book"], NOW, **args)
+    picks = ([{"deck": sc["deck"]}] if sc["deck"] is not None
+             else [{"book": sc["book"], "section": sc["tag"]}] if sc["book"] is not None else [])
+    first = practice.next_question(db, NOW, picks=picks)
     skip = [first["id"]] if first else []
-    second = practice.next_question(db, sc["book"], NOW, skip=skip, **args)
-    cases["scopes"].append({**sc, "counts": practice.counts(db, sc["book"], NOW, **args),
+    second = practice.next_question(db, NOW, skip=skip, picks=picks)
+    cases["scopes"].append({**sc, "counts": practice.counts(db, NOW, picks=picks),
                             "next": first["id"] if first else None, "next_skipping": second["id"] if second else None,
-                            "next_due": practice.next_due(db, sc["book"], NOW, **args)})
+                            "next_due": practice.next_due(db, NOW, picks=picks)})
 for b, secs in practice.sections(db, NOW).items():
     cases["sections"][str(b)] = secs
 practice.scheduler(db).enable_fuzzing = False  # previews comparable with the Kotlin port (Practice(fuzz = false))

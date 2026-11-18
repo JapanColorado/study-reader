@@ -25,17 +25,18 @@ object Grading {
 
     /**
      * Verdict ("correct" | "incorrect" | "partial") for a locally graded question: choice, truefalse,
-     * self_check (by rating) and calculation, under their old names too (flashcard, numeric). question/response
+     * self_check (by rating) and calculation. question/response
      * are the JSON the questions store / practice.html sends:
      * {"choice": i} | {"value": bool} | {"latex": s} | {"rating": n}.
      *
      * Throws [AnswerError] for input that can't be graded as entered, and IllegalArgumentException where the
      * desktop raises ValueError (short answers, which Claude grades; unreadable expected answers), KeyError
      * or TypeError (malformed questions). An expected answer beyond the double range throws
-     * ArithmeticException (the desktop's uncaught OverflowError); a typed answer beyond it is an AnswerError.
+     * IllegalArgumentException when written as an expression, and ArithmeticException (the desktop's
+     * uncaught OverflowError) as a JSON number or LaTeX; a typed answer beyond it is an AnswerError.
      */
     fun grade(question: JsonObject, response: JsonObject): String {
-        val kind = question.required("type").let { if (it is JsonPrimitive && it.isString) Practice.kind(it.content) else null }
+        val kind = question.required("type").let { if (it is JsonPrimitive && it.isString) it.content else null }
         when (kind) {
             "choice" -> {
                 val given = response["choice"]
@@ -64,7 +65,6 @@ object Grading {
                 val latex = PyText.strip(response["latex"]?.let { PyValue.str(it) } ?: "")
                 if (latex.isEmpty()) throw AnswerError("Enter a number")
                 val given = try {
-                    // (where the desktop crashes on an answer beyond the double range, this says so)
                     Calc.compute(CalcLatex.latexToExpr(latex))
                 } catch (e: CalcError) {
                     throw AnswerError(e.message ?: "")
@@ -90,8 +90,9 @@ object Grading {
 
     /**
      * The value of a calculation question's answer: a JSON number, or a string holding a plain expression
-     * ("3/8", "sqrt(2)/2", "2e-3") or LaTeX. Throws IllegalArgumentException if it can't be read, and
-     * ArithmeticException for a value beyond the double range (where the desktop raises OverflowError).
+     * ("3/8", "sqrt(2)/2", "2e-3") or LaTeX. Throws IllegalArgumentException if it can't be read or (as an
+     * expression) is beyond the double range, and ArithmeticException for a JSON number or LaTeX beyond it
+     * (where the desktop raises OverflowError).
      */
     fun expectedValue(answer: JsonElement): Double {
         when (val a = PyValue.of(answer)) {
@@ -111,6 +112,8 @@ object Grading {
             } catch (e: LatexError) {
                 throw IllegalArgumentException("can't read the calculation's answer ${PyText.repr(text)}")
             }
+        } catch (e: ArithmeticException) {
+            throw IllegalArgumentException("the calculation's answer ${PyText.repr(text)} is too large")
         }
     }
 

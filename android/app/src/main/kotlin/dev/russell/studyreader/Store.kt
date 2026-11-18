@@ -76,8 +76,6 @@ class Store private constructor(private val context: Context) {
     var lastError: String = ""
         private set
 
-    fun hasQuestions(): Boolean = sql.long("SELECT COUNT(*) FROM questions") > 0
-
     /** A line for the overview about how syncing stands. */
     fun statusLine(): String {
         if (folder == null) return "Not syncing yet: choose the shared folder in Settings."
@@ -112,22 +110,40 @@ class Store private constructor(private val context: Context) {
         }
     }
 
-    /** Writes the events not yet sent as a new batch file. */
+    /**
+     * Writes the events not yet sent as a new batch file, and writes again any batch sent but not yet
+     * acknowledged whose file isn't in the folder. Events are marked sent only once their file is there.
+     */
     fun flush(root: DocumentFile? = root()) {
         root ?: return
-        val (name, text) = SyncStore.takeBatch(sql) ?: return
+        val batch = SyncStore.takeBatch(sql)
+        val sent = SyncStore.sentBatches(sql)
+        if (batch == null && sent.isEmpty()) return
+        val dir = child(child(root, PHONES, create = true)!!, SyncStore.device(sql), create = true)!!
+        if (sent.isNotEmpty()) {
+            val there = dir.listFiles().mapNotNull { it.name }.toSet()
+            for (b in sent) if (b.fileName !in there) write(dir, b)
+        }
+        if (batch != null) {
+            write(dir, batch)
+            SyncStore.sent(sql, batch)
+        }
+    }
+
+    /** Writes a batch as a temporary file renamed into place, so Syncthing never sends half of one. */
+    private fun write(dir: DocumentFile, batch: SyncStore.Batch) {
+        val bytes = batch.text.toByteArray()
+        val tmp = dir.createFile("application/octet-stream", "$TEMP_PREFIX${batch.fileName}.tmp") ?: error("can't write in the shared folder")
         try {
-            val dir = child(child(root, PHONES, create = true)!!, SyncStore.device(sql), create = true)!!
-            val tmp = dir.createFile("application/octet-stream", "$TEMP_PREFIX$name.tmp") ?: error("can't write in the shared folder")
-            context.contentResolver.openOutputStream(tmp.uri, "wt")!!.use { it.write(text.toByteArray()) }
-            if (!tmp.renameTo(name)) {
-                tmp.delete()
-                val f = dir.createFile("application/json", name) ?: error("can't write in the shared folder")
-                context.contentResolver.openOutputStream(f.uri, "wt")!!.use { it.write(text.toByteArray()) }
-            }
+            context.contentResolver.openOutputStream(tmp.uri, "wt")!!.use { it.write(bytes) }
         } catch (e: Exception) {
-            SyncStore.unbatch(sql, name)
+            tmp.delete()
             throw e
+        }
+        if (!tmp.renameTo(batch.fileName)) {
+            tmp.delete()
+            val f = dir.createFile("application/json", batch.fileName) ?: error("can't write in the shared folder")
+            context.contentResolver.openOutputStream(f.uri, "wt")!!.use { it.write(bytes) }
         }
     }
 

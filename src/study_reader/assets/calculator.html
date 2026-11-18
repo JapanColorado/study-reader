@@ -152,7 +152,7 @@ historyEl.addEventListener("dblclick", ev => {
 historyEl.addEventListener("contextmenu", ev => {
   const e = entryOf(ev.target);
   ev.preventDefault();
-  if (e) call("menu", e.key, showFraction.has(e.key));
+  if (e) call("menu", e.key);
 });
 
 // -- input ---------------------------------------------------------------------------

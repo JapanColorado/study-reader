@@ -20,6 +20,7 @@ ASSETS = Path(__file__).parent / "assets"
 # transcript.html inlines the ones a visualization's code refers to.
 VIZ_LIBS = {"d3": "viz/d3.min.js", "chart": "viz/chart.umd.min.js"}
 VIZ_WINDOW = QUrl.fromLocalFile(str(ASSETS / "vizwindow.html"))
+TRANSCRIPT = QUrl.fromLocalFile(str(ASSETS / "transcript.html"))
 
 
 def _url_id(url: QUrl) -> int | None:
@@ -61,7 +62,9 @@ class _Page(QWebEnginePage):
         if url.scheme() in ("http", "https", "mailto"):
             QDesktopServices.openUrl(url)
             return False
-        return True
+        # Only transcript.html itself (its load, a reload, a #fragment in it): any other link in a
+        # reply (relative, file:, ftp:…) would replace the transcript for good.
+        return url.isLocalFile() and url.toLocalFile() == TRANSCRIPT.toLocalFile()
 
 
 class _QuizBridge(QObject):
@@ -128,15 +131,16 @@ class TranscriptView(QWebEngineView):
         self._stream_timer = QTimer(self, singleShot=True, interval=60)
         self._stream_timer.timeout.connect(self._flush_stream)
         self.loadFinished.connect(self._on_loaded)
-        self.load(QUrl.fromLocalFile(str(ASSETS / "transcript.html")))
+        self.load(TRANSCRIPT)
 
     def show_messages(
         self, messages: list[dict], streaming: str | None = None, placeholder: str = "", editing: int | None = None
     ) -> None:
         """streaming: None when idle, else the reply text received so far.
         editing: id of the message being rewritten in the composer, if any.
-        An assistant message's quizzes come in its "quizzes", from quiz_view(), with its "text"
+        An assistant message's quizzes come in its "quizzes", from ChatPanel._quiz_view, with its "text"
         holding the placeholders quiz.split() leaves."""
+        self._stream_timer.stop()  # a flush still waiting would draw the last chat's text into this one
         self.page().setBackgroundColor(QColor(theme().colors["surface"]))
         out = []
         for m in messages:

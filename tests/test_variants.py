@@ -33,6 +33,11 @@ def test_parse_new_versions():
     assert q["answer"] == "3/2*6" and q["unit"] == "s" and q["page"] == 2 and "tags" not in q
     assert variants.parse('Nothing to vary.\n```json\n{"skip": true}\n```', CALCULATION) == variants.SKIP
     assert variants.parse('{"skip": true}', CALCULATION) == variants.SKIP  # no fence
+    # Told to rephrase rather than skip, and multiple choice always gets new choices: no skip is kept.
+    with pytest.raises(ValueError):
+        variants.parse('{"skip": true}', {**CALCULATION, "varies": True})
+    with pytest.raises(ValueError):
+        variants.parse('{"skip": true}', CHOICE)
     with pytest.raises(ValueError):
         variants.parse('```json\n{"type": "short_answer", "question": "Why?", "answer": "Tea."}\n```', CALCULATION)
     with pytest.raises(ValueError):
@@ -178,6 +183,22 @@ def test_short_answers_without_numbers_are_skipped_for_good(chat_panel):
     row = db.question(short)
     assert not variants.is_varied(row) and not variants.wants_variant(row)
     assert variants.question(row) == practice.question(row)
+
+
+def test_questions_that_always_vary_are_not_skipped_for_good(chat_panel):
+    page, worker, db, reply, shown = _practice(chat_panel)
+    short = db.question_for(reply, 0, 3)["id"]
+    group = db.question_group(db.question(short)["group_id"])
+    db.update_question_group(group["id"], {**json.loads(group["fields"]), "varies": True})
+    page.variants.after_attempt(short)
+    worker.varied.emit(short, '{"skip": true}')  # declined anyway: nothing kept, asked again next time
+    row = db.question(short)
+    assert row["variant"] == "" and variants.wants_variant(row)
+    # A skip stored before (a choice question, or one marked since) doesn't stop it being asked.
+    db.update_question(short, variant=json.dumps(variants.SKIP))
+    assert variants.wants_variant(db.question(short))
+    page.variants.after_attempt(short)
+    assert [c for _, c in worker.variants] == [short, short]
 
 
 def test_first_answer_in_chat_asks_for_a_new_version(chat_panel):

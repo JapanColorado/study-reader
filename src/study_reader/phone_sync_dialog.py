@@ -3,10 +3,12 @@ minutes and on quitting, and the settings dialog that picks the folder."""
 
 from __future__ import annotations
 
+import sqlite3
+import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QObject, QTimer, Signal
 from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout,
 )
@@ -18,41 +20,104 @@ INTERVAL_MS = 2 * 60_000
 
 
 class PhoneSync(QObject):
-    """Runs phone_sync.sync while a folder is set. synced(result) after each run that did something."""
+    """Runs phone_sync.sync while a folder is set. synced(result) after each run that did something.
+    What went wrong last is last_error, which the dialog shows.
+
+    The phones' batches are applied here, on the GUI thread (they write to the database), but the
+    snapshot, which takes a second or two to write once there are many attempts, is written on a
+    thread of its own with its own database connection: one at a time, and a snapshot asked for
+    while one is being written is planned again once it is done. The app waits for it on quitting
+    (wait)."""
 
     synced = Signal(object)
-    failed = Signal(str)
+    _written = Signal()  # from the snapshot thread
 
     def __init__(self, db: Database, after_attempt=None, parent=None):
         super().__init__(parent)
         self.db = db
         self.after_attempt = after_attempt  # called with each question id the phone attempted (new numbers)
-        self.last_error = ""
+        self._error = ""  # of the last sync
+        self._export_error = ""  # of the last snapshot written on the thread
+        self._thread: threading.Thread | None = None  # writing a snapshot
+        self._outcome: tuple[phone_sync.Export, str] | None = None  # its plan and error, once it is done
+        self._again: bool | None = None  # a sync (forced or not) waiting for it
+        self._written.connect(self._finish)
         self._timer = QTimer(self, interval=INTERVAL_MS)
         self._timer.timeout.connect(self.sync)
         self._timer.start()
+        app = QCoreApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self.wait)  # the sync on closing writes one too
 
     def sync(self, force: bool = False) -> phone_sync.Result | None:
         root = phone_sync.folder(self.db)
         if root is None:
             return None
         if not root.is_dir():
-            self.last_error = f"The folder {root} isn't there."
-            self.failed.emit(self.last_error)
+            self._error = f"The folder {root} isn't there."
             return None
         try:
-            result = phone_sync.sync(self.db, root, force=force)
-        except OSError as e:
-            self.last_error = str(e)
-            self.failed.emit(self.last_error)
+            result = phone_sync.sync(self.db, root, force=force, write=lambda plan: self._write(plan, force))
+        except (OSError, sqlite3.Error, ValueError) as e:  # reported, not raised: this also runs as the window closes
+            self._error = str(e)
             return None
-        self.last_error = ""
+        self._error = ""
         if self.after_attempt is not None:
             for question_id in dict.fromkeys(result.attempted):
                 self.after_attempt(question_id)
         if result.applied or result.exported:
             self.synced.emit(result)
         return result
+
+    @property
+    def last_error(self) -> str:
+        return self._error or self._export_error
+
+    def wait(self) -> None:
+        """Finish writing the snapshot (and one asked for meanwhile) before going on."""
+        while self._thread is not None:
+            self._thread.join()
+            self._finish()
+
+    def _write(self, plan: phone_sync.Export, force: bool) -> None:
+        if self._thread is not None:
+            self._again = bool(self._again) or force
+            return
+        if not Path(self.db.path).is_file():  # nothing another connection could open
+            phone_sync.write_snapshot(self.db.conn, plan)
+            phone_sync.finish_export(self.db, plan)
+            return
+        # Not a daemon: should the app quit without waiting, the snapshot is still finished.
+        self._thread = threading.Thread(target=self._run, args=(plan,), name="phone-snapshot")
+        self._thread.start()
+
+    def _run(self, plan: phone_sync.Export) -> None:
+        """On the snapshot thread."""
+        error = "The snapshot wasn't finished."
+        try:
+            phone_sync.write_snapshot_apart(self.db.path, plan)
+            error = ""
+        except Exception as e:  # noqa: BLE001 - shown in the dialog
+            error = str(e) or type(e).__name__
+        finally:
+            self._outcome = (plan, error)
+        try:
+            self._written.emit()
+        except RuntimeError:  # deleted meanwhile (the app is quitting)
+            pass
+
+    def _finish(self) -> None:
+        """Back on the GUI thread once the snapshot thread is done (or from wait)."""
+        if self._outcome is None:  # handled already
+            return
+        self._thread.join()
+        (plan, error), self._outcome, self._thread = self._outcome, None, None
+        self._export_error = error
+        if not error and plan.root == phone_sync.folder(self.db):  # not a folder given up meanwhile
+            phone_sync.finish_export(self.db, plan)
+        if self._again is not None:
+            force, self._again = self._again, None
+            self.sync(force=force)
 
 
 class PhoneSyncDialog(QDialog):
@@ -111,6 +176,7 @@ class PhoneSyncDialog(QDialog):
 
     def _sync_now(self) -> None:
         result = self.sync.sync(force=True)
+        self.sync.wait()  # asked for: what it wrote (or what went wrong) is shown
         self._show_status(result)
 
     def _show_status(self, result: phone_sync.Result | None = None) -> None:

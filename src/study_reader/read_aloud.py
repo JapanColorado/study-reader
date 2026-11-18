@@ -145,8 +145,11 @@ class ReadAloud(QObject):
         if not self.active:
             return
         if self._heard:  # let the sentence being read finish; redo the ones queued after it
-            self.engine.clear(keep_current=True)
-            self._fed = self._cur
+            kept = self.engine.clear(keep_current=True)
+            # In a sentence's last moments the next one may be on its way to the device
+            # already, and is kept too: carry on after it, or it would be heard twice.
+            i = self._index(kept) if kept is not None else None
+            self._fed = max(self._cur, i) if i is not None else self._cur
             self._feed()
         else:
             self._jump(self._cur)

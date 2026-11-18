@@ -1,5 +1,6 @@
 // Practice progress widgets shared by home.html and practice.html: the rewards row (gamify.py's
-// level, streak and daily goal), the calendar of attempts per day, and the forecast of questions due.
+// level, streak and daily goal), the calendar of attempts per day (stats.html's too), and the
+// forecast of questions due.
 // Needs esc() (markdown.js or the page's own).
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;

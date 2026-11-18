@@ -115,16 +115,6 @@ class GradingTest {
         assertTrue(all.size > 1000)
     }
 
-    @Test
-    fun exprToLatexMatchesTheDesktop() {
-        val all = list("expr_to_latex")
-        val failures = all.mapNotNull {
-            val got = CalcLatex.exprToLatex(it.str("expr")!!)
-            if (got != it.str("latex")) "${show(it.str("expr")!!)}: expected ${show(it.str("latex")!!)}, got ${show(got)}" else null
-        }
-        check("expr_to_latex", failures, all.size)
-    }
-
     /** The outcome of a grading call as the fixture records it: a result, or an error kind and message. */
     private fun outcome(f: () -> Any): Pair<String, String> = try {
         val r = f()
@@ -195,12 +185,9 @@ class GradingTest {
         assertEquals("incorrect", Grading.grade(calculation, json("""{"latex": "40"}""")))
         assertEquals("correct", Grading.grade(json("""{"type": "calculation", "answer": 41, "tolerance": 1.5}"""), json("""{"latex": "40"}""")))
         assertEquals("correct", Grading.grade(json("""{"type": "calculation", "answer": "sqrt(2)/2"}"""), json("""{"latex": "0.7071"}""")))
-        // The old name, in older snapshots and variants.
-        assertEquals("correct", Grading.grade(json("""{"type": "numeric", "answer": "41"}"""), json("""{"latex": "41"}""")))
         assertEquals("correct", Grading.grade(json("""{"type": "choice", "choices": ["a", "b"], "answer": 1}"""), json("""{"choice": 1}""")))
         assertEquals("incorrect", Grading.grade(json("""{"type": "truefalse", "answer": false}"""), json("""{"value": true}""")))
         assertEquals("partial", Grading.grade(json("""{"type": "self_check", "answer": "Back"}"""), json("""{"rating": 2}""")))
-        assertEquals("partial", Grading.grade(json("""{"type": "flashcard", "answer": "Back"}"""), json("""{"rating": 2}""")))
         assertEquals("Enter a number", assertThrows(AnswerError::class.java) { Grading.grade(calculation, json("""{"latex": " "}""")) }.message)
         assertEquals("Fill in the empty box first", assertThrows(AnswerError::class.java) {
             Grading.grade(calculation, json("""{"latex": "\\frac{1}{\\placeholder{}}"}"""))

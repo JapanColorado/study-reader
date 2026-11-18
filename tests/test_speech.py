@@ -109,8 +109,8 @@ def test_align_tokens():
     text = "Hello, world. It's 3 o'clock."
     tokens = [("Hello", 0.0, 0.4), (",", 0.4, 0.5), ("world", 0.5, 0.9), ("zebra", 0.9, 1.0), (".", 1.0, 1.1),
               ("it's", 1.2, 1.4), ("3", None, 1.6), ("o'clock", 1.6, 2.0), ("  ", 2.0, 2.1)]
-    assert align_tokens(text, tokens, t0=10.0) == [
-        (10.0, 10.4, 0, 5), (10.5, 10.9, 7, 12), (11.2, 11.4, 14, 18), (11.6, 12.0, 21, 28)]
+    assert align_tokens(text, tokens) == [
+        (0.0, 0.4, 0, 5), (0.5, 0.9, 7, 12), (1.2, 1.4, 14, 18), (1.6, 2.0, 21, 28)]
     assert align_tokens("a b", [("far", 0.0, 1.0)]) == []
 
 

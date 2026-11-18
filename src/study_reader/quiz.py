@@ -71,7 +71,7 @@ def split(text: str) -> tuple[str, list[dict]]:
         title = m["title"].strip()
         try:
             quiz = _validate(loads(m["body"]), title)
-        except (ValueError, TypeError, KeyError) as e:
+        except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError) as e:
             quiz = {"title": title or "Quiz", "error": str(e) or type(e).__name__, "raw": m["body"]}
         quizzes.append(quiz)
         i, f = m["indent"], m["fence"]
@@ -89,6 +89,8 @@ def _validate(data, title: str) -> dict:
         data = {"questions": data}
     questions = []
     for q in data["questions"]:
+        if not isinstance(q, dict):
+            raise ValueError("a question isn't an object")
         kind = TYPE_NAMES.get(str(q.get("type", "")).lower().replace("-", "_").replace(" ", "_"))
         if kind is None:
             raise ValueError(f"unknown question type {q.get('type')!r}")
@@ -96,7 +98,7 @@ def _validate(data, title: str) -> dict:
             raise ValueError("a question has no text")
         out = {
             "type": kind, "question": str(q["question"]), "explanation": str(q.get("explanation") or ""),
-            "page": int(q["page"]) if isinstance(q.get("page"), (int, float)) and q["page"] >= 1 else None,
+            "page": int(q["page"]) if isinstance(q.get("page"), (int, float)) and 1 <= q["page"] < 1e7 else None,
         }
         answer = q.get("answer")
         if kind == "choice":
@@ -246,7 +248,7 @@ def _text(value) -> str:
 
 # -- grading ---------------------------------------------------------------------------
 def _number(expr: str) -> float:
-    return float(Calculator().compute(expr))
+    return float(Calculator().compute(expr))  # OverflowError when an exact result is too big for a float
 
 
 def expected_value(answer) -> float:
@@ -262,6 +264,8 @@ def expected_value(answer) -> float:
             return _number(latex_to_expr(text))
         except (CalcError, LatexError):
             raise ValueError(f"can't read the calculation's answer {text!r}") from None
+    except OverflowError:
+        raise ValueError(f"the calculation's answer {text!r} is too large") from None
 
 
 def answer_latex(answer) -> str:
@@ -291,6 +295,8 @@ def grade(question: dict, response: dict) -> str:
             given = _number(latex_to_expr(latex))
         except (CalcError, LatexError) as e:
             raise AnswerError(str(e)) from None
+        except OverflowError:
+            raise AnswerError("Result is too large") from None
         expected = expected_value(question["answer"])
         tol = question.get("tolerance")
         if tol is None:

@@ -127,27 +127,42 @@ object SyncStore {
         db.exec("INSERT INTO pending (id, json) VALUES (?,?)", id, full.toString())
     }
 
-    fun unsent(db: Sql): Int = db.long("SELECT COUNT(*) FROM pending WHERE batch IS NULL").toInt()
     fun unacknowledged(db: Sql): Int = db.long("SELECT COUNT(*) FROM pending").toInt()
 
-    /** Puts the events not yet sent into a batch: its file name and contents, or null if there are none. */
-    fun takeBatch(db: Sql, nowMillis: Long = System.currentTimeMillis()): Pair<String, String>? = db.transaction {
-        val rows = db.query("SELECT seq, json FROM pending WHERE batch IS NULL ORDER BY seq")
-        if (rows.isEmpty()) return@transaction null
-        val device = device(db)
-        val batch = "%013d-%s".format(nowMillis, UUID.randomUUID().toString().take(6))
-        db.exec("UPDATE pending SET batch=? WHERE batch IS NULL AND seq<=?", batch, rows.last().long("seq"))
-        val text = buildString {
-            append("{\"format\":$FORMAT,\"device\":").append(JsonPrimitive(device)).append(",\"batch\":").append(JsonPrimitive(batch))
-            append(",\"events\":[")
-            rows.forEachIndexed { i, r -> if (i > 0) append(','); append(r.str("json")) }
-            append("]}")
-        }
-        "$batch.json" to text
+    /** A batch file to write: its name and contents, and the last queued event in it. */
+    data class Batch(val fileName: String, val text: String, val lastSeq: Long) {
+        val name get() = fileName.removeSuffix(".json")
     }
 
-    /** The batch couldn't be written: its events go out with the next one. */
-    fun unbatch(db: Sql, fileName: String) = db.exec("UPDATE pending SET batch=NULL WHERE batch=?", fileName.removeSuffix(".json"))
+    /**
+     * The events not yet sent, as a new batch, or null if there are none. Nothing is marked sent
+     * until the file is written ([sent]), so a write that fails, or the app stopping before it, leaves
+     * them queued for the next batch. (Should the file get written and the app stop before [sent],
+     * they go out twice; the desktop applies each event id once.)
+     */
+    fun takeBatch(db: Sql, nowMillis: Long = System.currentTimeMillis()): Batch? {
+        val rows = db.query("SELECT seq, json FROM pending WHERE batch IS NULL ORDER BY seq")
+        if (rows.isEmpty()) return null
+        val name = "%013d-%s".format(java.util.Locale.ROOT, nowMillis, UUID.randomUUID().toString().take(6))
+        return Batch("$name.json", batchText(db, name, rows.map { it.str("json") }), rows.last().long("seq"))
+    }
+
+    /** The batch's file is written: its events are sent (and stay queued until a snapshot acknowledges them). */
+    fun sent(db: Sql, batch: Batch) =
+        db.exec("UPDATE pending SET batch=? WHERE batch IS NULL AND seq<=?", batch.name, batch.lastSeq)
+
+    /** Every batch sent and not yet acknowledged, rebuilt from its events: the phone writes again any
+     *  whose file is missing from the shared folder (one an older build marked sent before writing it). */
+    fun sentBatches(db: Sql): List<Batch> =
+        db.query("SELECT seq, batch, json FROM pending WHERE batch IS NOT NULL ORDER BY seq").groupBy { it.str("batch") }
+            .map { (name, rows) -> Batch("$name.json", batchText(db, name, rows.map { it.str("json") }), rows.last().long("seq")) }
+
+    private fun batchText(db: Sql, name: String, events: List<String>) = buildString {
+        append("{\"format\":$FORMAT,\"device\":").append(JsonPrimitive(device(db))).append(",\"batch\":").append(JsonPrimitive(name))
+        append(",\"events\":[")
+        events.forEachIndexed { i, e -> if (i > 0) append(','); append(e) }
+        append("]}")
+    }
 
     /**
      * Takes over the local state of the database the phone used so far (old, if any) into a new

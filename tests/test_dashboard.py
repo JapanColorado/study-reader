@@ -1,4 +1,3 @@
-import time
 from datetime import datetime
 
 from study_reader import covers, dashboard, practice

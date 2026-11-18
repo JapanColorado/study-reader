@@ -124,3 +124,14 @@ def _no_kokoro(monkeypatch):
     from study_reader import tts_engines
 
     monkeypatch.setattr(tts_engines.KokoroEngine, "warm", lambda self: None)
+
+
+@pytest.fixture(autouse=True)
+def _hide_windows():
+    """Windows a test showed are hidden when it ends: a QtWebEngine view left on the (offscreen)
+    screen crashes a later test that runs the event loop for a while."""
+    yield
+    from PySide6.QtWidgets import QApplication
+    if QApplication.instance() is not None:
+        for widget in QApplication.topLevelWidgets():
+            widget.hide()

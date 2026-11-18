@@ -11,11 +11,11 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as clock, timedelta
 
 from . import practice
 from .db import Database
-from .stats import MATURE_DAYS, day_of
+from .stats import DAY_EDGE, MATURE_DAYS, day_of, day_spans
 
 ENABLED_SETTING = "gamify"  # "0" hides the rewards (they are still kept)
 GOAL_SETTING = "daily_goal"
@@ -149,11 +149,41 @@ def _save(db: Database, state: dict) -> None:
 
 def practice_days(db: Database) -> dict[date, int]:
     """Attempts per practice day (days roll over at 4 am, as in practice.py)."""
-    rows = db.conn.execute(
-        "SELECT date(attempted_at, 'unixepoch', 'localtime', ?) AS d, COUNT(*) AS n FROM attempts GROUP BY d",
-        (f"-{practice.DAY_STARTS_AT_HOUR} hours",),
-    )
-    return {date.fromisoformat(r["d"]): r["n"] for r in rows}
+    # Each day's attempts are counted through the attempts_time index; only the moments day_spans
+    # can't place (a clock change's days, the very end of a day) are read and given to day_of.
+    # Working out every attempt's local date, in SQL or here, scanned the whole log.
+    lo, hi = db.conn.execute("SELECT MIN(attempted_at), MAX(attempted_at) FROM attempts").fetchone()
+    if lo is None:
+        return {}
+    days: dict[date, int] = {}
+    odd: list[tuple[float, float]] = []  # ranges of moments to place one by one
+    spans = day_spans(lo, hi)
+    for day, start, end, steady in spans:
+        if not steady:
+            odd.append((start, end))
+            continue
+        n, edge = db.conn.execute("SELECT COUNT(*), COALESCE(SUM(attempted_at>=?), 0) FROM attempts "
+                                  "WHERE attempted_at>=? AND attempted_at<?", (end - DAY_EDGE, start, end)).fetchone()
+        if n > edge:
+            days[day] = n - edge
+        if edge:
+            odd.append((end - DAY_EDGE, end))
+    odd += [(float("-inf"), spans[0][1]), (spans[-1][2], float("inf"))]
+    for start, end in odd:
+        for (t,) in db.conn.execute("SELECT attempted_at FROM attempts WHERE attempted_at>=? AND attempted_at<?",
+                                    (start, end)):
+            d = day_of(t)
+            days[d] = days.get(d, 0) + 1
+    return dict(sorted(days.items()))
+
+
+def _attempts_on(db: Database, day: date) -> int:
+    """practice_days(db).get(day, 0), reading only that day's attempts (and a few hours either side,
+    for clock changes)."""
+    start = datetime.combine(day, clock(practice.DAY_STARTS_AT_HOUR)).timestamp()
+    rows = db.conn.execute("SELECT attempted_at FROM attempts WHERE attempted_at>=? AND attempted_at<?",
+                           (start - 6 * 3600, start + 30 * 3600))
+    return sum(day_of(t) == day for (t,) in rows)
 
 
 def _mature(db: Database) -> int:
@@ -280,19 +310,19 @@ def finished(db: Database, caught_up: bool, quick: bool, now: float | None = Non
     state = load(db, now)
     events = []
     today = day_of(now)
-    if caught_up and practice_days(db).get(today, 0):
+    if caught_up and _attempts_on(db, today):
         events += _goal_met(state, today)
     events += _unlock(state, {"caught_up": caught_up, "quick": quick, "goals": state["goals"]}, now)
     _save(db, state)
     return events
 
 
-def status(db: Database, now: float | None = None) -> dict:
+def status(db: Database, now: float | None = None, days: dict[date, int] | None = None) -> dict:
     """For the practice overview: level and XP, the streak and freezes, today against the goal,
-    the calendar of recent weeks, and the achievements."""
+    the calendar of recent weeks, and the achievements. days: practice_days, if already read."""
     now = time.time() if now is None else now
     state = load(db, now)
-    days = practice_days(db)
+    days = practice_days(db) if days is None else days
     today = day_of(now)
     if _settle(state, days, today):
         _save(db, state)

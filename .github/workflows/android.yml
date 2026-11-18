@@ -1,5 +1,7 @@
 # Every push to main that passes the checks publishes a signed APK as a GitHub release, which
-# Obtainium on the phone installs as an update. PRs and docs-only pushes just run the checks.
+# Obtainium on the phone installs as an update. PRs and docs-only pushes just run the checks, and so
+# do pushes whose only changes are desktop assets the app doesn't ship (the "Ships" step asks the
+# Gradle build, app/build.gradle.kts's shippedAssets, which ones it does).
 name: Android
 
 on:
@@ -53,6 +55,31 @@ jobs:
       - name: Checks
         run: ./gradlew lintDebug :core:test --continue
 
+      - name: Ships
+        id: ships
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          # A new APK only when the push changes the app: android/ (docs aside), this workflow, or a
+          # desktop asset the app bundles. Without a usable base commit, assume it does.
+          ship=false
+          if [ -z "$BEFORE" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            ship=true
+          else
+            shipped="$(./gradlew -q :app:webAssetFiles | grep '^src/study_reader/assets/')"
+            while IFS= read -r f; do
+              case "$f" in
+                *.md) ;;
+                android/*|.github/workflows/android.yml) ship=true ;;
+                # (a shipped file that was deleted isn't in the list any more)
+                src/study_reader/assets/*) if grep -qxF -- "$f" <<<"$shipped" || [ ! -e "../$f" ]; then ship=true; fi ;;
+              esac
+            done < <(git diff --name-only "$BEFORE" "$GITHUB_SHA")
+          fi
+          echo "ship=$ship" >> "$GITHUB_OUTPUT"
+          [ "$ship" = true ] || echo "No change to what the app ships: no release" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload reports
         if: failure()
         uses: actions/upload-artifact@v7
@@ -64,7 +91,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Write signing config
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.ships.outputs.ship != 'false'
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -84,11 +111,11 @@ jobs:
           } > keystore.properties
 
       - name: Build release APK
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.ships.outputs.ship != 'false'
         run: ./gradlew assembleRelease
 
       - name: Publish release
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.ships.outputs.ship != 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

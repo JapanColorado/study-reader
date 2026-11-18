@@ -39,7 +39,7 @@ def question_title(db: Database, row) -> tuple[str, int | None]:
 
 
 class VariantMaker(QObject):
-    """After a calculation or multiple-choice question is attempted, has Claude write its next version,
+    """After a calculation, short-answer or multiple-choice question is attempted, has Claude write its next version,
     with new numbers or new choices (variants.py, in a fresh bookless session), and keeps it on the
     question for practice to show. Failures are silent: the question shows its last version again."""
 
@@ -129,7 +129,7 @@ class _Bridge(QObject):
 class PracticePanel(QWidget):
     """An overview of what is due (every deck and book, or the decks, books and sections picked), then
     one question at a time: answer it (checked where it can be), then rate it Missed / Shaky / Got it / Easy.
-    variants: asks for the next version of each calculation question attempted."""
+    variants: asks for the next version of each question attempted that has one (variants.py)."""
 
     sourceRequested = Signal(int, int)  # book id, 0-based page (-1 if unknown)
     chatRequested = Signal(int)  # chat id: a question's Open chat
@@ -182,9 +182,10 @@ class PracticePanel(QWidget):
         layout.addWidget(self.view)
         theme().changed.connect(self._apply_theme)
         self._apply_theme()
-        # Learning questions fall due minutes apart; keep the overview's counts current.
+        # Learning questions fall due minutes apart; keep the overview's counts current
+        # (while it is on screen: the page is refreshed whenever it is shown).
         self._timer = QTimer(self, interval=60_000)
-        self._timer.timeout.connect(lambda: self.question_id is None and self.refresh())
+        self._timer.timeout.connect(lambda: self.question_id is None and self.isVisible() and self.refresh())
         self._timer.start()
         self.refresh()
 
@@ -289,13 +290,13 @@ class PracticePanel(QWidget):
             if p is not None and p not in picks:
                 picks.append(p)
         self.picks = picks
-        c = practice.counts(self.db, None, now, picks=self.picks)
-        upcoming = practice.next_due(self.db, None, now, picks=self.picks)
+        c = practice.counts(self.db, now, picks=self.picks)
+        upcoming = practice.next_due(self.db, now, picks=self.picks)
         overview = {
             **c,
             "title": self._scope_title(),
             "picks": self.picks,
-            "ready": practice.next_question(self.db, None, now, picks=self.picks) is not None,
+            "ready": practice.next_question(self.db, now, picks=self.picks) is not None,
             "next": when(upcoming, now) if upcoming else "",
             "attempted": self._summary["attempted"] if self._summary else 0,
             "summary": self._summary,
@@ -346,7 +347,7 @@ class PracticePanel(QWidget):
     def _decks_overview(self, now: float, everything: dict | None = None) -> dict:
         """The deck list for picking what to practice (dashboard.deck_rows). everything: practice.counts
         over all decks, if already known."""
-        everything = everything or practice.counts(self.db, None, now)
+        everything = everything or practice.counts(self.db, now)
         return {
             "decks": dashboard.deck_rows(self.db, now),
             "all_due": everything["due"], "all_new": everything["new"],
@@ -372,14 +373,14 @@ class PracticePanel(QWidget):
         if self._session is not None and self._session.over():
             self._finish(caught_up=False)
             return
-        row = practice.next_question(self.db, None, skip=self._just, exclude=self._skipped, picks=self.picks)
+        row = practice.next_question(self.db, skip=self._just, exclude=self._skipped, picks=self.picks)
         self.question_id = row["id"] if row else None
         self._answer = None
         self._shown_at = time.monotonic()
         self._shown_data = ""
         if row is None:
             # Only skipped questions left (if any): not caught up while they are still to practice.
-            left = self._skipped and practice.next_question(self.db, None, picks=self.picks)
+            left = self._skipped and practice.next_question(self.db, picks=self.picks)
             self._finish(caught_up=not left)
         else:
             self._show_question()
@@ -406,7 +407,7 @@ class PracticePanel(QWidget):
             self._question, self._shown_data = variants.question(row, self.db), row["data"]
         now = time.time()
         a = self._answer
-        c = practice.counts(self.db, None, now, picks=self.picks)
+        c = practice.counts(self.db, now, picks=self.picks)
         # The session's progress leaves out questions skipped in it, which won't come back in it.
         left = (practice.left_to_practice(self.db, None, now, exclude=self._skipped, picks=self.picks)
                 if self._skipped else c["due"] + c["new"])

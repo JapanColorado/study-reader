@@ -105,6 +105,8 @@ def test_kinds_types_books_flags(deck):
     assert find(db, f"cid:{questions['star']},{questions['zorb']}") == ids(questions, "star", "zorb")
     group = db.question(questions["gauss"])["group_id"]
     assert find(db, f"nid:{group}") == ids(questions, "gauss", "gauss1")
+    assert find(db, f"qid:{questions['star']}") == ids(questions, "star")  # cid: and nid: are the old names
+    assert find(db, f"gid:{group}") == ids(questions, "gauss", "gauss1")
 
 
 def test_states_and_due(deck):

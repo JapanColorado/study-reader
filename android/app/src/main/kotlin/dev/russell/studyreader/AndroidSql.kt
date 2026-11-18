@@ -5,6 +5,7 @@ import android.database.sqlite.SQLiteCursor
 import android.database.sqlite.SQLiteDatabase
 import dev.russell.studyreader.core.Row
 import dev.russell.studyreader.core.Sql
+import dev.russell.studyreader.core.savepoint
 import java.io.File
 
 /** The core's Sql over android.database.sqlite, binding arguments with their types. */
@@ -54,6 +55,9 @@ class AndroidSql(val file: File) : Sql, AutoCloseable {
     }
 
     override fun <T> transaction(block: () -> T): T {
+        // Not Android's nested beginTransaction, where an inner failure silently rolls back the whole
+        // outer transaction even when the outer one catches it.
+        if (db.inTransaction()) return savepoint(block)
         db.beginTransaction()
         try {
             val r = block()

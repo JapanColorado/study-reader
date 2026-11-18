@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="surface">#fbfaf8</color>
+    <!-- theme.py's LIGHT surface, as MainActivity colors the app bar: no flash of another shade at launch -->
+    <color name="surface">#faf8f4</color>
     <color name="icon_bg">#b8562f</color>
 </resources>

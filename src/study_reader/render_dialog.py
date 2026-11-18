@@ -124,10 +124,6 @@ class ColabRender(QObject):
         if not cr.watcher_running(self.base):
             cr.start_watcher(self.base)
 
-    @property
-    def running(self) -> bool:
-        return cr.watcher_running(self.base)
-
     def render(self, file_hash: str, title: str, voice: str, speed: float, gpu: str, texts, drive=None) -> int:
         n = cr.queue(self.base, file_hash, title, voice, speed, gpu, texts, drive)
         self._ensure_watcher()
@@ -135,6 +131,8 @@ class ColabRender(QObject):
         return n
 
     def stop(self) -> None:
+        """Release the VM and drop the queue (also after a failure, when a VM that couldn't be
+        stopped is still written down: the watcher tries again)."""
         cr.request_stop(self.base)
         self._ensure_watcher()
         self.changed.emit()
@@ -240,6 +238,8 @@ class RenderDialog(QDialog):
         self._run(status, self._show_status)
 
     def _show_status(self, result) -> None:
+        if self._exporting:  # asked before Render was pressed: the export isn't over
+            return
         request, here, state, failed, running, stopping = result
         self._busy(False)
         if cr.colab_exe() is None:
@@ -250,8 +250,8 @@ class RenderDialog(QDialog):
                                 "<code>colab sessions</code> in a terminal once.")
             return
         headline, details, rendering = self.describe(request, here, state, failed, running, stopping, time.time())
-        active = (running or bool(state.get("session"))) and not failed
-        self.stop_btn.setEnabled(active and not stopping)
+        # A VM written down may still be running, even after a failure: Stop tries again.
+        self.stop_btn.setEnabled((running or bool(state.get("session"))) and not (stopping and running))
         self.send_btn.setEnabled(not rendering)
         self.send_btn.setToolTip("Already rendering this book on Colab" if rendering else "")
         self.status.setTextFormat(Qt.TextFormat.RichText)
@@ -280,14 +280,17 @@ class RenderDialog(QDialog):
             what = f"voice {request['voice']}, made at {request['speed']:g}×"
             changed = request["voice"] != self.voice or abs(request["speed"] - render_speed(self.speed)) > 0.01
             again = f"You now read with {self.voice} at {self.speed:g}×: Render on Colab again for that."
+        if stopping and (active or running):
+            return "Stopping, and releasing the Colab GPU…", details, True
         if failed:
             details.append(failed)
+            if state.get("session"):
+                details.append("A Colab VM may still be running (it couldn't be stopped): "
+                               "Stop rendering tries to release it again.")
             details.append("Render on Colab tries again, carrying on where it stopped.")
             if request:
                 details.insert(0, f"{here:,} of {total:,} sentences are here.")
             return "Not rendering: Colab stopped with an error.", details, False
-        if stopping and active:
-            return "Stopping, and releasing the Colab GPU…", details, True
         if request and not request["done"]:
             details.append(f"{here:,} of {total:,} sentences are here ({what}).")
             just_sent = now - request.get("queued", 0) < 60

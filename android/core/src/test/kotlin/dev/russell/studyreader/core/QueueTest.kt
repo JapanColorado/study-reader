@@ -191,12 +191,19 @@ class QueueTest {
         assertEquals("practice", db.one("SELECT source FROM attempts ORDER BY id DESC LIMIT 1")!!.str("source"))
 
         // The batch file the desktop reads.
-        val (name, text) = SyncStore.takeBatch(db, 1234)!!
+        val taken = SyncStore.takeBatch(db, 1234)!!
+        val (name, text) = taken
         val batch = Json.parseToJsonElement(text).jsonObject
         assertEquals(2, batch["format"]!!.jsonPrimitive.intOrNull)
         assertEquals(events.size, batch["events"]!!.jsonArray.size)
         assertEquals(name.removeSuffix(".json"), batch["batch"]!!.jsonPrimitive.content)
+        // Until its file is written the events aren't sent: a batch that never got written goes out with the next.
+        assertEquals(events.size, Json.parseToJsonElement(SyncStore.takeBatch(db, 1235)!!.text).jsonObject["events"]!!.jsonArray.size)
+        assertEquals(emptyList<SyncStore.Batch>(), SyncStore.sentBatches(db))
+        SyncStore.sent(db, taken)
         assertEquals(null, SyncStore.takeBatch(db))
+        // A sent batch is the same file again if it has to be written again.
+        assertEquals(listOf(taken), SyncStore.sentBatches(db))
 
         // The same snapshot again, not acknowledging the batch: the phone's changes are replayed on it.
         val attempted = practice.question(first)!!
@@ -229,6 +236,20 @@ class QueueTest {
     }
 
     @Test
+    fun daysFollowTheZoneWhenItChanges() {
+        val phone = Practice(db)  // the phone's zone, read each time
+        val saved = java.util.TimeZone.getDefault()
+        try {
+            java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("UTC"))
+            val utc = phone.dayStart(now)
+            java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("Asia/Tokyo"))
+            assertEquals(9 * 3600.0, utc - phone.dayStart(now), 0.0)
+        } finally {
+            java.util.TimeZone.setDefault(saved)
+        }
+    }
+
+    @Test
     fun answersAreGradedAndBadInputStays() {
         val calls = mutableListOf<String>()
         val c = PracticeController(db, { calls += it }, now = { now })
@@ -241,29 +262,6 @@ class QueueTest {
         c.check(calculation.long("id"), "{\"latex\": \"41\"}")
         assertTrue(calls.last().contains("\"verdict\":\"correct\""))
         assertNotNull(calls.last())
-    }
-
-    @Test
-    fun olderKindNamesReadAsTodays() {
-        // Snapshots and variants from older desktops name kinds as they were (and older still, "free"):
-        // such a question is self-rated like a short answer.
-        val id = db.query("SELECT id FROM questions WHERE data LIKE '%\"short_answer\"%' LIMIT 1").first().long("id")
-        for (old in listOf("written", "free")) {
-            db.exec("UPDATE questions SET data=replace(data, '\"short_answer\"', ?), variant='' WHERE id=?", "\"$old\"", id)
-            assertEquals("short_answer", practice.content(practice.question(id)!!)["type"]!!.jsonPrimitive.content)
-            db.exec("UPDATE questions SET data=replace(data, ?, '\"short_answer\"') WHERE id=?", "\"$old\"", id)
-        }
-        db.exec("UPDATE questions SET data=replace(data, '\"short_answer\"', '\"free\"') WHERE id=?", id)
-        val calls = mutableListOf<String>()
-        val c = PracticeController(db, { calls += it }, now = { now })
-        c.questionId = id
-        c.refresh()
-        c.check(id, "{\"text\": \"Tea.\"}")
-        assertTrue(calls.last(), calls.last().startsWith("showQuestion(") && calls.last().contains("\"previews\""))
-        // A variant written before the rename.
-        val flash = db.query("SELECT id, data FROM questions WHERE data LIKE '%\"self_check\"%' LIMIT 1").first()
-        db.exec("UPDATE questions SET variant=? WHERE id=?", flash.str("data").replace("\"self_check\"", "\"flashcard\""), flash.long("id"))
-        assertEquals("self_check", practice.content(practice.question(flash.long("id"))!!)["type"]!!.jsonPrimitive.content)
     }
 
     // -- older builds and older desktops -----------------------------------------------------------
@@ -293,10 +291,18 @@ class QueueTest {
             assertEquals(listOf("a", "b", "c"), events.map { it["id"]!!.jsonPrimitive.content })
 
             // Only the unsent ones go out, in one format 2 batch.
-            val (_, text) = SyncStore.takeBatch(old, 1234)!!
-            val batch = Json.parseToJsonElement(text).jsonObject
+            val taken = SyncStore.takeBatch(old, 1234)!!
+            val batch = Json.parseToJsonElement(taken.text).jsonObject
             assertEquals(2, batch["format"]!!.jsonPrimitive.intOrNull)
             assertEquals(listOf("b", "c"), batch["events"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content })
+            SyncStore.sent(old, taken)
+            // The batch an older build sent is rebuilt in format 2, under its own name, should its file be missing.
+            val again = SyncStore.sentBatches(old)
+            assertEquals(listOf("0000000000001-sent.json", taken.fileName), again.map { it.fileName })
+            val first0 = Json.parseToJsonElement(again[0].text).jsonObject
+            assertEquals("0000000000001-sent", first0["batch"]!!.jsonPrimitive.content)
+            assertEquals(listOf("a"), first0["events"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content })
+            assertEquals(taken, again[1])
 
             // And they replay on the next snapshot.
             val before = practice.question(first)!!

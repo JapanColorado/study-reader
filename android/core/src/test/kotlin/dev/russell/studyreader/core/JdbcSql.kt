@@ -49,7 +49,7 @@ class JdbcSql(path: String = ":memory:") : Sql, AutoCloseable {
     }
 
     override fun <T> transaction(block: () -> T): T {
-        if (depth > 0) return block()
+        if (depth > 0) return savepoint(block)  // as AndroidSql does
         conn.autoCommit = false
         depth++
         try {

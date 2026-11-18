@@ -98,7 +98,7 @@ READER_INSTRUCTIONS = (
     "book, chapter or section (that is added automatically);\n"
     "- \"answer\", by type: for \"choice\" the 0-based index into \"choices\" (2-5 "
     "strings); for \"truefalse\" true or false; for \"calculation\" a number or an expression "
-    "like \"3/8\" or \"sqrt(2)/2\", plus optional \"tolerance\" (absolute; default 1% of the "
+    "like \"3/8\" or \"sqrt(2)/2\" (ln is the natural logarithm, log base 10), plus optional \"tolerance\" (absolute; default 1% of the "
     "answer) and \"unit\" (shown beside the input); for \"short_answer\" a model answer, plus "
     "\"rubric\" (the key points a full answer must contain); for \"self_check\" the "
     "answer the user checks their recall against (Markdown), with \"question\" what they "
@@ -337,12 +337,6 @@ async def run_turn(
     if result.is_error:
         raise ClaudeError(text or result.subtype or "Claude reported an error")
     return TurnResult(session_id=result.session_id, text=text, usage=result.usage or {}, message_uuid=last_uuid)
-
-
-async def prime_book(title: str, book_text: str, *, cwd: str | Path, model: str | None = None) -> str:
-    """Create the shared base session holding the whole book; returns its session id."""
-    res = await run_turn(priming_blocks(title, book_text), cwd=cwd, model=model)
-    return res.session_id
 
 
 def clean_title(text: str) -> str:

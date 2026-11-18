@@ -117,3 +117,32 @@ def test_ctrl_enter_asks_only_from_the_reader(pdf_path, tmp_path, monkeypatch):
     app.processEvents()
     QTest.keyClick(win.reader, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
     assert chosen == [True]
+
+
+def test_a_note_being_edited_is_kept_when_the_book_changes(pdf_path, tmp_path, monkeypatch):
+    """notes.html reports the editor's text as it is typed; changing or closing the book saves it."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    from PySide6.QtWidgets import QApplication
+    from study_reader.main_window import MainWindow
+
+    QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "t.db")
+    win = MainWindow(db)
+    win.open_book(pdf_path)
+    book_id = win.book_id
+    win.reader._selection = {0: win.doc.words(0)[:3]}
+    win.reader.choose_note()
+    (note,) = db.notes(book_id)
+    win.notes.draft(note["id"], "Typed, not saved")
+    win.close_book()
+    assert db.note(note["id"])["body"] == "Typed, not saved"
+
+    win.open_book(pdf_path)
+    win.reader._selection = {1: win.doc.words(1)[:2]}
+    win.reader.choose_note()  # a new note left blank is dropped, as Esc would
+    assert len(db.notes(book_id)) == 2
+    win.notes.draft(note["id"], "Edited again")  # its editor opened, then the other note's
+    win.notes.save(note["id"], "Edited again")
+    win.close()  # quitting saves too
+    assert [n["body"] for n in db.notes(book_id)] == ["Edited again"]

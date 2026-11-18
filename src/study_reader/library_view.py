@@ -186,6 +186,7 @@ class LibraryView(QWidget):
     webRequested = Signal()
     refetchRequested = Signal(int)  # a web snapshot to replace with a fresh copy
     practiceBookRequested = Signal(int)  # practice one book's questions
+    removing = Signal(int)  # a book about to be removed from the library
 
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
@@ -282,8 +283,9 @@ class LibraryView(QWidget):
         if key in self._covers:
             return self._covers[key]
         if path := covers.cached(key):
-            self._covers[key] = pm = QPixmap(str(path))
-            return pm if not pm.isNull() else None
+            pm = QPixmap(str(path))
+            self._covers[key] = pm = pm if not pm.isNull() else None
+            return pm
         if (key, b["path"]) not in self._queue:
             self._queue.append((key, b["path"]))
             self._cover_timer.start()
@@ -307,11 +309,11 @@ class LibraryView(QWidget):
         books = self.db.recent_books()
         needle = self.filter.text().strip().lower()
         shown = [b for b in books if needle in b["title"].lower()] if needle else books
-        counts = dashboard.book_counts(self.db)
+        counts, chats = dashboard.book_counts(self.db), self.db.chat_counts()
         reading = [b for b in shown if b["finished_at"] is None]
         finished = sorted((b for b in shown if b["finished_at"] is not None), key=lambda b: -b["finished_at"])
         for b in reading:
-            self._add_book(b, counts)
+            self._add_book(b, counts, chats)
         if finished:
             expanded = self.db.get_setting(FINISHED_COLLAPSED) != "1" or bool(needle)
             header = QListWidgetItem()
@@ -321,7 +323,7 @@ class LibraryView(QWidget):
             self.list.addItem(header)
             if expanded:
                 for b in finished:
-                    self._add_book(b, counts)
+                    self._add_book(b, counts, chats)
         questions = sum(c["total"] for c in counts.values())
         self.count.setText(
             f"{len(books)} book{'s' * (len(books) != 1)}" + (f" · {questions:,} practice questions" if questions else "") if books else ""
@@ -332,8 +334,8 @@ class LibraryView(QWidget):
         self.empty_text.setVisible(not books)
         self.filter.setVisible(bool(books))
 
-    def _add_book(self, b, counts: dict) -> None:
-        chats = len(self.db.chats(b["id"]))
+    def _add_book(self, b, counts: dict, chat_counts: dict) -> None:
+        chats = chat_counts.get(b["id"], 0)
         c = counts.get(b["id"], {"due": 0, "new": 0, "total": 0})
         day = lambda t: time.strftime("%d %b %Y", time.localtime(t)).lstrip("0")
         when = f"finished {day(b['finished_at'])}" if b["finished_at"] else f"opened {day(b['opened_at'])}"
@@ -393,6 +395,7 @@ class LibraryView(QWidget):
             self.db.set_finished(book["id"], not finished)
             self.refresh()
         elif chosen is remove:
+            self.removing.emit(book["id"])
             self.db.delete_book(book["id"])
             self.refresh()
         elif chosen is practice:

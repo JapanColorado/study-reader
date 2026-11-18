@@ -30,8 +30,11 @@ def test_pcm_queue_keeps_only_the_segment_playing_when_dropping_the_rest():
     q.append(1, b"a" * 50, [])
     q.append(2, b"b" * 50, [])
     q.read(10)
-    q.drop_unstarted()
+    assert q.drop_unstarted() == 1
     assert [s.uid for s in q.segs] == [1]
+    q.append(3, b"c" * 50, [])
+    q.read(45)  # the device has been handed the start of the next one too
+    assert q.drop_unstarted() == 3 and [s.uid for s in q.segs] == [1, 3]
     q.reset()
     assert q.segs == [] and q.total == 0 and q.hold
 
@@ -120,7 +123,6 @@ def fake_engine(monkeypatch):
 
     class FakeEngine(tts_engines.Engine):
         lookahead = 1
-        word_timing = True
 
         def __init__(self, name, parent=None):
             super().__init__(parent)
@@ -131,6 +133,7 @@ def fake_engine(monkeypatch):
             self.paused = False
             self.rendered = set()  # texts "rendered on Colab"
             self.cache_dir = None
+            self.kept = None  # what clear(keep_current=True) says it kept
             made.append(self)
 
         def has(self, text):
@@ -151,6 +154,7 @@ def fake_engine(monkeypatch):
         def clear(self, keep_current=False):
             self.clears.append(keep_current)
             self.queue = []
+            return self.kept if keep_current else None
 
         def pause(self):
             self.paused = True
@@ -312,6 +316,21 @@ def test_speed_changes_requeue_what_hasnt_played_and_persist(reading):
     assert ctl.speed == tts_engines.MAX_SPEED
 
 
+def test_a_speed_change_as_a_sentence_ends_doesnt_repeat_the_next(reading):
+    ctl = reading.ctl
+    ctl.start_from_view()
+    (engine,) = reading.engines
+    first, second = (uid for uid, _ in engine.queue)
+    engine.started.emit(first)
+    engine.kept = second  # its start is on its way to the device already, so it stays
+    ctl.set_speed(1.6)
+    ctl._speed_timer.stop()
+    ctl._apply_speed()
+    assert engine.queue == []  # "Two fish." isn't queued a second time
+    engine.started.emit(second)
+    assert [t for _, t in engine.queue] == ["Page 1."]
+
+
 def test_skip_silence_requeues_what_hasnt_played_and_persists(reading):
     ctl = reading.ctl
     ctl.start_from_view()
@@ -470,7 +489,10 @@ def test_main_window_read_aloud_controls(story_pdf, tmp_path, monkeypatch, fake_
     assert win.read_aloud.active
     win.show_library()  # the book stays open behind the Library, and reading pauses
     assert win.read_aloud.active and fake_engine[-1].paused
+    # Shift+F5, F4 and F6 are the book page's, like F5 (its bar is under the reader).
+    assert not any(a.isEnabled() for a in (win.stop_reading_action, win.prev_sentence_action, win.next_sentence_action))
     win.show_page("book")
+    assert all(a.isEnabled() for a in (win.stop_reading_action, win.prev_sentence_action, win.next_sentence_action))
     win.play_action.trigger()
     assert not fake_engine[-1].paused
     win.close_book()

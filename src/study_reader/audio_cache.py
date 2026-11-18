@@ -56,8 +56,9 @@ def _drive_parts(folder: Path) -> list[Path]:
 def sync(src: Path, dst: Path) -> int:
     """Copy parts the Drive notebook rendered that are new or changed from the shared folder,
     and drop the ones removed there; how many changed. Only its parts (part-NNNN) are touched,
-    not the ones colab_render downloads. Each part's audio is copied before its index (and its
-    index removed first), so a half-copied part is never used."""
+    not the ones colab_render downloads. Each part's audio is copied before its index (and, when
+    the audio changed, the old index removed first), so an index never points into audio that
+    isn't its own or isn't all there."""
     if not src.is_dir():
         return 0
     dst.mkdir(parents=True, exist_ok=True)
@@ -71,16 +72,30 @@ def sync(src: Path, dst: Path) -> int:
         audio = index.with_suffix(".opus")
         if not audio.exists():
             continue
-        for f in (audio, index):
-            target = dst / f.name
-            st = f.stat()
-            if target.exists() and target.stat().st_size == st.st_size and target.stat().st_mtime >= st.st_mtime:
-                continue
-            tmp = target.with_name(target.name + ".tmp")
-            shutil.copyfile(f, tmp)
-            os.replace(tmp, target)
-            copied += f is index
+        if not _same(audio, dst / audio.name):
+            # The index here points into the audio being replaced: removed first, so it
+            # never points into the new audio before its own index is here.
+            (dst / index.name).unlink(missing_ok=True)
+            _copy(audio, dst / audio.name)
+        if not _same(index, dst / index.name):
+            _copy(index, dst / index.name)
+            copied += 1
     return copied
+
+
+def _same(src: Path, target: Path) -> bool:
+    """Whether ``target`` is already a copy of ``src``."""
+    try:
+        st, have = src.stat(), target.stat()
+    except OSError:
+        return False
+    return have.st_size == st.st_size and have.st_mtime >= st.st_mtime
+
+
+def _copy(src: Path, target: Path) -> None:
+    tmp = target.with_name(target.name + ".tmp")
+    shutil.copyfile(src, tmp)
+    os.replace(tmp, target)
 
 
 class AudioCache:
@@ -90,24 +105,49 @@ class AudioCache:
         self.folder = Path(folder) if folder else None
         self.index: dict[str, list[tuple[float, str, int, int, list]]] = {}
         self._open: OrderedDict[str, object] = OrderedDict()
-        if self.folder and self.folder.is_dir():
-            for path in sorted(self.folder.glob("part-*.json")):
-                try:
-                    items = json.loads(path.read_text())["items"]
-                except (OSError, ValueError, KeyError):
-                    continue
-                audio = path.with_suffix(".opus").name
-                for key, (speed, start, n, tokens) in items.items():
-                    self.index.setdefault(key, []).append((speed, audio, start, n, tokens))
+        self._parts: dict[str, tuple[tuple[int, int], list[str]]] = {}  # index file → (its stat, its keys)
+        self.refresh()
+
+    def refresh(self) -> None:
+        """Take in the parts added, changed or removed since the last look, reading only
+        their index files (a book's whole index takes a while to read)."""
+        if not self.folder:
+            return
+        seen = {}
+        for path in self.folder.glob("part-*.json") if self.folder.is_dir() else ():
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            seen[path.name] = (st.st_mtime_ns, st.st_size)
+        for name in [n for n, (stamp, _) in self._parts.items() if seen.get(n) != stamp]:
+            self._forget(name)
+        for name in sorted(n for n in seen if n not in self._parts):
+            try:
+                items = json.loads((self.folder / name).read_text())["items"]
+            except (OSError, ValueError, KeyError):
+                continue
+            audio = name[:-len(".json")] + ".opus"
+            for key, (speed, start, n, tokens) in items.items():
+                self.index.setdefault(key, []).append((speed, audio, start, n, tokens))
+            self._parts[name] = (seen[name], list(items))
+
+    def _forget(self, name: str) -> None:
+        _, keys = self._parts.pop(name)
+        audio = name[:-len(".json")] + ".opus"
+        for key in keys:
+            if entries := [e for e in self.index.get(key, []) if e[1] != audio]:
+                self.index[key] = entries
+            else:
+                self.index.pop(key, None)
+        if (f := self._open.pop(audio, None)) is not None:
+            f.close()
 
     def __len__(self) -> int:
         return len(self.index)
 
     def has(self, voice: str, text: str) -> bool:
         return sentence_key(voice, text) in self.index
-
-    def count(self, keys) -> int:
-        return sum(k in self.index for k in keys)
 
     def get(self, voice: str, text: str, speed: float, skip: bool = False) -> tuple[np.ndarray, list] | None:
         """The sentence's samples at ``speed`` (``skip``: with its silences shortened) and its

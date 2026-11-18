@@ -115,3 +115,57 @@ def test_stats_window(db, monkeypatch):
     win.refresh()
     assert win.scope.currentIndex() == 0 and calls[-1][1][0]["counts"]["total"] == 1
     win.close()
+
+
+def test_stats_page_keeps_its_scope(db, tmp_path, monkeypatch):
+    """Visiting the Stats page again keeps the deck or book picked (and so does a restart), filling
+    the combo box once a visit."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    from PySide6.QtWidgets import QApplication
+    from study_reader.main_window import MainWindow
+
+    QApplication.instance() or QApplication([])
+    question(db, "Math::Calc")
+    calc = db.deck_by_name("Math::Calc")["id"]
+    win = MainWindow(db)
+    win.show()
+    win.show_page("stats")
+    stats_page = win.stats_window
+    fills = []
+    real_fill = stats_page._fill_scopes
+    monkeypatch.setattr(stats_page, "_fill_scopes", lambda: (fills.append(1), real_fill()))
+    stats_page._select(("deck", calc))
+    stats_page.scope.activated.emit(stats_page.scope.currentIndex())  # picked by the user
+    win.show_page("home")
+    win.show_page("stats")
+    assert stats_page.scope.currentData() == ("deck", calc) and len(fills) == 1
+    win.close()
+
+    again = MainWindow(db)
+    again.show_page("stats")
+    assert again.stats_window.scope.currentData() == ("deck", calc)
+    again.show_stats(book_id=None)  # the browser's Statistics for everything
+    assert again.stats_window.scope.currentIndex() == 0 and db.get_setting("stats_scope") == ""
+    again.close()
+
+
+def test_days_match_day_of_across_clock_changes(monkeypatch):
+    import time
+    from datetime import datetime
+
+    # Clocks that change at 4:30 am, across the 4 am rollover, as well as a real zone.
+    for zone in ("XST5XDT,M3.2.0/4:30,M11.1.0/4:30", "America/New_York"):
+        monkeypatch.setenv("TZ", zone)
+        time.tzset()
+        try:
+            start = datetime(2026, 3, 1, 4).timestamp()
+            spans = stats.day_spans(start, start + 300 * DAY)
+            assert not all(steady for *_, steady in spans)  # the clock changes are found
+            days = stats.Days(start, start + 300 * DAY)
+            moments = [s + d for _, s, _, _ in spans for d in (-3601, -1800, -1, -0.0004, -1e-6, 0, 1e-6, 1, 1800, 3601)]
+            assert [days(t) for t in moments] == [stats.day_of(t) for t in moments]
+            assert days(start - 400 * DAY) == stats.day_of(start - 400 * DAY)  # outside them
+        finally:
+            monkeypatch.undo()
+            time.tzset()

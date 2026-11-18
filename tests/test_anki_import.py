@@ -216,7 +216,7 @@ def test_migrating_notes_cards_and_schedules_into_questions(anki, db, tmp_path):
     assert json.loads(db.question_group(src["group_id"])["fields"])["extra"] == "Source: OWID"
 
     # New questions come in the order Anki made the cards; the parameters of the main preset are used.
-    new = practice.next_question(db, None, NOW, deck=db.deck_by_name("Physics")["id"])
+    new = practice.next_question(db, NOW, picks=[{"deck": db.deck_by_name("Physics")["id"]}])
     assert new["anki_id"] in (1_700_000_000_302, 1_700_000_000_303)  # due learning/learned questions first
     assert report.parameters == pytest.approx(W6, abs=1e-4) and report.retention == 0.85
     assert practice.parameters(db) == pytest.approx(W6, abs=1e-4) and practice.desired_retention(db) == 0.85

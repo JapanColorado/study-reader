@@ -33,11 +33,17 @@ def enabled(db) -> bool:
     return db.get_setting(ENABLED_SETTING, "1") != "0"
 
 
+def may_skip(q: dict) -> bool:
+    """Whether Claude may say a question has nothing to vary, which is then remembered: not a
+    multiple-choice question (it always gets new choices) or one marked "varies": true (rephrased instead)."""
+    return q.get("type") != "choice" and q.get("varies") is not True
+
+
 def wants_variant(row) -> bool:
     """A question whose next version is worth asking for: a calculation, short-answer or
     multiple-choice question not known to have nothing to vary."""
     q = json.loads(row["data"])
-    return q.get("type") in TYPES and q.get("varies") is not False and _load(row) != SKIP
+    return q.get("type") in TYPES and q.get("varies") is not False and (_load(row) != SKIP or not may_skip(q))
 
 
 def question(row, db=None) -> dict:
@@ -120,13 +126,15 @@ def _choices_request(intro: str, original: dict, last: dict | None) -> str:
 
 
 def parse(text: str, original: dict) -> dict:
-    """The new version from Claude's reply (SKIP if it declined). ValueError if unusable."""
+    """The new version from Claude's reply (SKIP if it declined, where it may). ValueError if unusable."""
     fences = re.findall(r"```(?:json)?[ \t]*\n(.*?)\n?```", text, re.DOTALL)
     raw = fences[-1] if fences else text[text.find("{"):text.rfind("}") + 1]
     data = quiz.loads(raw)
     if not isinstance(data, dict):
         raise ValueError("not a JSON object")
     if data.get("skip") is True:
+        if not may_skip(original):  # told to rephrase rather than skip: no new version this time
+            raise ValueError("declined a question that always has a new version")
         return dict(SKIP)
     if original.get("type") == "choice":  # new choices for the question as it stands
         data = {"explanation": original.get("explanation", ""), **data, "type": "choice",

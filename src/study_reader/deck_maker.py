@@ -42,8 +42,6 @@ IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                ".webp": "image/webp"}
 DOCUMENT_TYPES = (".pdf", ".epub", ".xps", ".fb2", ".mobi")
 TEXT_TYPES = (".txt", ".md", ".markdown", ".tex", ".rst", ".org", ".csv", ".tsv", ".json", ".html", ".htm", ".xml")
-# The types Claude may write (image labels need shapes drawn on an image).
-MAKE_TYPES = ("self_check", "both_ways", "fill_in", "choice", "truefalse", "calculation", "short_answer")
 ANSWERED = ("choice", "truefalse", "calculation")  # types the learner answers before seeing the answer
 SELF_CHECKS = ("self_check", "both_ways")
 SETTING_INSTRUCTIONS = "deck_maker_instructions"  # what the learner last told Claude when improving questions
@@ -212,7 +210,7 @@ def for_claude(spec: dict) -> dict:
         if f.get("extra"):
             out["explanation"] = f["extra"]
     else:
-        out = {k: v for k, v in f.items() if k not in ("answer_latex", "page", "section", "revises")}
+        out = {k: v for k, v in f.items() if k not in ("answer_latex", "page", "section", "revises", "html")}
         out["type"] = kind
     if spec.get("tags"):
         out["tags"] = spec["tags"]
@@ -670,14 +668,15 @@ def start_improve(db: Database, question_ids, instructions: str = "", model: str
 
 def counts(db: Database, draft_id: int) -> dict:
     """How the draft's questions stand: {status: n}, plus "ticked" (proposed and ticked, new and
-    rewrites) and "new" / "rewrites" of those."""
+    rewrites), "rewrites" of those, and "new_questions" (the questions the ticked new ones make)."""
     out = Counter()
     for item in db.draft_items(draft_id):
         out[item["status"]] += 1
         if item["status"] == "proposed" and item["checked"]:
             out["ticked"] += 1
-            out["rewrites" if item["question_id"] is not None else "new"] += 1
-            if item["question_id"] is None:
+            if item["question_id"] is not None:
+                out["rewrites"] += 1
+            else:
                 out["new_questions"] += sum(len(previews(s)) for s in specs(item["proposal"]))
     return dict(out)
 

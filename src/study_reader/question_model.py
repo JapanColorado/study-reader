@@ -58,8 +58,12 @@ def kind_name(name: str) -> str:
 
 
 # {{c1::answer}} or {{c1::answer::hint}}; like Anki, the blank ends at the first }} that isn't
-# inside math the answer holds ({{c1::\(\sqrt{LC}}\)}}).
-FILL_IN = re.compile(r"\{\{c(\d+)::((?:\\\(.*?\\\)|\\\[.*?\\\]|\$\$.*?\$\$|.)*?)(?:::((?:(?!\}\}).)*?))?\}\}",
+# inside math the answer holds ({{c1::\(\sqrt{LC}}\)}}). Each math span is taken whole or not at
+# all (an atomic group): letting the regex also try it a character at a time made an unclosed
+# blank before many math spans backtrack exponentially. Find blanks with fill_ins(), which
+# searches no further than the last }}, so math that doesn't close before it is read a
+# character at a time.
+FILL_IN = re.compile(r"\{\{c(\d+)::((?:(?>\\\(.*?\\\)|\\\[.*?\\\]|\$\$.*?\$\$|.))*?)(?:::((?:(?!\}\}).)*?))?\}\}",
                      re.DOTALL)
 # Math as markdown.js finds it: $$..$$, \[..\], \(..\), $..$ (not \$, which may sit inside: $p = \$1$).
 MATH = re.compile(r"\$\$(.+?)\$\$|\\\[(.+?)\\\]|\\\((.+?)\\\)|(?<!\\)\$(?!\s)((?:\\.|[^$\\\n])+?)(?<![\s\\])\$(?!\d)", re.DOTALL)
@@ -77,7 +81,7 @@ def question_ords(kind: str, fields: dict) -> list[int]:
     if kind == "both_ways":
         return [0, 1] if _filled(fields.get("back")) else [0]
     if kind == "fill_in":
-        return sorted({int(m.group(1)) - 1 for m in FILL_IN.finditer(fields.get("text", "")) if int(m.group(1)) > 0})
+        return sorted({int(m.group(1)) - 1 for m in fill_ins(fields.get("text", "")) if int(m.group(1)) > 0})
     if kind == "image_labels":
         return sorted({int(s["ord"]) - 1 for s in fields.get("shapes", []) if int(s.get("ord", 0)) > 0})
     return [0]
@@ -147,11 +151,27 @@ def fill_in_side(text: str, number: int, revealed: bool) -> str:
         shown = content if revealed else f"[{hint or '…'}]"
         return f'<span class="cloze">{shown}</span>'
 
-    return FILL_IN.sub(replace, text)
+    return _sub_fill_ins(text, replace)
 
 
 def math_spans(text: str) -> list[tuple[int, int]]:
     return [m.span() for m in MATH.finditer(text)]
+
+
+def fill_ins(text: str):
+    """The blanks in text, in order, as FILL_IN matches: group 1 the number, 2 the answer, 3
+    the hint or None."""
+    # Every blank ends at a }}. Stopping at the last one also keeps a hint that can't close
+    # from scanning on to the end at every :: after it.
+    return FILL_IN.finditer(text, 0, text.rfind("}}") + 2)
+
+
+def _sub_fill_ins(text: str, replace) -> str:
+    out, pos = [], 0
+    for m in fill_ins(text):
+        out += [text[pos:m.start()], replace(m)]
+        pos = m.end()
+    return "".join(out) + text[pos:]
 
 
 def _tex_text(s: str) -> str:
@@ -160,7 +180,7 @@ def _tex_text(s: str) -> str:
 
 def renumber_next(text: str) -> int:
     """The number a new blank would get (one past the highest)."""
-    return max((int(m.group(1)) for m in FILL_IN.finditer(text)), default=0) + 1
+    return max((int(m.group(1)) for m in fill_ins(text)), default=0) + 1
 
 
 # -- image labels -------------------------------------------------------------------------
@@ -201,7 +221,7 @@ def parse_image_labels(text: str) -> list[dict]:
 def plain(text: str) -> str:
     """Readable plain text of a field: blanks filled in, tags, entities and Markdown marks gone
     (math stays as written), one line."""
-    text = FILL_IN.sub(lambda m: m.group(2), text or "")
+    text = _sub_fill_ins(text or "", lambda m: m.group(2))
     text = re.sub(r"<br\s*/?>|</(div|p|li|tr|h\d)>", " ", text, flags=re.I)
     text = html.unescape(TAG.sub("", text))
     text = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", text)  # images

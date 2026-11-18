@@ -47,35 +47,6 @@ object CalcLatex {
     /** Plain calculator expression for the math field's LaTeX. Throws [LatexError]. */
     fun latexToExpr(latex: String): String = Parser(latex).parse()
 
-    /** Rough LaTeX for a plain expression, enough for the math field to show and edit it. */
-    fun exprToLatex(expr: String): String {
-        // re.sub(r"(\*\*|\^)\s*(-?[\w.]+)", r"^{\2}", expr)
-        val sb = StringBuilder()
-        var i = 0
-        while (i < expr.length) {
-            val opLen = if (expr.startsWith("**", i)) 2 else if (expr.startsWith("^", i)) 1 else 0
-            if (opLen > 0) {
-                var j = i + opLen
-                while (j < expr.length && PyText.isSpace(expr.codePointAt(j))) j += Character.charCount(expr.codePointAt(j))
-                val group = j
-                if (j < expr.length && expr[j] == '-') j++
-                val word = j
-                while (j < expr.length && (expr[j] == '.' || PyText.isWord(expr.codePointAt(j)))) {
-                    j += Character.charCount(expr.codePointAt(j))
-                }
-                if (j > word) {
-                    sb.append("^{").append(expr, group, j).append("}")
-                    i = j
-                    continue
-                }
-            }
-            val cp = expr.codePointAt(i)
-            sb.appendCodePoint(cp)
-            i += Character.charCount(cp)
-        }
-        return sb.toString().replace("**", "^").replace("%", "\\%")
-    }
-
     /** Concatenates operands and operators, multiplying operands that sit side by side (2x, 3(…)). */
     internal fun join(items: List<String>): String {
         val text = StringBuilder()

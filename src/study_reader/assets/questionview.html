@@ -91,22 +91,20 @@ function frontHtml(q) {
   return questionHtml(q, undefined, {}).replace(/<div class="submit-row">[\s\S]*?<\/div>(?=<\/div>$)/, "");
 }
 
-function sides(q, which = "both") {
-  let html = "";
-  if (which !== "back") html += `<div class="side"><div class="label">Front</div>${frontHtml(q)}</div>`;
-  if (which !== "front") html += `<div class="side"><div class="label">Back</div>${backHtml(q)}</div>`;
-  return html;
+function sides(q) {
+  return `<div class="side"><div class="label">Front</div>${frontHtml(q)}</div>`
+    + `<div class="side"><div class="label">Back</div>${backHtml(q)}</div>`;
 }
 
 function afterRender(root) {
   for (const el of root.querySelectorAll(".side button, .side textarea, .side math-field, .side input")) el.setAttribute("disabled", "");
 }
 
-// From the app: a question's data (null for none), and which sides to show.
-function showPreview(q, which) {
+// From the app: a question's data (null for none), shown front and back.
+function showPreview(q) {
   const root = document.getElementById("root");
   if (!q) { root.innerHTML = `<div class="empty">No question selected.</div>`; return; }
-  try { root.innerHTML = sides(q, which); }
+  try { root.innerHTML = sides(q); }
   catch (e) { root.innerHTML = `<div class="empty">Can't show this question: ${esc(String(e))}</div>`; }
   afterRender(root);
 }
@@ -163,6 +161,17 @@ function showDraft(draft) {
   if (draft.busy) html += `<div class="empty" style="margin:10px 0 20px"><span class="spinner"></span>Claude is working…</div>`;
   root.innerHTML = html;
   afterRender(root);
+}
+
+// From the app: the draft's ticks changed and nothing else did ({item id: checked}), so the
+// draft isn't drawn again (which would lose its scroll position).
+function setTicks(ticks) {
+  for (const pair of document.querySelectorAll(".pair[data-id]")) {
+    const box = pair.querySelector("[data-tick]");
+    if (!box || !(pair.dataset.id in ticks)) continue;
+    box.checked = ticks[pair.dataset.id];
+    pair.classList.toggle("off", !box.checked);
+  }
 }
 
 document.addEventListener("change", ev => {

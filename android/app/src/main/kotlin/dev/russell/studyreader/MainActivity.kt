@@ -3,6 +3,7 @@ package dev.russell.studyreader
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.TimePickerDialog
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
@@ -12,6 +13,7 @@ import android.os.Bundle
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -103,7 +105,7 @@ class MainActivity : ComponentActivity() {
     /** The page's colors follow the system's light or dark mode (the activity isn't recreated for it). */
     private fun applyTheme() {
         val view = webView ?: return
-        view.setBackgroundColor(android.graphics.Color.parseColor((if (dark()) DARK else LIGHT)["surface"]))
+        view.setBackgroundColor(android.graphics.Color.parseColor((if (dark()) DARK else LIGHT)["window"]))
         if (!pageReady) return
         val colors = buildJsonObject { (if (dark()) DARK else LIGHT).forEach { (k, v) -> put(k, v) } }
         view.evaluateJavascript("setTheme($colors, ${dark()})", null)
@@ -214,7 +216,8 @@ class MainActivity : ComponentActivity() {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.allowFileAccess = false
-            setBackgroundColor(android.graphics.Color.parseColor((if (dark()) DARK else LIGHT)["surface"]))
+            // practice.html's own background, so the page doesn't flash another shade as it loads
+            setBackgroundColor(android.graphics.Color.parseColor((if (dark()) DARK else LIGHT)["window"]))
             addJavascriptInterface(PracticeBridge(store) { controller!! }, "PracticeApp")
             webChromeClient = object : android.webkit.WebChromeClient() {
                 override fun onConsoleMessage(m: android.webkit.ConsoleMessage): Boolean {
@@ -229,7 +232,11 @@ class MainActivity : ComponentActivity() {
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                     // Links in question text open in the browser.
                     if (request.url.host != "appassets.androidplatform.net") {
-                        startActivity(Intent(Intent.ACTION_VIEW, request.url))
+                        try {
+                            startActivity(Intent(Intent.ACTION_VIEW, request.url))
+                        } catch (_: ActivityNotFoundException) {
+                            Toast.makeText(this@MainActivity, "No app here can open that link", Toast.LENGTH_SHORT).show()
+                        }
                     }
                     return true
                 }

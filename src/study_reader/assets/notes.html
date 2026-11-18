@@ -118,7 +118,11 @@ function openEditor(focus = true) {
   const area = el && el.querySelector("textarea");
   if (!area) return;
   const fit = () => { area.style.height = "auto"; area.style.height = `${area.scrollHeight + 2}px`; };
-  area.addEventListener("input", () => { EDITING.draft = area.value; fit(); });
+  area.addEventListener("input", () => {
+    EDITING.draft = area.value;
+    fit();
+    if (bridge) bridge.draft(EDITING.id, area.value);  // kept by the app, so a book change doesn't lose it
+  });
   area.addEventListener("keydown", e => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); }
     else if (e.key === "Escape") { e.preventDefault(); cancel(); }

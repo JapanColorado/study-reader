@@ -69,6 +69,10 @@ class _Bridge(QObject):
     def save(self, note_id: int, body: str) -> None:
         self.panel.save(note_id, body)
 
+    @Slot(int, str)
+    def draft(self, note_id: int, body: str) -> None:
+        self.panel.draft(note_id, body)
+
     @Slot(int)
     def cancel(self, note_id: int) -> None:
         self.panel.cancel(note_id)
@@ -94,6 +98,7 @@ class NotesPanel(QWidget):
         self.book_id: int | None = None
         self.shown: list[dict] = []  # the notes on display, after the search filter
         self._fresh: int | None = None  # a note just created, dropped if its first edit is cancelled empty
+        self._draft: tuple[int, str] | None = None  # the open editor's unsaved text, as notes.html reports it
 
         self.title = QLabel("Notes")
         self.title.setProperty("role", "section")
@@ -155,6 +160,8 @@ class NotesPanel(QWidget):
 
     # -- book / list ---------------------------------------------------------------------
     def set_book(self, book_id: int | None) -> None:
+        if book_id != self.book_id:
+            self.flush()
         self.book_id = book_id
         self._fresh = None
         self.search.blockSignals(True)
@@ -205,7 +212,32 @@ class NotesPanel(QWidget):
         self._show(note_id)
         self._js("reveal", note_id)
 
+    def draft(self, note_id: int, body: str) -> None:
+        """The editor's text changed (not saved yet)."""
+        self._draft = (note_id, body)
+
+    def flush(self) -> None:
+        """Save the open editor's unsaved text (the book is changing or closing, or the app quitting).
+        A note just created whose editor is still blank is dropped, as Esc would."""
+        if self._draft is None:
+            if self._fresh is not None:
+                self.cancel(self._fresh)
+            return
+        note_id, body = self._draft
+        self._draft = None
+        note = self.db.note(note_id)
+        if note is None:
+            return
+        if note_id == self._fresh and not body.strip():
+            self.cancel(note_id)
+        elif body != note["body"]:
+            self.db.update_note(note_id, body)
+            self._fresh = None
+            self.notesChanged.emit()
+
     def save(self, note_id: int, body: str) -> None:
+        if self._draft and self._draft[0] == note_id:
+            self._draft = None
         if self.db.note(note_id) is None:
             return
         self.db.update_note(note_id, body)
@@ -215,6 +247,8 @@ class NotesPanel(QWidget):
         self.notesChanged.emit()
 
     def cancel(self, note_id: int) -> None:
+        if self._draft and self._draft[0] == note_id:
+            self._draft = None
         note = self.db.note(note_id)
         if note_id == self._fresh:
             self._fresh = None
@@ -222,6 +256,8 @@ class NotesPanel(QWidget):
                 self.remove(note_id)
 
     def remove(self, note_id: int) -> None:
+        if self._draft and self._draft[0] == note_id:
+            self._draft = None
         if note_id == self._fresh:
             self._fresh = None
         self.db.delete_note(note_id)

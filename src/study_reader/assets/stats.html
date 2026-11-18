@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <script src="viz/chart.umd.min.js"></script>
+<script src="progress.js"></script>  <!-- heatmap(), shared with home.html and practice.html -->
 <style>
   /* Fallbacks; the app sets these from theme.py. */
   :root { --surface:#fbfaf8; --raised:#ffffff; --fg:#1f1e1c; --muted:#6b6862; --faint:#a19d95; --border:#dedad2;
@@ -31,7 +32,6 @@
   .chart { position:relative; height:200px; }
   .heat { overflow-x:auto; }
   .heat svg { display:block; }
-  .heat rect { rx:2px; }
   .heat-meta { display:flex; gap:18px; font-size:12.5px; color:var(--muted); margin-top:6px; flex-wrap:wrap; }
   .heat-meta b { color:var(--fg); }
   table { width:100%; border-collapse:collapse; font-size:13.5px; font-variant-numeric:tabular-nums; }
@@ -41,13 +41,10 @@
   td .of { color:var(--faint); font-size:11.5px; margin-left:4px; }
   .muted { color:var(--muted); }
   .empty { color:var(--muted); text-align:center; margin:60px auto; }
-  #tip { position:fixed; pointer-events:none; background:var(--raised); border:1px solid var(--border); border-radius:6px;
-         padding:2px 7px; font-size:12px; display:none; z-index:10; box-shadow:0 2px 8px rgba(0,0,0,.12); }
 </style>
 </head>
 <body>
 <div id="root"><div class="empty">Loading…</div></div>
-<div id="tip"></div>
 <script>
 // The app computes everything (stats.py) and calls showStats(data); setTheme recolors.
 let DATA = null;
@@ -134,7 +131,7 @@ function showStats(data) {
   html += `</div>`;
   root.innerHTML = html;
 
-  heatmap(document.getElementById("heat"), cal, P);
+  heatmap(document.getElementById("heat"), cal);
   const labels30 = data.attempts.map(d => shortDate(d.date));
   bars("attempts", labels30, [
     { label: "New", data: data.attempts.map(d => d.first), backgroundColor: P.first },
@@ -174,44 +171,6 @@ function bars(id, labels, datasets, opts = {}) {
     },
   }));
 }
-
-// A year of days as weekly columns, shaded by how many attempts each had.
-function heatmap(el, cal, P) {
-  const counts = Object.fromEntries(cal.days.map(d => [d.date, d.count]));
-  const max = Math.max(1, ...cal.days.map(d => d.count));
-  const start = new Date(cal.start + "T12:00"), end = new Date(cal.end + "T12:00");
-  const first = new Date(start); first.setDate(first.getDate() - first.getDay());  // back to Sunday
-  const size = 12, gap = 3, top = 16, left = 26;
-  let cells = "", months = "", x = 0, lastMonth = -1;
-  for (let week = new Date(first); week <= end; week.setDate(week.getDate() + 7), x++) {
-    if (week.getMonth() !== lastMonth) {
-      lastMonth = week.getMonth();
-      months += `<text x="${left + x * (size + gap)}" y="11" font-size="10" fill="${P.muted}">${week.toLocaleDateString(undefined, { month: "short" })}</text>`;
-    }
-    for (let d = 0; d < 7; d++) {
-      const day = new Date(week); day.setDate(day.getDate() + d);
-      if (day < start || day > end) continue;
-      const iso = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
-      const n = counts[iso] || 0;
-      const fill = n ? P.accent : P.border;
-      const opacity = n ? (0.25 + 0.75 * Math.sqrt(n / max)).toFixed(2) : 0.55;
-      cells += `<rect x="${left + x * (size + gap)}" y="${top + d * (size + gap)}" width="${size}" height="${size}" fill="${fill}"`
-        + ` fill-opacity="${opacity}" data-tip="${esc(day.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" }))}: ${n} attempt${n === 1 ? "" : "s"}"/>`;
-    }
-  }
-  const days = ["", "Mon", "", "Wed", "", "Fri", ""].map((l, d) => l ? `<text x="0" y="${top + d * (size + gap) + 10}" font-size="10" fill="${P.muted}">${l}</text>` : "").join("");
-  el.innerHTML = `<svg width="${left + x * (size + gap)}" height="${top + 7 * (size + gap)}">${months}${days}${cells}</svg>`;
-}
-
-const tip = document.getElementById("tip");
-document.addEventListener("mousemove", ev => {
-  const t = ev.target.closest && ev.target.closest("[data-tip]");
-  if (!t) { tip.style.display = "none"; return; }
-  tip.textContent = t.dataset.tip;
-  tip.style.display = "block";
-  const x = Math.min(ev.clientX + 12, window.innerWidth - tip.offsetWidth - 6);
-  tip.style.left = `${x}px`; tip.style.top = `${ev.clientY + 14}px`;
-});
 </script>
 </body>
 </html>

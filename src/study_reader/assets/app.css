@@ -44,7 +44,6 @@ a { color:var(--accent); }
         padding:1px 8px; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .pill.due { background:var(--accent-soft); color:var(--accent); }
 .pill.new { background:var(--new-soft); color:var(--new); }
-.pill.done { background:var(--success-soft); color:var(--success); }
 .big-count { display:flex; flex-direction:column; }
 .big-count .n { font-size:42px; font-weight:700; line-height:1.05; letter-spacing:-0.02em; font-variant-numeric:tabular-nums; }
 .big-count .l { font-size:12.5px; color:var(--muted); font-weight:550; }

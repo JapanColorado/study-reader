@@ -1,7 +1,7 @@
 """Spoken text for read-aloud: TeX and Unicode math said in words, abbreviations expanded, text split
 into sentences, and the TTS engine's timed tokens mapped back onto what was spoken. Qt-free.
 
-Book text is split by the reader with `sentence_ends` over a page's words, each word spoken through
+Book text is split by `speech_pages` with `ends_sentence` over a page's words, each word spoken through
 `speak_word`; a chat reply's blocks become sentences through `reply_utterances`.
 """
 
@@ -515,7 +515,7 @@ def reply_utterances(blocks: list[tuple[int, str]]) -> list[Utterance]:
     return out
 
 
-def align_tokens(text: str, tokens: Iterable, t0: float = 0.0) -> list[tuple[float, float, int, int]]:
+def align_tokens(text: str, tokens: Iterable) -> list[tuple[float, float, int, int]]:
     """(start, end, char start, char end) of each timed token found in `text`, in order; tokens with
     no times, punctuation, or no match near the cursor are left out."""
     out, cursor, lower = [], 0, text.lower()
@@ -528,6 +528,6 @@ def align_tokens(text: str, tokens: Iterable, t0: float = 0.0) -> list[tuple[flo
         if i < 0 and len(lower) == len(text):
             i = lower.find(tok.lower(), cursor, limit)
         if i >= 0:
-            out.append((t0 + start, t0 + end, i, i + len(tok)))
+            out.append((start, end, i, i + len(tok)))
             cursor = i + len(tok)
     return out

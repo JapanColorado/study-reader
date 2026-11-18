@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from study_reader import question_model, practice
+from study_reader import practice
 from study_reader import deck_maker as dm
 
 from test_practice import NOW
@@ -345,6 +345,52 @@ def test_make_window(db, maker):
     window.improve_form([1, 2])
     assert window.improve_button.text() == "Improve 2 questions"
     window.close()
+
+
+def test_ticking_a_draft_question_does_not_redraw_the_draft(db, maker, monkeypatch):
+    from study_reader.deck_maker_dialog import MakeWindow
+
+    maker, worker = maker
+    window = MakeWindow(maker)
+    calls = []
+    monkeypatch.setattr(window.view, "js", lambda function, *args: calls.append((function, args)))
+    window.new_form("")
+    window.description.setPlainText("Optics")
+    window._generate()
+    worker.made.emit(worker.sent[-1][0], "s", reply(questions=[{"action": "add", "question": FLUX},
+                                                               {"action": "add", "question": WHY}]))
+    window.refresh()
+    assert calls[-1][0] == "showDraft"
+    first, second = db.draft_items(db.draft()["id"])
+    calls.clear()
+    maker.tick(first["id"], False)  # what the page's checkbox calls
+    window._throttle.stop()
+    window.refresh()
+    assert [f for f, _ in calls] == ["setTicks"] * len(calls) and calls
+    assert calls[-1][1][0] == {str(first["id"]): False, str(second["id"]): True}
+    assert window.apply_button.text() == "Add 1 question"
+    db.update_draft_item(second["id"], reason="Clearer")  # anything else draws it again
+    window.refresh()
+    assert calls[-1][0] == "showDraft"
+    window.close()
+
+
+def test_draft_ticks_change_in_place(chat_panel):
+    from study_reader.browser import QuestionView
+    from test_practice import run_js, wait_ready
+
+    view = QuestionView()
+    page = view.page()
+    wait_ready(view, page)
+    item = {"id": 7, "number": 1, "status": "proposed", "checked": True, "reason": "", "now": None, "kind": "",
+            "groups": [{"kind": "self_check", "questions": [{"type": "self_check", "question": "q", "answer": "a"}]}]}
+    run_js(page, f"showDraft({json.dumps({'busy': False, 'note': '', 'items': [item]})}); "
+                 "document.querySelector('.pair').drawn = 1")
+    state = ("JSON.stringify([document.querySelector('.pair').drawn, document.querySelector('[data-tick]').checked, "
+             "document.querySelector('.pair').className])")
+    assert json.loads(run_js(page, f'setTicks({{"7": false}}); {state}')) == [1, False, "pair off"]  # the same element
+    assert json.loads(run_js(page, f'setTicks({{"7": true}}); {state}')) == [1, True, "pair"]
+    view.close()
 
 
 def test_main_window_wiring(tmp_path, monkeypatch):

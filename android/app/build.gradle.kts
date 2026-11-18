@@ -8,16 +8,26 @@ plugins {
 
 // The desktop app's practice page and what it loads (question rendering, KaTeX, MathLive, confetti),
 // copied in at build time so the phone draws questions exactly as the desktop does.
+// This list is the one place that says which desktop files the app ships: CI's release step asks
+// webAssetFiles for it, so a change to other desktop assets publishes no new APK.
 val desktopAssets = rootProject.file("../src/study_reader/assets")
+val shippedAssets = fileTree(desktopAssets) {
+    include("practice.html", "app.css", "progress.js", "quiz.js", "quiz.css", "markdown.js", "markdown-it.min.js",
+        "mathfield.js", "confetti.js")
+    include("katex/**", "mathlive/**")
+    exclude("mathlive/mathlive-static.css")
+}
 val webAssets = layout.buildDirectory.dir("generated/webassets")
 val copyWebAssets by tasks.registering(Sync::class) {
-    from(desktopAssets) {
-        include("practice.html", "app.css", "progress.js", "quiz.js", "quiz.css", "markdown.js", "markdown-it.min.js",
-            "mathfield.js", "confetti.js")
-        include("katex/**", "mathlive/**")
-        exclude("mathlive/mathlive-static.css")
-    }
+    from(shippedAssets)
     into(webAssets.map { it.dir("web") })
+}
+
+// The shipped desktop files, one per line, relative to the repository root (for .github/workflows/android.yml).
+tasks.register("webAssetFiles") {
+    val files = shippedAssets
+    val repo = rootProject.projectDir.parentFile
+    doLast { files.files.map { it.relativeTo(repo).invariantSeparatorsPath }.sorted().forEach(::println) }
 }
 
 // Commit count of HEAD (CI checks out full history, so local and CI builds agree); 1 outside git.
@@ -84,11 +94,9 @@ dependencies {
     implementation(project(":core"))
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
-    implementation(libs.compose.ui.tooling.preview)
     implementation(libs.compose.material3)
     implementation(libs.compose.material.icons.extended)
     implementation(libs.core.ktx)
-    implementation(libs.lifecycle.runtime.ktx)
     implementation(libs.activity.compose)
     implementation(libs.webkit)
     implementation(libs.documentfile)

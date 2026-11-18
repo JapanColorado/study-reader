@@ -4,7 +4,9 @@ calculator) or a page: Home, Library, Practice, Questions, Stats."""
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
+import shutil
 from pathlib import Path
 
 import threading
@@ -17,7 +19,7 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import gamify, quiz, practice, variants
+from . import covers, gamify, quiz, practice, variants
 from .calculator import CalculatorPanel
 from .chat_panel import MODELS, ChatHub, ChatPanel, drop_throwaway_chats
 from .chat_service import ChatWorker
@@ -40,6 +42,9 @@ from .web_import import WebImportError, normalize_url
 from .web_render import WebImporter
 
 
+CONTENT_BOX_SETTING = "content_box:"  # + a book's hash: its content box for cropping margins, as JSON
+
+
 class MainWindow(QMainWindow):
     def __init__(self, db: Database | None = None):
         super().__init__()
@@ -55,6 +60,9 @@ class MainWindow(QMainWindow):
         self._optimizer: _Optimizer | None = None
         self.doc: Document | None = None
         self.book_id: int | None = None
+        self._saved_position: tuple | None = None  # (book id, page, zoom) as last written
+        self._counts_timer = QTimer(self, singleShot=True, interval=50)  # _update_practice_counts, debounced
+        self._counts_timer.timeout.connect(self._update_practice_counts)
 
         self.toc = QTreeWidget()
         self.toc.setHeaderHidden(True)
@@ -178,6 +186,7 @@ class MainWindow(QMainWindow):
         self.library.webRequested.connect(self.ask_url)
         self.library.refetchRequested.connect(self.refetch)
         self.library.practiceBookRequested.connect(self.practice_book)
+        self.library.removing.connect(self._on_book_removing)
         self.web = WebImporter(data_dir() / "web", self)
         self.web.status.connect(lambda text: self._web_progress and self._web_progress.setLabelText(text))
         self.web.finished.connect(self._on_web_done)
@@ -196,6 +205,7 @@ class MainWindow(QMainWindow):
         self.notes.jumpRequested.connect(self.reader.flash)
         self.reader.pageChanged.connect(self._on_page_changed)
         self.reader.zoomChanged.connect(lambda z: self.zoom_label.setText(f"{round(z * 100)}%"))
+        self.reader.contentBoxFound.connect(self._keep_content_box)
         self.chat.jumpRequested.connect(self.reader.flash)
         self.chat.pageRequested.connect(self.reader.go_to)
         self.chat.questionsChanged.connect(self._on_questions_changed)
@@ -392,6 +402,7 @@ class MainWindow(QMainWindow):
         self.dark_pages_action.setCheckable(True)
         self.dark_pages_action.setChecked(theme().dark_pages)
         self.dark_pages_action.setToolTip("Recolor book pages to match dark mode")
+        menu.setToolTipsVisible(True)
         self.dark_pages_action.toggled.connect(lambda on: self._set_theme(dark_pages=on))
         menu.addSeparator()
         models = menu.addMenu(icon("message"), "Default model for new chats")
@@ -404,14 +415,12 @@ class MainWindow(QMainWindow):
             group.addAction(a)
         voice_menu = menu.addMenu(icon("volume"), "Read-aloud voice")
         group = QActionGroup(self)
-        self.engine_actions = {}
         for name, label in ENGINES:
             a = voice_menu.addAction(label)
             a.setCheckable(True)
             a.setChecked(self.read_aloud.engine_name == name)
             a.triggered.connect(lambda _=False, n=name: self.read_aloud.set_engine(n))
             group.addAction(a)
-            self.engine_actions[name] = a
         voice_menu.addSeparator()
         voice_menu.addAction("Render audio on Colab…").triggered.connect(self.render_on_colab)
         menu.addSeparator()
@@ -464,6 +473,8 @@ class MainWindow(QMainWindow):
         self.side_stack.setCurrentWidget(self.find.list if finding else self.toc)
         if not finding:
             self.sidebar_title.setText("Contents")
+        elif self.sidebar_title.text() == "Contents":  # back on the book with find still open
+            self.find.summarize()
         self.sidebar.setVisible(finding or (has_toc and self.toc_action.isChecked()))
 
     def _on_find_active(self, on: bool) -> None:
@@ -572,7 +583,9 @@ class MainWindow(QMainWindow):
         # The browser's own Ctrl+Shift+O (Open in book) wins while it is on screen.
         self.web_action.setEnabled(name != "questions")
         if name == "book":
-            self.setWindowTitle(f"{self.db.book(self.book_id)['title']} — Study Reader")
+            book = self.db.book(self.book_id)
+            self.setWindowTitle(f"{book['title']} — Study Reader")
+            self.finished_action.setChecked(book["finished_at"] is not None)  # the Library may have changed it
         else:
             title = {"library": "Library", "practice": "Practice", "questions": "Questions", "stats": "Statistics"}.get(name)
             self.setWindowTitle(f"{title} — Study Reader" if title else "Study Reader")
@@ -589,7 +602,7 @@ class MainWindow(QMainWindow):
             elif name == "questions":
                 self.browser.refresh()
             elif name == "stats":
-                self.stats_window.show_scope()
+                self.stats_window.show_current()  # the scope picked stays
         self._update_practice_counts()
 
     def show_library(self) -> None:
@@ -615,12 +628,37 @@ class MainWindow(QMainWindow):
         self.nav.set_book(None)
         self.show_page("home")
 
+    def _on_book_removing(self, book_id: int) -> None:
+        """The Library is removing a book: the open one is closed first, staying on the Library,
+        and what the app keeps for the book on disk goes with it (its Claude sessions and their
+        folder, which the next book to get this id would otherwise inherit, its cover, and a web
+        page's snapshot). The file the user opened is never touched."""
+        if book_id == self.book_id:
+            self.close_book()
+            self.show_page("library")
+        book = self.db.book(book_id)
+        if book is None:
+            return
+        for (chat_id,) in self.db.conn.execute("SELECT id FROM chats WHERE book_id=?", (book_id,)).fetchall():
+            if self.chat_hub.owners.get(chat_id) is not None:  # a reply on its way
+                self.worker.stop(chat_id)
+                self.chat_hub.streams.pop(chat_id, None)
+                self.chat_hub.owners.pop(chat_id, None)
+        self.worker.forget_sessions(book_id, self.db.book_sessions(book_id), wait=False)
+        self.worker.forget_base(book_id)
+        shutil.rmtree(self.worker.service.cwd(book_id), ignore_errors=True)
+        covers.cover_file(book["hash"]).unlink(missing_ok=True)
+        path = Path(book["path"])
+        if book["source_url"] and path.parent == data_dir() / "web":  # only snapshots the app made itself
+            path.unlink(missing_ok=True)
+
     def _set_book_ui(self, reading: bool) -> None:
         self.toolbar.setVisible(reading)
         for a in self.book_actions:
             a.setEnabled(reading)
         for a, _ in self.right_panels.values():
             a.setEnabled(reading)
+        self._sync_reading_keys()
         self._sync_right()
         self._sync_sidebar()
 
@@ -653,7 +691,7 @@ class MainWindow(QMainWindow):
         if not refetch:
             for book in self.db.books_from_url(url):
                 if os.path.exists(book["path"]):
-                    self.open_book(book["path"])
+                    self.open_book(book["path"], remember_dir=False)  # a snapshot in our data folder
                     return False
         if self.web.busy:
             self._warn("Open web page", "Another page is still being fetched.", QMessageBox.Icon.Information)
@@ -715,6 +753,7 @@ class MainWindow(QMainWindow):
         self._warn("Could not open web page", message)
 
     def open_book(self, path: str, remember_dir: bool = True) -> bool:
+        path = os.path.abspath(path)  # stored in the library: a relative one breaks from another folder
         self._save_position()
         try:
             doc = Document(path)
@@ -728,8 +767,9 @@ class MainWindow(QMainWindow):
         self.doc = doc
         book = self.db.upsert_book(file_hash(path), path, doc.title, doc.page_count)
         self.book_id = book["id"]
-        if remember_dir:
-            self.db.set_setting("last_dir", str(path).rsplit("/", 1)[0])
+        self._saved_position = None
+        if remember_dir and not Path(path).is_relative_to(data_dir().absolute()):  # web snapshots live in our data folder
+            self.db.set_setting("last_dir", os.path.dirname(path))
         practice.learn_toc(self.db, self.book_id, doc.toc())
 
         self.find.set_document(doc)
@@ -749,7 +789,8 @@ class MainWindow(QMainWindow):
         self.finished_action.setChecked(book["finished_at"] is not None)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            self.reader.set_document(doc, book["last_page"], book["zoom"], crop=bool(book["crop_margins"]))
+            self.reader.set_document(doc, book["last_page"], book["zoom"], crop=bool(book["crop_margins"]),
+                                     content_box=self._content_box(book["hash"]))
         finally:
             QApplication.restoreOverrideCursor()
         self.read_aloud.set_document(doc, local_audio(book["hash"]))
@@ -758,8 +799,7 @@ class MainWindow(QMainWindow):
         self.chat.set_book(self.book_id)
         self.calc.set_book(self.book_id)
         self.notes.set_book(self.book_id)
-        self._update_practice_counts()
-        self._refresh_highlights()
+        self._refresh_highlights()  # (show_page counted the book's questions)
         return True
 
     def _learn_tocs(self) -> None:
@@ -920,7 +960,7 @@ class MainWindow(QMainWindow):
         # A question being answered stays put; a hidden page refreshes when it is shown.
         if self.practice.question_id is None and self.practice.isVisible():
             self.practice.refresh()
-        self._update_practice_counts()
+        self._counts_timer.start()  # changes come in bursts (an attempt, a sync, a batch of edits)
         if self.home.isVisible():
             self.home.refresh()
         elif self.library.isVisible():
@@ -929,15 +969,16 @@ class MainWindow(QMainWindow):
             self.stats_window.refresh()
 
     def _update_practice_counts(self) -> None:
-        """The counts on the rail's Practice and the reader's Practice button."""
-        everything = practice.counts(self.db, None)
-        self.nav.set_practice_badge(everything["due"] + everything["new"])
-        c = practice.counts(self.db, self.book_id) if self.book_id is not None else None
-        waiting = c["due"] + c["new"] if c else 0
+        """The counts on the rail's Practice and, while reading, the reader's Practice button (shown
+        only then; showing the book page recounts)."""
+        self._counts_timer.stop()
+        self.nav.set_practice_badge(practice.left_to_practice(self.db, None))
+        if not self.reading:
+            return
+        waiting = practice.left_to_practice(self.db, self.book_id)
         self.practice_action.setText(f"Practice · {waiting}" if waiting else "Practice")
         self.practice_action.setToolTip(
             f"Practice this book's questions on the Practice page (F8) · {waiting} question{'s' * (waiting != 1)} waiting"
-            if c else "Practice (F8)"
         )
 
     def _practice_chat(self, chat_id: int) -> None:
@@ -954,7 +995,7 @@ class MainWindow(QMainWindow):
         if book_id == self.book_id and self.doc is not None:
             self.show_page("book")
             return True
-        return self.open_book(book["path"], remember_dir=False)
+        return self.open_book(book["path"])
 
     # -- questions: browser, statistics, Anki ----------------------------------------
     def _ensure_browser(self) -> None:
@@ -1122,6 +1163,23 @@ class MainWindow(QMainWindow):
             self.notes_action.trigger()
         then()
 
+    def _content_box(self, book_hash: str):
+        """The book's content box (or None) as found before, else False: finding it renders up to
+        CROP_SAMPLE_PAGES pages, so it is kept per book in the settings (CONTENT_BOX_SETTING)."""
+        text = self.db.get_setting(CONTENT_BOX_SETTING + book_hash)
+        if text is None:
+            return False
+        try:
+            box = json.loads(text)
+        except ValueError:
+            return False
+        return tuple(box) if isinstance(box, list) and len(box) == 4 else None
+
+    def _keep_content_box(self, box) -> None:
+        if self.book_id is not None:
+            book_hash = self.db.book(self.book_id)["hash"]
+            self.db.set_setting(CONTENT_BOX_SETTING + book_hash, json.dumps(list(box) if box else None))
+
     def _set_crop(self, on: bool) -> None:
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)  # finding the margins renders pages
         try:
@@ -1138,8 +1196,12 @@ class MainWindow(QMainWindow):
         self.page_spin.blockSignals(False)
 
     def _save_position(self) -> None:
+        """The open book's page and zoom, written when they changed (a timer calls this every 10 s)."""
         if self.book_id is not None and self.center.currentWidget() is self.book_view:
-            self.db.update_book(self.book_id, last_page=self.reader.current_page(), zoom=self.reader.saved_zoom())
+            position = (self.book_id, self.reader.current_page(), self.reader.saved_zoom())
+            if position != self._saved_position:
+                self.db.update_book(self.book_id, last_page=position[1], zoom=position[2])
+                self._saved_position = position
 
     # -- reading aloud ----------------------------------------------------------------
     def render_on_colab(self) -> None:
@@ -1165,12 +1227,20 @@ class MainWindow(QMainWindow):
         self.read_action.blockSignals(True)
         self.read_action.setChecked(on)
         self.read_action.blockSignals(False)
+        self._sync_reading_keys()
+
+    def _sync_reading_keys(self) -> None:
+        """Shift+F5, F4 and F6 act on reading aloud while it is on and the book is on screen (its bar
+        is under the reader; leaving the book pauses it)."""
+        on = self.read_aloud.active and self.reading
         for a in (self.stop_reading_action, self.prev_sentence_action, self.next_sentence_action):
             a.setEnabled(on)
 
     def closeEvent(self, event) -> None:
         self.read_aloud.shutdown()
         self._save_position()
+        self.notes.flush()  # a note being edited
+        self.web.cancel()  # a page being fetched: its files go
         if self.browser is not None:
             self.browser.save_question()
         self.phone_sync.sync()  # what was practiced here, for the phone

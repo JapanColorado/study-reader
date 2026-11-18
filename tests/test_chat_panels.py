@@ -1,7 +1,6 @@
 """The Practice page's chat panel, throwaway chats, stopping a reply, and panels sharing a hub."""
 
 import asyncio
-import json
 import sqlite3
 
 from study_reader import chat_service as cs
@@ -225,6 +224,17 @@ def test_panels_share_replies(chat_panel):
     assert db.messages(chat)[-1]["text"] == "so" and db.messages(chat)[-1]["stopped"]
 
 
+def test_a_primed_book_is_saved_once_and_shown_in_both_panels(chat_panel, monkeypatch):
+    panel, practice_chat, worker, db, book_id = practice_panel(chat_panel)
+    practice_chat.set_book(book_id)
+    saved, update_book = [], db.update_book
+    monkeypatch.setattr(db, "update_book", lambda *a, **kw: saved.append((a, kw)) or update_book(*a, **kw))
+    worker.base.emit(book_id, "base-1", "full")  # both panels hear it
+    assert saved == [((book_id,), {"base_session_id": "base-1", "context_mode": "full"})]
+    assert db.book(book_id)["base_session_id"] == "base-1"
+    assert panel.status.text() == "Whole book in context." and practice_chat.status.text().endswith("Whole book in context.")
+
+
 # -- the Practice page's panel ------------------------------------------------------------------
 def test_practice_chats_follow_the_question(chat_panel):
     panel, practice_chat, worker, db, book_id = practice_panel(chat_panel)
@@ -339,3 +349,24 @@ def test_practice_page_chat_panel(pdf_path, tmp_path, monkeypatch):
     win.practice.channel.registeredObjects()["practice"].open("chat")  # the Chat button
     assert not win.practice_chat.isVisible() and win.practice.chat_panel is False and db.get_setting("practice_panel") == ""
     win.close()
+
+
+def test_a_short_answer_being_graded_is_pending_in_both_panels_and_graded_once(chat_panel):
+    import json
+    panel, other, worker, db, book_id = practice_panel(chat_panel)
+    other.set_book(book_id)
+    reply = '```quiz Z\n[{"type": "short_answer", "question": "Why?", "answer": "Because.", "rubric": "r"}]\n```'
+    panel.input.setPlainText("quiz me")
+    panel.send()
+    chat = panel.chat_id
+    worker.done.emit(chat, "s1", reply, "u1")
+    msg = db.messages(chat)[1]["id"]
+    other.open_chat(chat)
+    updates = []
+    other.transcript.update_quiz = lambda *a: updates.append(a)
+    panel._on_quiz_answer(msg, 0, 0, json.dumps({"text": "Because tea."}))
+    assert updates[-1][2]["answers"][0]["status"] == "pending"  # not "grading was interrupted"
+    other._on_quiz_regrade(msg, 0, 0)
+    assert len(worker.gradings) == 1
+    worker.graded.emit(worker.gradings[0][1], "VERDICT: correct\nGood.")
+    assert updates[-1][2]["answers"][0]["status"] == "done"

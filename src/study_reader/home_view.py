@@ -87,6 +87,11 @@ class HomeView(QWidget):
         self._timer = QTimer(self, interval=60_000)
         self._timer.timeout.connect(lambda: self.isVisible() and self.refresh())
         self._timer.start()
+        # Covers not drawn yet: one a turn of the event loop, after the page is shown, like the Library's.
+        self._cover_queue: list[dict] = []
+        self._no_cover: set[str] = set()  # hashes whose book can't be drawn (missing or unreadable)
+        self._cover_timer = QTimer(self, singleShot=True, interval=0)
+        self._cover_timer.timeout.connect(self._draw_cover)
 
     def _js(self, function: str, *args) -> None:
         js = f"{function}({', '.join(json.dumps(a) for a in args)})"
@@ -110,8 +115,27 @@ class HomeView(QWidget):
 
     def refresh(self) -> None:
         data = dashboard.home(self.db, time.time())
+        self._cover_queue = []
         for b in data["reading"]:
-            path = covers.cover({"hash": b["hash"], "path": b["path"]})
+            path = covers.cached(b["hash"])
             b["cover"] = path.as_uri() if path else ""
+            if not path and b["hash"] not in self._no_cover:
+                self._cover_queue.append(b)
         self.data = data
         self._js("show", data)
+        if self._cover_queue:
+            self._cover_timer.start()
+
+    def _draw_cover(self) -> None:
+        """One missing cover, drawn and put on the page."""
+        if not self._cover_queue:
+            return
+        b = self._cover_queue.pop(0)
+        path = covers.cover({"hash": b["hash"], "path": b["path"]})
+        if path:
+            b["cover"] = path.as_uri()  # b is in self.data
+            self._js("setCover", b["id"], b["cover"])
+        else:
+            self._no_cover.add(b["hash"])
+        if self._cover_queue:
+            self._cover_timer.start()

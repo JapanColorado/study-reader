@@ -7,7 +7,9 @@ Each ``ROOT/books/<key>/request.json`` ({"run", "title", "voice", "speed", "sent
 [[key, text], …]}) is rendered, oldest first, into ``ROOT/books/<key>/audio/part-<run>-NNNN.opus``
 (Ogg Opus) plus ``.json`` ({"version", "rate", "items": {key: [speed, start, samples, tokens]}}),
 each part's audio written before its index. ``status.json`` beside the request says how far it
-has got. Books queued while it runs are picked up; it exits when none are left."""
+has got. Books queued while it runs are picked up; it exits when none are left. A book sent
+again while it renders (a new run in its request.json, say for another voice) stops its old
+run at the next sentence, keeping what that run finished as a last, shorter part."""
 
 import glob
 import json
@@ -77,8 +79,33 @@ def pending():
     return [(d, r) for _, d, r in sorted(books, key=lambda b: b[0])]
 
 
+class Superseded:
+    """Whether the book's request.json now holds another run (looked at only when it changes)."""
+
+    def __init__(self, path, run):
+        self.path, self.run = path, run
+        self.stamp = self._stamp()
+
+    def _stamp(self):
+        try:
+            return os.stat(self.path).st_mtime_ns
+        except OSError:
+            return None
+
+    def __call__(self):
+        stamp = self._stamp()
+        if stamp == self.stamp:
+            return False
+        request = read_json(self.path)
+        if request is None:  # still arriving: look again next time
+            return False
+        self.stamp = stamp
+        return request.get("run") != self.run
+
+
 def render_book(book_dir, request):
     run, voice, speed, sentences = request["run"], request["voice"], request["speed"], request["sentences"]
+    superseded = Superseded(f"{book_dir}/request.json", run)
     audio_dir = f"{book_dir}/audio"
     os.makedirs(audio_dir, exist_ok=True)
     mine = sorted(glob.glob(f"{audio_dir}/part-{run}-*.json"))
@@ -97,14 +124,20 @@ def render_book(book_dir, request):
             "speech": seconds, "took": took, "updated": time.time()})
 
     status(False)
+    stopped = False
     for i in range(0, len(todo), PART_SENTENCES):
         clips, items, pos = [], {}, 0
         for key, text in todo[i:i + PART_SENTENCES]:
+            if superseded():
+                stopped = True
+                break
             audio, tokens = speak(text, voice, speed)
             items[key] = [speed, pos, len(audio), tokens]
             clips.append(audio)
             pos += len(audio)
-        audio = np.concatenate(clips) if clips else np.zeros(0, np.float32)
+        if not items:
+            break
+        audio = np.concatenate(clips)
         name = f"part-{run}-{number:04d}"
         sf.write(f"{TMP}/{name}.opus", audio, RATE, format="OGG", subtype="OPUS", compression_level=OPUS_QUALITY)
         os.replace(f"{TMP}/{name}.opus", f"{audio_dir}/{name}.opus")
@@ -116,6 +149,11 @@ def render_book(book_dir, request):
         took = time.time() - start
         print(f"  {len(done):,} of {len(sentences):,} · {seconds / 3600:.1f} h of speech in {took / 60:.1f} min "
               f"({seconds / max(took, 1e-9):.0f}× real time)", flush=True)
+        if stopped:
+            break
+    if stopped:
+        print(f"{request['title']}: sent again, so this run stops here", flush=True)
+        return
     status(True)
 
 

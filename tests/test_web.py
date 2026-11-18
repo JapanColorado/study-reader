@@ -257,3 +257,91 @@ def test_fresh_copy_replaces_the_snapshot_in_place(tmp_path, monkeypatch):
     shutil.copy(new, same)
     win._on_web_done(same, url)
     assert db.book(book_id)["path"] == new and not os.path.exists(same)
+
+
+def _importer(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from study_reader import web_render
+
+    QApplication.instance() or QApplication([])
+    importer = web_render.WebImporter(tmp_path / "web")
+    got = []
+    importer.failed.connect(lambda message: got.append(("failed", message)))
+    importer.finished.connect(lambda path, url: got.append(("finished", path)))
+    return importer, got
+
+
+ARTICLE = wi.Article("Zorblatt", "https://example.com/z", sections=[wi.Section("Main", "<p>Seven legs.</p>")])
+
+
+def test_an_import_that_cant_be_laid_out_fails_instead_of_staying_busy(tmp_path, monkeypatch):
+    from PySide6.QtCore import QTimer
+
+    importer, got = _importer(tmp_path, monkeypatch)
+    timer = importer._load_timer
+
+    def broken(article):
+        raise ValueError("no layout")
+
+    monkeypatch.setattr(wi, "build_html", broken)
+    importer.busy, importer._run = True, 1  # as start() leaves it
+    importer._on_fetched(ARTICLE, ARTICLE.url, 1)
+    assert got == [("failed", "Couldn't lay out the page: no layout")] and not importer.busy
+    assert not list((tmp_path / "web").iterdir())
+    assert importer.findChildren(QTimer) == [timer]  # one load timer, whatever the number of imports
+
+
+def test_a_failed_print_leaves_no_partial_pdf(tmp_path, monkeypatch):
+    importer, got = _importer(tmp_path, monkeypatch)
+    web = tmp_path / "web"
+    web.mkdir()
+    importer._html, importer._pdf = web / "z.html", web / "z.pdf"
+    importer._article, importer._result_url, importer._toc = ARTICLE, ARTICLE.url, []
+    for ok in (False, True):  # the printer failed; the PDF it wrote is unreadable
+        importer.busy = True
+        importer._files = [importer._html, importer._pdf, importer._pdf.with_suffix(".tmp")]
+        importer._html.write_text("<p>Seven legs.</p>")
+        importer._pdf.write_bytes(b"%PDF-1.7 half of a page")
+        importer._on_printed(str(importer._pdf), ok)
+        assert got[-1][0] == "failed" and not importer.busy and not list(web.iterdir())
+
+
+def test_a_cancelled_import_says_nothing_and_leaves_nothing(tmp_path, monkeypatch):
+    import threading
+    import time
+    from PySide6.QtWidgets import QApplication
+
+    importer, got = _importer(tmp_path, monkeypatch)
+    fetched = threading.Event()
+    monkeypatch.setattr(wi, "fetch", lambda url, status: (fetched.set(), wi.Download(b"%PDF", "pdf", "z"))[1])
+    importer.start("https://example.com/z.pdf")
+    importer.cancel()
+    assert not importer.busy
+    assert fetched.wait(5)
+    deadline = time.time() + 0.3
+    while time.time() < deadline:
+        QApplication.processEvents()
+    assert got == [] and not (tmp_path / "web").exists()
+
+
+def test_snapshots_never_set_the_open_dialogs_folder(pdf_path, tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    from PySide6.QtWidgets import QApplication
+    from study_reader.db import data_dir
+    from study_reader.main_window import MainWindow
+
+    QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "t.db")
+    win = MainWindow(db)
+    snapshot = data_dir() / "web" / "zorblatt.pdf"
+    snapshot.parent.mkdir(parents=True)
+    shutil.copy(pdf_path, snapshot)
+    win.library.openRequested.emit(str(snapshot))  # the Library's way in
+    assert win.doc is not None and not db.get_setting("last_dir")
+    book_id = db.upsert_book("other", pdf_path, "Other", 3)["id"]
+    win.close_book()
+    win.home.openRequested.emit(book_id)  # Home's: a book of the user's, like the Library's
+    assert db.get_setting("last_dir") == os.path.dirname(pdf_path)
+    win.close()

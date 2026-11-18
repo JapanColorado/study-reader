@@ -61,6 +61,7 @@
   .tabs .grow { flex:1; }
   .tabs a.make { font-weight:500; border-bottom-color:transparent; }
   .tabs a.make:hover { color:var(--accent); }
+  .empty a.make { font-weight:500; text-decoration:none; }
   .decks { margin:0 -8px; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; }
   .decks .pick-hint { padding:6px 8px 0; font-size:11.5px; color:var(--faint); }
   .deck { display:flex; align-items:center; gap:6px; padding:4px 8px; border-radius:7px; cursor:pointer; font-size:13.5px; }
@@ -151,8 +152,8 @@ let bridge = null;
 const MOBILE = !!window.PracticeApp;
 if (MOBILE) { bridge = window.PracticeApp; document.documentElement.classList.add("mobile"); }
 else new QWebChannel(qt.webChannelTransport, channel => { bridge = channel.objects.practice; });
-// Anki's flag colors (browser.py's FLAGS).
-const FLAG_COLORS = { 1: "#e25252", 2: "#f59a3a", 3: "#4fb35a", 4: "#3d8bf2", 5: "#ec79c6", 6: "#3cc7c2", 7: "#9a6be0" };
+// Anki's flag colors: the same as browser.py's FLAGS (a test holds them equal).
+const FLAG_COLORS = { 1: "#ff6b6b", 2: "#ffa94d", 3: "#51cf66", 4: "#4dabf7", 5: "#f783ac", 6: "#22b8cf", 7: "#b197fc" };
 const FLAG_NAMES = { 1: "Red", 2: "Orange", 3: "Green", 4: "Blue", 5: "Pink", 6: "Turquoise", 7: "Purple" };
 
 const QUESTIONS_ICON = `<svg viewBox="0 0 24 24"><rect width="14" height="16" x="7" y="5" rx="2"/><path d="M4 16V5a2 2 0 0 1 2-2h9"/></svg>`;
@@ -277,11 +278,13 @@ function booksHtml(o) {
 const pickHint = `<div class="pick-hint">${MOBILE ? "Long-press to pick more than one"
   : "Ctrl+click to pick more than one · Shift+click for a range"}</div>`;
 
+// The desktop's Make a deck with Claude link comes with o.make, which the phone app never sends.
+const makeLink = `<a href="#" class="make" data-act="make" title="Describe a deck and Claude writes its questions">+ Make a deck with Claude</a>`;
+
 // What to practice: decks or books.
 function pickerHtml(o) {
   const hasDecks = !!(o.decks && o.decks.length), hasBooks = !!(o.books && o.books.length);
-  // The desktop's Make a deck with Claude link comes with o.make, which the phone app never sends.
-  const make = o.make ? `<span class="grow"></span><a href="#" class="make" data-act="make" title="Describe a deck and Claude writes its questions">+ Make a deck with Claude</a>` : "";
+  const make = o.make ? `<span class="grow"></span>${makeLink}` : "";
   if (!hasDecks && !hasBooks) return make ? `<section class="panel"><div class="tabs">${make}</div></section>` : "";
   const first = (o.picks || [])[0];
   let tab = PICK || (first && !first.deck && hasBooks ? "books" : hasDecks ? "decks" : "books");
@@ -317,7 +320,7 @@ function heroHtml(o) {
 function headerHtml(o) {
   const crumbs = o.title ? `<a href="#" data-act="deck" data-deck="0">← Every deck and book</a>` : "Every deck and book";
   // The desktop's Calculator button comes with o.calc (whether it is open), which the app never sends.
-  const calc = o.calc == null ? "" : `<a class="btn ghost calc${o.calc ? " on" : ""}" href="#" data-act="calc" title="${CALC_TITLE}">${CALC_ICON}Calculator</a>`;
+  const calc = o.calc == null ? "" : `<a class="btn ghost${o.calc ? " on" : ""}" href="#" data-act="calc" title="${CALC_TITLE}">${CALC_ICON}Calculator</a>`;
   // Likewise the Chat button with o.chat_panel.
   const chat = o.chat_panel == null ? "" : `<a class="btn ghost${o.chat_panel ? " on" : ""}" href="#" data-act="chatpanel" title="${CHAT_TITLE}">${CHAT_ICON}Chat</a>`;
   return `<header><div class="head-row"><h1>${o.title ? esc(o.title) : "Practice"}</h1>${chat}${calc}</div><div class="crumbs">${crumbs}</div></header>`;
@@ -332,8 +335,8 @@ function showOverview(o) {
     (<kbd>Ctrl+Shift+Q</kbd>) on a selection or the section you're reading, or under one of
     Claude's replies.`;
   if (!o.total) {
-    root.innerHTML = headerHtml(o) + `<div class="empty">${QUESTIONS_ICON}<div class="msg">${o.empty ? esc(o.empty) : "No questions to practice yet."}</div></div>`
-      + `<div class="hint">${how}</div>`;
+    root.innerHTML = headerHtml(o) + `<div class="empty">${QUESTIONS_ICON}<div class="msg">${o.empty ? esc(o.empty) : "No questions to practice yet."}</div>`
+      + `${o.make ? `<div class="msg">${makeLink}</div>` : ""}</div><div class="hint">${how}</div>`;
     return;
   }
   const g = o.game;
@@ -468,7 +471,7 @@ function showQuestion(c) {
   let html = `<div class="bar"><a href="#" data-act="stop" title="Back to the overview">← Overview</a><span class="grow"></span>`
     + `<span class="count"><span class="due">${c.remaining.due}</span> due · <span class="new">${c.remaining.new}</span> new</span>`
     + actions.map(([act, label, title]) => `<a href="#" data-act="${act}" title="${esc(title)}"`
-      + `${ICONS[act] ? ` class="${act === "calc" ? "calc" : ""}${ICONS[act][1] ? " on" : ""}">${ICONS[act][0]}` : ">"}${esc(label)}</a>`).join("") + `</div>`;
+      + `${ICONS[act] ? `${ICONS[act][1] ? ` class="on"` : ""}>${ICONS[act][0]}` : ">"}${esc(label)}</a>`).join("") + `</div>`;
   if (FLAGS_OPEN) html += `<div class="flags">${[1, 2, 3, 4, 5, 6, 7].map(n => `<button data-act="setflag" data-k="${n}"`
     + ` class="${c.flag === n ? "on" : ""}" style="background:${FLAG_COLORS[n]}" title="${FLAG_NAMES[n]}"></button>`).join("")}`
     + `<button class="none" data-act="setflag" data-k="0" title="No flag">✕</button></div>`;
@@ -585,7 +588,7 @@ document.addEventListener("click", ev => {
     ev.stopPropagation();
     const key = target.dataset.key;
     OPEN.has(key) ? OPEN.delete(key) : OPEN.add(key);
-    bridge.refresh();
+    if (LAST) showOverview(LAST);  // the overview holds every deck's and section's rows already
   }
   else if (act === "pick") { PICK = target.dataset.tab; if (LAST) showOverview(LAST); }
   else if (act === "deck" || act === "book" || act === "section") {

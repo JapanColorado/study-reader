@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QSplitter, QTableView, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import question_model, deck_maker, quiz, search, practice
+from . import question_model, quiz, search, practice
 from .question_editor import AddDialog, QuestionEditor, DeckBox
 from .db import Database, media_url
 from .notes import LocalPage
@@ -444,6 +444,8 @@ class QuestionBrowser(QMainWindow):
             self.setWindowFlag(Qt.WindowType.Window)
             self.resize(1440, 880)
         self._question_id: int | None = None  # the question in the editor
+        self._shown = 0  # how many times _show_current has run
+        self._keep_editor = False  # during search(keep_editor=True)
         self._add_dialog: AddDialog | None = None
 
         self.search_box = QLineEdit(objectName="browserSearch")
@@ -806,7 +808,10 @@ class QuestionBrowser(QMainWindow):
         self.sidebar.refresh()
         self.search()
 
-    def search(self, keep: bool = True) -> None:
+    def search(self, keep: bool = True, keep_editor: bool = False) -> None:
+        """Run the search box's query. keep: the selection and current question stay where they can.
+        keep_editor: an autosave added or dropped questions; the editor is left as it is (caret,
+        undo) while the current question is still one of its group's."""
         self._search_timer.stop()
         self.save_question()
         query = self.search_box.text().strip()
@@ -816,8 +821,12 @@ class QuestionBrowser(QMainWindow):
         except search.SearchError as e:
             self.status.setText(f"<span style='color:{theme().colors['error']}'>{e}</span>")
             return
-        self.model.set_ids(ids)
-        self._select(selected, current)
+        self._keep_editor = keep_editor
+        try:
+            self.model.set_ids(ids)
+            self._select(selected, current)
+        finally:
+            self._keep_editor = False
         self._update_status()
 
     def set_search(self, query: str) -> None:
@@ -855,6 +864,7 @@ class QuestionBrowser(QMainWindow):
 
     def _select(self, ids: list[int], current: int | None) -> None:
         sel = self.table.selectionModel()
+        shown = self._shown  # moving the current row shows it (_current_changed); else it is shown here
         rows = {question_id: i for i, question_id in enumerate(self.model.ids)}
         selection = QItemSelection()
         last = len(self.model.columns) - 1
@@ -872,7 +882,8 @@ class QuestionBrowser(QMainWindow):
             self.table.scrollTo(self.model.index(rows[current], 0))
         elif not ids and self.model.ids:
             self.table.selectRow(0)
-        self._show_current()
+        if self._shown == shown:
+            self._show_current()
 
     def _invert_selection(self) -> None:
         chosen = set(self.selected_ids())
@@ -898,10 +909,15 @@ class QuestionBrowser(QMainWindow):
         index = self.table.currentIndex()
         question_id = self.model.ids[index.row()] if index.isValid() and index.row() < len(self.model.ids) else None
         question = self.db.question(question_id) if question_id is not None else None
+        self._shown += 1
         self._question_id = question["id"] if question else None
-        self.editor.load(question["group_id"] if question else None)
-        self.editor_status.clear()
-        draft = self._drafts.get(question["group_id"]) if question else None
+        # After an autosave that added or dropped questions the editor already shows the group:
+        # loading it again would move the caret and lose the undo history mid-typing.
+        reload = not (self._keep_editor and question is not None and question["group_id"] == self.editor.group_id)
+        if reload:
+            self.editor.load(question["group_id"] if question else None)
+            self.editor_status.clear()
+        draft = self._drafts.get(question["group_id"]) if question and reload else None
         if draft is not None:
             group = self.db.question_group(question["group_id"])
             if group is not None and group["updated_at"] == draft[0]:
@@ -910,7 +926,7 @@ class QuestionBrowser(QMainWindow):
             else:  # changed since (or gone): the draft is out of date
                 del self._drafts[question["group_id"]]
         self._show_question_line(question)
-        self.preview.js("showPreview", json.loads(question["data"]) if question else None, "both")
+        self.preview.js("showPreview", json.loads(question["data"]) if question else None)
         self.undo_rewrite_action.setEnabled(question is not None and self.db.question_rewrite(question["id"]) is not None)
 
     def _show_question_line(self, question) -> None:
@@ -937,7 +953,7 @@ class QuestionBrowser(QMainWindow):
             self.show()
             self.raise_()
             self.activateWindow()
-        self.set_search(f"cid:{question_id}")
+        self.set_search(f"qid:{question_id}")
 
     # -- editing -------------------------------------------------------------------------
     def save_question(self) -> None:
@@ -965,10 +981,20 @@ class QuestionBrowser(QMainWindow):
         self.model.invalidate([c["id"] for c in questions])
         question = self.db.question(self._question_id) if self._question_id is not None else None
         if question is not None:
-            self.preview.js("showPreview", json.loads(question["data"]), "both")
-        if {c["ord"] for c in questions} != before:  # deletions added or removed: questions come and go
-            QTimer.singleShot(0, self.search)
+            self.preview.js("showPreview", json.loads(question["data"]))
+        if {c["ord"] for c in questions} != before:  # blanks or sides added or removed: questions come and go
+            QTimer.singleShot(0, self._search_after_save)
         self.questionsChanged.emit()
+
+    def _search_after_save(self) -> None:
+        """Show the questions an autosave added or dropped, leaving the editor as it is."""
+        if self.editor.group_id is None:
+            self.search()
+            return
+        ids = [c["id"] for c in self.db.group_questions(self.editor.group_id)]
+        if self._question_id not in ids and ids:  # its blank or side was removed: a sibling stays current
+            self._question_id = ids[0]
+        self.search(keep_editor=True)
 
     def _show_not_saved(self, why: str) -> None:
         self.editor_status.setText(f"<span style='color:{theme().colors['error']}'>Not saved: {why}</span>")
@@ -1144,8 +1170,12 @@ class QuestionBrowser(QMainWindow):
             return
         groups = self.db.group_ids(self.selected_ids()) if dialog.selected_only.isChecked() else \
             [r[0] for r in self.db.conn.execute("SELECT id FROM question_groups")]
-        changed, failed = find_replace(self.db, groups, dialog.find.text(), dialog.replace.text(),
-                                       dialog.field.currentData(), dialog.regex.isChecked(), dialog.case.isChecked())
+        try:
+            changed, failed = find_replace(self.db, groups, dialog.find.text(), dialog.replace.text(),
+                                           dialog.field.currentData(), dialog.regex.isChecked(), dialog.case.isChecked())
+        except re.error as e:
+            QMessageBox.warning(self, "Find and replace", f"That regular expression can't be used: {e}")
+            return
         msg = f"Changed {changed} question{'s' * (changed != 1)}."
         if failed:
             msg += f" {failed} couldn't be changed (the result wasn't a valid question)."
@@ -1284,11 +1314,13 @@ def find_replace(db: Database, group_ids, find: str, replace: str, field: str = 
                  case: bool = False) -> tuple[int, int]:
     """Replace text in the fields of these question_groups rows (one field, or all text fields).
     Returns (questions changed, questions that would no longer be valid and were left alone), counting
-    every question that shares the text."""
+    every question that shares the text. Raises re.error, before changing anything, for a regular
+    expression or replacement that can't be used."""
     if not find:
         return 0, 0
     pattern = re.compile(find if regex else re.escape(find), 0 if case else re.IGNORECASE)
     repl = replace if regex else replace.replace("\\", "\\\\")
+    pattern.sub(repl, "")  # a bad group reference is only noticed on a match: one here, before any change
     changed = failed = 0
     for group_id in group_ids:
         group = db.question_group(group_id)

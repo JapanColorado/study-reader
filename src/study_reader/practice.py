@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import functools
 import json
+import random
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -45,8 +46,14 @@ def day_start(now: float) -> float:
     return start.timestamp()
 
 
+def day_after(now: float, days: float) -> float:
+    """When the practice day `days` after (before, if negative) the one holding `now` begins: by the
+    calendar, so the days a clock change makes 23 or 25 hours long don't shift it."""
+    return (datetime.fromtimestamp(day_start(now)) + timedelta(days=days)).timestamp()
+
+
 def next_day(now: float) -> float:
-    return (datetime.fromtimestamp(day_start(now)) + timedelta(days=1)).timestamp()
+    return day_after(now, 1)
 
 
 def new_per_day(db: Database) -> int:
@@ -377,6 +384,18 @@ def _fsrs_card(row, now: float) -> Card:
     return Card(due=dt(now))
 
 
+def _review(sched: Scheduler, row, rating: int, now: float) -> Card:
+    """The question's card after a rating. py-fsrs fuzzes a learned question's interval with the
+    global `random`; here that draw comes from the question and its attempt count (and `random`
+    is left as it was), so previews() shows the interval attempt() then gives."""
+    state = random.getstate()
+    random.seed(f"{row['id']}:{row['reps']}")
+    try:
+        return sched.review_card(_fsrs_card(row, now), Rating(rating), dt(now))[0]
+    finally:
+        random.setstate(state)
+
+
 def attempt(
     db: Database, question_id: int, rating: int, now: float | None = None, response: dict | None = None,
     verdict: str | None = None, source: str = "practice", duration: int = 0,
@@ -387,7 +406,7 @@ def attempt(
     row = db.question(question_id)
     if row is None:
         return
-    fsrs_card, _ = scheduler(db).review_card(_fsrs_card(row, now), Rating(rating), dt(now))
+    fsrs_card = _review(scheduler(db), row, rating, now)
     lapse = rating == 1 and row["stage"] == State.Review.value
     db.record_attempt(
         question_id, rating, source, json.dumps(response) if response else "", verdict, now, duration,
@@ -419,7 +438,6 @@ def forget(db: Database, question_ids, now: float | None = None) -> None:
 def set_due(db: Database, question_ids, first: int, last: int | None = None, now: float | None = None) -> int:
     """Make questions due in `first` days (0 = today), or spread at random over first..last days.
     New questions are left in the new queue. Returns how many were rescheduled."""
-    import random
     now = time.time() if now is None else now
     moved = 0
     for question_id in question_ids:
@@ -427,7 +445,7 @@ def set_due(db: Database, question_ids, first: int, last: int | None = None, now
         if row is None or row["stage"] == 0:
             continue
         days = random.randint(first, last) if last is not None and last > first else first
-        due = day_start(now) + days * 86400 + (now - day_start(now) if days == 0 else 0)
+        due = day_after(now, days) + (now - day_start(now) if days == 0 else 0)
         fsrs_card = _fsrs_card(row, now)
         fsrs_card.due = dt(due)
         if fsrs_card.state != State.Review:  # learning steps don't fit a date: graduate it
@@ -438,11 +456,10 @@ def set_due(db: Database, question_ids, first: int, last: int | None = None, now
 
 
 def retrievability(db: Database | None, row, now: float | None = None) -> float | None:
-    """How likely the question is to be recalled now (None while new)."""
-    if not row["fsrs"]:
-        return None
+    """How likely the question is to be recalled now (None while new): `recall` on its stored
+    columns, so it agrees with the browser's column and searches."""
     now = time.time() if now is None else now
-    return scheduler(db).get_card_retrievability(Card.from_json(row["fsrs"]), dt(now))
+    return recall(row["stability"], row["last_attempt"], now, decay(db))
 
 
 def answered_in_chat(
@@ -465,7 +482,7 @@ def previews(row, now: float | None = None, db: Database | None = None) -> dict[
     sched = scheduler(db)
     out = {}
     for rating in quiz.RATINGS:
-        after, _ = sched.review_card(_fsrs_card(row, now), Rating(rating), dt(now))
+        after = _review(sched, row, rating, now)
         out[rating] = format_interval(after.due.timestamp() - now)
     return out
 
@@ -495,29 +512,27 @@ def new_left_today(db: Database, now: float) -> int:
     return max(new_per_day(db) - db.new_questions_attempted_since(day_start(now)), 0)
 
 
-def counts(db: Database, book_id: int | None, now: float | None = None, deck: int | None = None,
-           tag: str | None = None, picks=()) -> dict:
-    """What there is to practice in a book, deck or tag (a section; or everywhere, with none), or
-    in any of picks (Database._scope): due questions, new ones that can be introduced today, and
-    the total."""
+def counts(db: Database, now: float | None = None, picks=()) -> dict:
+    """What there is to practice in any of picks (Database._scope; everywhere, with none): due
+    questions, new ones that can be introduced today, and the total."""
     now = time.time() if now is None else now
-    new = db.count_questions(book_id, NEW, deck_id=deck, tag=tag, picks=picks)
+    new = db.count_questions(where=NEW, picks=picks)
     return {
-        "due": db.count_questions(book_id, DUE, (next_day(now), now), deck_id=deck, tag=tag, picks=picks),
+        "due": db.count_questions(where=DUE, args=(next_day(now), now), picks=picks),
         "new": min(new, new_left_today(db, now)),
         "new_total": new,
-        "total": db.count_questions(book_id, deck_id=deck, tag=tag, picks=picks),
-        "suspended": db.count_questions(book_id, "suspended=1", deck_id=deck, tag=tag, picks=picks),
+        "total": db.count_questions(picks=picks),
+        "suspended": db.count_questions(where="suspended=1", picks=picks),
     }
 
 
-def left_to_practice(db: Database, book_id: int | None, now: float | None = None, deck: int | None = None,
-                     tag: str | None = None, exclude=(), picks=()) -> int:
+def left_to_practice(db: Database, book_id: int | None, now: float | None = None, exclude=(), picks=()) -> int:
     """How many questions are left to practice today (due, and new ones today's allowance
-    allows), leaving out exclude (questions skipped this session)."""
+    allows) in a book (or everywhere) and any of picks, leaving out exclude (questions skipped
+    this session)."""
     now = time.time() if now is None else now
-    due = db.count_questions(book_id, *_not_in(DUE, (next_day(now), now), exclude), deck_id=deck, tag=tag, picks=picks)
-    new = db.count_questions(book_id, *_not_in(NEW, (), exclude), deck_id=deck, tag=tag, picks=picks)
+    due = db.count_questions(book_id, *_not_in(DUE, (next_day(now), now), exclude), picks=picks)
+    new = db.count_questions(book_id, *_not_in(NEW, (), exclude), picks=picks)
     return due + min(new, new_left_today(db, now))
 
 
@@ -553,12 +568,12 @@ def deck_counts(db: Database, now: float | None = None) -> dict[int, dict]:
     return out
 
 
-def next_question(db: Database, book_id: int | None, now: float | None = None, skip=(), deck: int | None = None,
-                  tag: str | None = None, exclude=(), picks=()):
-    """The question to practice next: due learning and learned questions first (most overdue
-    first), then new ones while today's allowance lasts, then learning ones due within
-    LEARN_AHEAD. skip: ids of questions not to show again yet (the one just answered), unless
-    nothing else is left. exclude: ids of questions never to show (skipped this session)."""
+def next_question(db: Database, now: float | None = None, skip=(), exclude=(), picks=()):
+    """The question to practice next (in any of picks, or anywhere): due learning and learned
+    questions first (most overdue first), then new ones while today's allowance lasts, then
+    learning ones due within LEARN_AHEAD. skip: ids of questions not to show again yet (the one
+    just answered), unless nothing else is left. exclude: ids of questions never to show
+    (skipped this session)."""
     now = time.time() if now is None else now
     tiers = [(DUE, (next_day(now), now), "due, id")]
     if new_left_today(db, now):
@@ -567,20 +582,17 @@ def next_question(db: Database, book_id: int | None, now: float | None = None, s
     fallback = None
     for where, args, order in tiers:
         where, args = _not_in(where, args, exclude)
-        for row in db.questions(book_id, where, args, order=order, limit=len(skip) + 1, deck_id=deck, tag=tag,
-                                picks=picks):
+        for row in db.questions(where=where, args=args, order=order, limit=len(skip) + 1, picks=picks):
             if row["id"] not in skip:
                 return row
             fallback = fallback or row
     return fallback
 
 
-def next_due(db: Database, book_id: int | None, now: float | None = None, deck: int | None = None,
-             tag: str | None = None, picks=()) -> float | None:
-    """When the next question that isn't due yet will be."""
+def next_due(db: Database, now: float | None = None, picks=()) -> float | None:
+    """When the next question (in any of picks, or anywhere) that isn't due yet will be."""
     now = time.time() if now is None else now
-    row = db.questions(book_id, "suspended=0 AND stage>0 AND due>?", (now,), order="due", limit=1, deck_id=deck,
-                   tag=tag, picks=picks)
+    row = db.questions(where="suspended=0 AND stage>0 AND due>?", args=(now,), order="due", limit=1, picks=picks)
     return row[0]["due"] if row else None
 
 

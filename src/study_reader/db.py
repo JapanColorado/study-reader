@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from . import question_model
@@ -28,7 +29,9 @@ CREATE TABLE IF NOT EXISTS books (
     source_url TEXT,                -- web snapshots: the page they were saved from
     finished_at REAL,               -- NULL while still being read
     toc TEXT,                       -- JSON [[level, title, 0-based page], …] once known (practice.learn_toc)
-    opened_at REAL NOT NULL
+    opened_at REAL NOT NULL,
+    -- the deck its new quiz questions go into (made when its first question is: book_deck)
+    deck_id INTEGER REFERENCES decks(id) ON DELETE SET NULL
 );
 CREATE TABLE IF NOT EXISTS chats (
     id INTEGER PRIMARY KEY,
@@ -210,6 +213,12 @@ CREATE INDEX IF NOT EXISTS draft_items_draft ON draft_items (draft_id, number);
 CREATE INDEX IF NOT EXISTS question_rewrites_question ON question_rewrites (question_id);
 CREATE INDEX IF NOT EXISTS chats_book ON chats (book_id, throwaway);
 CREATE INDEX IF NOT EXISTS chats_question ON chats (question_id);
+CREATE INDEX IF NOT EXISTS messages_chat ON messages (chat_id);
+CREATE INDEX IF NOT EXISTS snippets_message ON snippets (message_id);
+CREATE INDEX IF NOT EXISTS quiz_answers_message ON quiz_answers (message_id, quiz, question);
+CREATE INDEX IF NOT EXISTS notes_book ON notes (book_id);
+CREATE INDEX IF NOT EXISTS calculations_book ON calculations (book_id);
+CREATE INDEX IF NOT EXISTS draft_items_question ON draft_items (question_id);
 """
 
 # Older databases named things as Anki does (cards, notes, reviews): renamed before SCHEMA runs, so
@@ -332,10 +341,50 @@ def media_url() -> str:
     return media_dir().as_uri() + "/"
 
 
+class _Connection(sqlite3.Connection):
+    """sqlite3's connection, except inside Database.transaction(): there a `with conn:` block (or a
+    commit) doesn't commit, as sqlite3's does even when nested, but is a savepoint of the larger
+    transaction, so the helpers that write with one can be part of an all-or-nothing whole."""
+
+    savepoints = 0  # open: Database.transaction() and the `with conn:` blocks inside it
+
+    def savepoint(self) -> None:
+        self.savepoints += 1
+        self.execute(f"SAVEPOINT nested_{self.savepoints}")
+
+    def release(self, keep: bool) -> None:
+        """Ends the innermost savepoint, keeping its writes or undoing them. Releasing the
+        outermost commits."""
+        name = f"nested_{self.savepoints}"
+        self.savepoints -= 1
+        if not self.in_transaction:  # SQLite undid the whole transaction itself (a full disk, say)
+            self.savepoints = 0
+            return
+        if not keep:
+            self.execute(f"ROLLBACK TO {name}")
+        self.execute(f"RELEASE {name}")
+
+    def commit(self) -> None:
+        if not self.savepoints:
+            super().commit()
+
+    def __enter__(self):
+        if not self.savepoints:
+            return super().__enter__()
+        self.savepoint()
+        return self
+
+    def __exit__(self, kind, value, tb):
+        if not self.savepoints:
+            return super().__exit__(kind, value, tb)
+        self.release(kind is None)
+        return False
+
+
 class Database:
     def __init__(self, path: str | Path | None = None):
         self.path = str(path) if path else str(data_dir() / "study-reader.db")
-        self.conn = sqlite3.connect(self.path)
+        self.conn = sqlite3.connect(self.path, factory=_Connection)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self._rename_old_schema()
@@ -347,6 +396,21 @@ class Database:
         self._migrate()
         self.conn.commit()
         self.conn.executescript(INDEXES)
+
+    @contextmanager
+    def transaction(self):
+        """All or nothing: the writes inside, the helpers' own `with self.conn:` blocks included,
+        are committed together on leaving, or none of them if it raises. May be nested."""
+        conn = self.conn
+        if not conn.savepoints and conn.in_transaction:
+            conn.commit()  # what was written before isn't part of it
+        conn.savepoint()
+        try:
+            yield
+        except BaseException:
+            conn.release(False)
+            raise
+        conn.release(True)
 
     # -- migrations ------------------------------------------------------------
     def _tables(self) -> set[str]:
@@ -709,6 +773,11 @@ class Database:
             "SELECT * FROM chats WHERE book_id IS ? AND throwaway=0 ORDER BY updated_at DESC", (book_id,)
         ).fetchall()
 
+    def chat_counts(self) -> dict[int, int]:
+        """{book id: its number of chats}, throwaway ones left out."""
+        return dict(self.conn.execute(
+            "SELECT book_id, COUNT(*) FROM chats WHERE book_id IS NOT NULL AND throwaway=0 GROUP BY book_id"))
+
     def question_chat(self, question_id: int) -> sqlite3.Row | None:
         """The latest (kept) chat started beside a question on the Practice page."""
         return self.conn.execute(
@@ -717,6 +786,14 @@ class Database:
 
     def throwaway_chats(self) -> list[sqlite3.Row]:
         return self.conn.execute("SELECT * FROM chats WHERE throwaway=1").fetchall()
+
+    def book_sessions(self, book_id: int) -> list[str]:
+        """Every Claude session of a book: its base session and each of its chats' sessions."""
+        book = self.book(book_id)
+        ids = [book["base_session_id"]] if book is not None and book["base_session_id"] else []
+        for (chat_id,) in self.conn.execute("SELECT id FROM chats WHERE book_id=?", (book_id,)).fetchall():
+            ids += self.chat_sessions(chat_id)
+        return list(dict.fromkeys(ids))
 
     def chat_sessions(self, chat_id: int) -> list[str]:
         """Every Claude session a chat's replies were in (branches fork new ones), and its own."""
@@ -1108,7 +1185,15 @@ class Database:
         return sorted(tags, key=str.lower)
 
     def add_tags(self, group_ids, tags) -> None:
-        self._retag(group_ids, lambda old: old + [t for t in tags if t not in old])
+        """Tags are told apart without case: one already there in another case keeps its spelling."""
+        def added(old: list[str]) -> list[str]:
+            seen = {t.lower() for t in old}
+            for t in tags:
+                if t.lower() not in seen:
+                    seen.add(t.lower())
+                    old.append(t)
+            return old
+        self._retag(group_ids, added)
 
     def remove_tags(self, group_ids, tags) -> None:
         drop = {t.lower() for t in tags}
@@ -1210,7 +1295,7 @@ class Database:
                 args += part_args
             sql = f"({' OR '.join(parts)}) AND "
         if book_id is not None:
-            sql, args = "book_id=? AND ", (book_id,)
+            sql, args = sql + "book_id=? AND ", args + (book_id,)
         if deck_id is not None:
             sql, args = sql + f"deck_id IN ({SUBTREE}) AND ", args + (deck_id,)
         if tag is not None:  # the tag or a tag under it (tag::child)
@@ -1350,9 +1435,6 @@ class Database:
                 "INSERT INTO draft_items (draft_id, batch_id, number, question_id, status, proposal, reason) "
                 "VALUES (?,?,?,?,?,?,?)", (draft_id, batch_id, number, question_id, status, proposal, reason),
             ).lastrowid
-
-    def draft_item(self, item_id: int) -> sqlite3.Row | None:
-        return self.conn.execute("SELECT * FROM draft_items WHERE id=?", (item_id,)).fetchone()
 
     def draft_items(self, draft_id: int, batch_id: int | None = None) -> list[sqlite3.Row]:
         """The draft's questions (or one batch's), in order, without those Claude removed."""

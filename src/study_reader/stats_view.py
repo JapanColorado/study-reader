@@ -16,6 +16,7 @@ from .notes import LocalPage
 from .theme import theme
 
 ASSETS = Path(__file__).parent / "assets"
+SCOPE_SETTING = "stats_scope"  # the scope last picked: "deck:<id>", "book:<id>" or "" (all decks)
 
 
 class StatsWindow(QWidget):
@@ -34,7 +35,7 @@ class StatsWindow(QWidget):
         self.scope = QComboBox()
         self.scope.setMinimumWidth(320)
         self.scope.setMaximumWidth(440)
-        self.scope.activated.connect(lambda _: self.refresh())
+        self.scope.activated.connect(lambda _: (self._remember(), self.refresh()))
         refresh = QPushButton("Refresh")
         refresh.setToolTip("Recompute the statistics")
         refresh.clicked.connect(self.refresh)
@@ -65,7 +66,8 @@ class StatsWindow(QWidget):
         layout.addWidget(self.view, 1)
         theme().changed.connect(self._apply_theme)
         self._apply_theme()
-        self._fill_scopes()  # show_scope() computes the statistics
+        self._fill_scopes()  # show() computes the statistics
+        self._select(_scope_data(self.db.get_setting(SCOPE_SETTING, "")))  # the scope picked last time
 
     # -- page ----------------------------------------------------------------------------
     def _js(self, function: str, *args) -> None:
@@ -111,10 +113,20 @@ class StatsWindow(QWidget):
                 return
         self.scope.setCurrentIndex(0)
 
+    def _remember(self) -> None:
+        data = self.scope.currentData()
+        self.db.set_setting(SCOPE_SETTING, f"{data[0]}:{data[1]}" if data else "")
+
     def show_scope(self, deck_id: int | None = None, book_id: int | None = None) -> None:
         """Pick a deck or a book (neither: all decks) and recompute."""
         self._fill_scopes()
         self._select(("deck", deck_id) if deck_id is not None else ("book", book_id) if book_id is not None else None)
+        self._remember()
+        self.refresh()
+
+    def show_current(self) -> None:
+        """The page is shown again: decks and books brought up to date, keeping the scope picked."""
+        self._fill_scopes()
         self.refresh()
 
     def refresh(self) -> None:
@@ -126,4 +138,11 @@ class StatsWindow(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        self._fill_scopes()
+        if self.isWindow():  # as the main window's page, MainWindow.show_page calls show_current
+            self._fill_scopes()
+
+
+def _scope_data(text: str):
+    """SCOPE_SETTING's "deck:3" / "book:5" / "" as the combo box's item data."""
+    kind, _, scope_id = text.partition(":")
+    return (kind, int(scope_id)) if kind in ("deck", "book") and scope_id.isdigit() else None

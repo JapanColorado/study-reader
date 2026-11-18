@@ -1,5 +1,6 @@
 import math
 import sqlite3
+import time
 from fractions import Fraction
 
 import pytest
@@ -233,3 +234,48 @@ def test_practice_calculator_shares_a_history_without_a_book(tmp_path, monkeypat
     db.delete_book(book)  # removed while its history is up: what comes next is kept in the shared one
     assert shared.submit("7")
     assert shared.book_id is None and [r["expr"] for r in db.calculations(None)] == ["2+3", "7"]
+
+
+@pytest.mark.parametrize("expr", [
+    "comb(3000000, 1500000)", "perm(300000)", "perm(3000000, 1500000)", "round(1/3, 3000000)", "1+" * 3000 + "1",
+])
+def test_huge_work_is_refused_before_it_is_done(expr):
+    started = time.monotonic()
+    with pytest.raises(CalcError):
+        Calculator().compute(expr)
+    assert time.monotonic() - started < 1
+
+
+def test_guarded_functions_still_compute():
+    c = Calculator()
+    assert c.compute("comb(52, 5)") == 2598960 and c.compute("perm(5, 2)") == 20 and c.compute("perm(5)") == 120
+    assert c.compute("round(2.567, 2)") == Fraction(257, 100) and c.compute("round(7/2)") == 4
+
+
+def test_round_and_log_follow_school_conventions():
+    """Halves round away from zero and log is base 10, as on a handheld calculator."""
+    c = Calculator()
+    assert c.compute("round(2.5)") == 3 and c.compute("round(-2.5)") == -3 and c.compute("round(0.5)") == 1
+    assert c.compute("round(0.125, 2)") == Fraction(13, 100) and c.compute("round(1250, -2)") == 1300
+    assert c.compute("round(sqrt(6.25))") == 3 and c.compute("round(sqrt(0.015625), 2)") == 0.13
+    assert c.compute("round(sqrt(2), 3)") == 1.414 and c.compute("round(-1/3, 2)") == Fraction(-33, 100)
+    assert c.compute("log(1000)") == 3 and c.compute("log(8, 2)") == 3 and c.compute("ln(e)") == 1
+    assert c.compute(latex_to_expr(r"\log\left(100\right)")) == 2
+
+
+def test_a_function_name_is_never_a_product_of_variables():
+    c = Calculator()
+    for v in ("s = 2", "i = 3", "n = 5", "x = 7"):
+        c.evaluate(v)
+    with pytest.raises(CalcError, match="function"):
+        c.compute("sin")  # not s·i·n
+    with pytest.raises(CalcError, match="needs a value"):
+        c.compute(latex_to_expr("\\sin"))  # sin()
+    with pytest.raises(CalcError, match="function sin"):
+        c.compute("xsin")
+    assert c.compute(latex_to_expr("sin x")) == c.compute("sinx") == c.compute("sin(x)")  # not s·i·n·x
+    assert c.compute(latex_to_expr("2sin x")) == 2 * c.compute("sin(x)")
+    assert c.compute("sinhx") == c.compute("sinh(x)")  # the longest name
+    assert c.compute("nx") == 35 and c.compute("nis") == 30  # products as before
+    c.evaluate("sinx = 1")
+    assert c.compute("sinx") == 1  # a variable of that name comes first

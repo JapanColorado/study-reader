@@ -3,7 +3,6 @@ package dev.russell.studyreader.core
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import java.time.Instant
 import java.time.LocalDate
@@ -18,7 +17,12 @@ import kotlin.math.roundToLong
  * is due, new questions within the daily allowance, sections, and scheduling an attempt with FSRS.
  * Times are epoch seconds. Questions the phone buried (the `buried` table) stay out until it empties.
  */
-class Practice(val db: Sql, val zone: ZoneId = ZoneId.systemDefault(), val fuzz: Boolean = true) {
+class Practice(val db: Sql, private val fixedZone: ZoneId? = null, val fuzz: Boolean = true) {
+    /** The time zone days are counted in: [fixedZone] (tests), else the phone's, read each time so
+     *  that a change of zone while the app runs moves the day boundaries with it. */
+    val zone: ZoneId get() = fixedZone ?: ZoneId.systemDefault()
+
+
     companion object {
         const val NEW_PER_DAY_SETTING = "practice_new_per_day"
         const val DEFAULT_NEW_PER_DAY = 20
@@ -28,16 +32,6 @@ class Practice(val db: Sql, val zone: ZoneId = ZoneId.systemDefault(), val fuzz:
         const val DAY_STARTS_AT_HOUR = 4
         const val LEARN_AHEAD = 20 * 60.0
         val VERDICT_RATINGS = mapOf("correct" to 3, "partial" to 2, "incorrect" to 1)
-
-        /** Question kinds by their names before the rename (and "free", older still), which older
-         *  snapshots and variants may hold. */
-        val KIND_ALIASES = mapOf(
-            "flashcard" to "self_check", "reversed" to "both_ways", "cloze" to "fill_in", "occlusion" to "image_labels",
-            "numeric" to "calculation", "written" to "short_answer", "free" to "short_answer",
-        )
-
-        /** A kind in today's terms. */
-        fun kind(name: String?): String? = KIND_ALIASES[name] ?: name
 
         // Due questions; args (nextDay(now), now).
         fun dueSql(alias: String = "") =
@@ -312,19 +306,12 @@ class Practice(val db: Sql, val zone: ZoneId = ZoneId.systemDefault(), val fuzz:
         val variant = question.str("variant")
         if (variant.isNotBlank()) {
             val v = Json.parseToJsonElement(variant).jsonObject
-            if (v["skip"]?.toString() != "true") return current(v)
+            if (v["skip"]?.toString() != "true") return v
         }
         return ownContent(question)
     }
 
-    fun ownContent(question: Row): JsonObject = current(Json.parseToJsonElement(question.str("data")).jsonObject)
-
-    /** Content in today's terms: older snapshots and variants may still use a kind's old name. */
-    private fun current(q: JsonObject): JsonObject {
-        val type = (q["type"] as? JsonPrimitive)?.takeIf { it.isString }?.content
-        val now = KIND_ALIASES[type] ?: return q
-        return JsonObject(q + ("type" to JsonPrimitive(now)))
-    }
+    fun ownContent(question: Row): JsonObject = Json.parseToJsonElement(question.str("data")).jsonObject
 
     private fun fsrsCard(question: Row, now: Double): FsrsCard {
         val raw = question.str("fsrs")

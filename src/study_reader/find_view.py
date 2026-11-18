@@ -53,13 +53,8 @@ class FindBar(QFrame):
             b.clicked.connect(signal)
             row.addWidget(b)
             self.buttons.append(b)
-        theme().changed.connect(self._restyle)
         parent.installEventFilter(self)  # follow the viewport's size
         self.hide()
-
-    def _restyle(self) -> None:
-        for b, name in zip(self.buttons, ("arrow-up", "chevron-down", "x")):
-            b.setIcon(icon(name))
 
     def place(self) -> None:
         self.adjustSize()
@@ -215,7 +210,7 @@ class BookFind(QObject):
 
     @property
     def active(self) -> bool:
-        return self.bar.isVisible()
+        return not self.bar.isHidden()  # open, even while another page hides the reader
 
     def set_document(self, doc: Document | None) -> None:
         self.close()
@@ -241,7 +236,7 @@ class BookFind(QObject):
         elif not was_active:
             if self.search is not None and self.search.query == book_search.fold(self.bar.edit.text()):
                 self._show_highlights()  # the last search, as it was
-                self._summarize()
+                self.summarize()
                 if not self.search.done:
                     self._timer.start()
             elif self.bar.edit.text().strip():
@@ -249,7 +244,7 @@ class BookFind(QObject):
         self.bar.edit.selectAll()
         if not was_active:
             self.activeChanged.emit(True)
-        self._summarize()
+        self.summarize()
 
     def close(self) -> None:
         if not self.active:
@@ -266,7 +261,7 @@ class BookFind(QObject):
         self.search, self.current, self._by_page = None, None, {}
         self.list.results.reset(None)
         self.reader.clear_find()
-        self._summarize()
+        self.summarize()
 
     def start(self, query: str) -> None:
         """Search the book for ``query`` from the page being read on."""
@@ -295,7 +290,7 @@ class BookFind(QObject):
                 self._show_highlights()  # the list keeps its current row through the insert
         if s.done:
             self._timer.stop()
-        self._summarize()
+        self.summarize()
 
     def next(self) -> None:
         self._move(1)
@@ -330,13 +325,13 @@ class BookFind(QObject):
         self._show_highlights()
         self.reader.show_match(m.page, m.rects)
         self.list.show_row(self.search.position(m))
-        self._summarize()
+        self.summarize()
 
     def _show_highlights(self) -> None:
         cur = (self.current.page, self.current.rects) if self.current else None
         self.reader.set_find(self._by_page, cur)
 
-    def _summarize(self) -> None:
+    def summarize(self) -> None:
         s = self.search
         if s is None:
             text, heading = "", "Search results"

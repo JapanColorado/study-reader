@@ -178,3 +178,171 @@ def test_format_1_batches_from_older_phones(tmp_path, monkeypatch):
     assert db.question(ids[1])["suspended"] == 1
     write_batch(root, [], batch="0002", format=3)  # from a newer app: left for later
     assert phone_sync.import_batches(db, root).errors
+
+
+def test_a_batch_that_isnt_one_or_has_a_bad_time_doesnt_stop_the_sync(tmp_path, monkeypatch):
+    db, ids, root = make(tmp_path, monkeypatch)
+    write_batch(root, []).write_text("[1, 2]")
+    write_batch(root, [{**attempt(ids[0], NOW, eid="bad"), "at": "soon"}, attempt(ids[1], NOW)], batch="0002")
+    result = phone_sync.sync(db, root, now=NOW)
+    assert result.errors and db.question(ids[1])["reps"] == 1 and db.question(ids[0])["reps"] == 0
+
+
+def test_phone_attempt_before_the_first_one_here_is_the_introduction(tmp_path, monkeypatch):
+    """attempts.was_new marks the first attempt (and the first after a Forget), never two."""
+    db, ids, root = make(tmp_path, monkeypatch)
+    marks = lambda q: [(r["attempted_at"], r["was_new"]) for r in db.attempts(q)]
+    # Practiced here first, but on the phone before that: the phone's attempt introduced it.
+    practice.attempt(db, ids[0], 3, now=NOW + 2 * DAY)
+    # The phone's copy was older than an attempt here: its "new" doesn't make a second introduction.
+    practice.attempt(db, ids[1], 3, now=NOW)
+    practice.attempt(db, ids[1], 3, now=NOW + 2 * DAY)
+    # Forgotten here, then introduced on the phone before it was practiced here again.
+    practice.attempt(db, ids[2], 3, now=NOW)
+    practice.forget(db, [ids[2]], now=NOW + DAY)
+    practice.attempt(db, ids[2], 3, now=NOW + 3 * DAY)
+    write_batch(root, [attempt(ids[0], NOW, new=True), attempt(ids[1], NOW + DAY, new=True),
+                       attempt(ids[2], NOW + 2 * DAY, new=True)])
+    phone_sync.sync(db, root, now=NOW + 3 * DAY)
+    assert marks(ids[0]) == [(NOW, 1), (NOW + 2 * DAY, 0)]
+    assert marks(ids[1]) == [(NOW, 1), (NOW + DAY, 0), (NOW + 2 * DAY, 0)]
+    assert marks(ids[2]) == [(NOW, 1), (NOW + 2 * DAY, 1), (NOW + 3 * DAY, 0)]
+    # Replayed from the right introduction: the same as practicing in that order here.
+    (tmp_path / "other").mkdir()
+    db2, ids2, _ = make(tmp_path / "other", monkeypatch)
+    for at in (NOW, NOW + 2 * DAY):
+        practice.attempt(db2, ids2[0], 3, now=at)
+    question, other = db.question(ids[0]), db2.question(ids2[0])
+    assert (question["stage"], question["stability"], question["difficulty"], question["reps"]) == \
+        (other["stage"], other["stability"], other["difficulty"], 2)
+
+
+def test_a_batch_is_applied_whole_or_not_at_all(tmp_path, monkeypatch):
+    db, ids, root = make(tmp_path, monkeypatch)
+    write_batch(root, [attempt(ids[0], NOW), {"id": "x", "type": "xp", "at": NOW + 1, "amount": 5},
+                       attempt(ids[1], NOW + 2)])
+    xp = gamify.load(db, NOW)["xp"]
+    real = phone_sync.apply_event
+
+    def failing(db, e):
+        if e["id"] == f"r{ids[1]}-{NOW + 2}":
+            raise sqlite3.OperationalError("disk I/O error")
+        return real(db, e)
+
+    monkeypatch.setattr(phone_sync, "apply_event", failing)
+    try:
+        phone_sync.import_batches(db, root)
+    except sqlite3.OperationalError:
+        pass
+    else:
+        raise AssertionError("the error was swallowed")
+    # Nothing of it stayed, so it is read again next time.
+    assert db.question(ids[0])["reps"] == 0 and gamify.load(db, NOW)["xp"] == xp
+    assert db.conn.execute("SELECT COUNT(*) FROM phone_events").fetchone()[0] == 0
+    assert db.conn.execute("SELECT COUNT(*) FROM phone_batches").fetchone()[0] == 0
+    monkeypatch.setattr(phone_sync, "apply_event", real)
+    assert phone_sync.import_batches(db, root).applied == 3
+    assert db.question(ids[0])["reps"] == 1 and db.question(ids[1])["reps"] == 1
+
+
+def test_an_event_that_fails_midway_leaves_nothing_behind(tmp_path, monkeypatch):
+    db, ids, root = make(tmp_path, monkeypatch)
+    write_batch(root, [attempt(ids[0], NOW, eid="a"), attempt(ids[1], NOW, eid="b"), attempt(ids[1], NOW, eid="b")])
+    real = phone_sync.apply_event
+
+    def half(db, e):
+        if e["id"] == "a":
+            db.update_question(ids[0], flag=5)  # written (and, alone, committed) before it fails
+            raise ValueError("no such rating")
+        return real(db, e)
+
+    monkeypatch.setattr(phone_sync, "apply_event", half)
+    result = phone_sync.import_batches(db, root)
+    assert result.errors and result.applied == 2  # the failed one is done with; the repeated one counts once
+    assert db.question(ids[0])["flag"] == 0 and db.question(ids[1])["reps"] == 1
+    assert [r[0] for r in db.conn.execute("SELECT id FROM phone_events ORDER BY id")] == ["a", "b"]
+
+
+def test_transactions_hold_the_helpers_commits(tmp_path, monkeypatch):
+    db, ids, root = make(tmp_path, monkeypatch)
+    try:
+        with db.transaction():
+            db.update_question(ids[0], flag=2)  # its own `with db.conn:` doesn't commit here
+            with db.transaction():
+                db.update_question(ids[1], flag=3)
+            raise RuntimeError
+    except RuntimeError:
+        pass
+    assert (db.question(ids[0])["flag"], db.question(ids[1])["flag"]) == (0, 0)
+    with db.transaction():
+        db.update_question(ids[0], flag=4)
+        try:
+            with db.conn:  # a savepoint inside one
+                db.update_question(ids[1], flag=4)
+                raise ValueError
+        except ValueError:
+            pass
+    assert (db.question(ids[0])["flag"], db.question(ids[1])["flag"]) == (4, 0)
+    assert not db.conn.in_transaction and db.conn.savepoints == 0
+    db.update_question(ids[1], flag=1)  # outside one: committed as before
+    assert sqlite3.connect(db.path).execute("SELECT flag FROM questions WHERE id=?", (ids[1],)).fetchone()[0] == 1
+
+
+def test_a_snapshot_that_fails_leaves_no_temp_file(tmp_path, monkeypatch):
+    db, ids, root = make(tmp_path, monkeypatch)
+
+    def broken(snap, conn, plan):
+        snap.execute("CREATE TABLE half (x)")
+        raise sqlite3.OperationalError("database or disk is full")
+
+    monkeypatch.setattr(phone_sync, "_fill_snapshot", broken)
+    try:
+        phone_sync.sync(db, root, now=NOW)
+    except sqlite3.OperationalError:
+        pass
+    assert list((root / "desktop").iterdir()) == []
+    assert db.get_setting(phone_sync.FINGERPRINT_SETTING) == ""
+
+
+def test_the_app_writes_the_snapshot_on_a_thread(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from study_reader.phone_sync_dialog import PhoneSync
+
+    QApplication.instance() or QApplication([])
+    db, ids, root = make(tmp_path, monkeypatch)
+    db.set_setting(phone_sync.FOLDER_SETTING, str(root))
+    threads = []
+    real = phone_sync.write_snapshot_apart
+
+    def apart(path, plan):
+        import threading
+        threads.append(threading.current_thread())
+        return real(path, plan)
+
+    monkeypatch.setattr(phone_sync, "write_snapshot_apart", apart)
+    sync = PhoneSync(db)
+    write_batch(root, [attempt(ids[0], NOW)])
+    assert sync.sync().exported and sync.sync().applied == 0  # the second waits for the first
+    sync.wait()
+    assert threads and all(t is not __import__("threading").main_thread() for t in threads)
+    assert sync.last_error == "" and db.get_setting(phone_sync.FINGERPRINT_SETTING)
+    snap = snapshot(root)
+    assert snap.execute("SELECT reps FROM questions WHERE id=?", (ids[0],)).fetchone()[0] == 1
+    assert [tuple(r) for r in snap.execute("SELECT device, batch FROM acks")] == [("pixel", "0001")]
+    # Nothing changed since: nothing is written.
+    count = len(threads)
+    assert not sync.sync().exported
+    sync.wait()
+    assert len(threads) == count
+    # A failure on the thread is reported, and the next sync tries again.
+    monkeypatch.setattr(phone_sync, "write_snapshot_apart", lambda path, plan: (_ for _ in ()).throw(OSError("full")))
+    db.update_question(ids[1], suspended=1)
+    sync.sync()
+    sync.wait()
+    assert sync.last_error == "full"
+    monkeypatch.setattr(phone_sync, "write_snapshot_apart", apart)
+    assert sync.sync().exported
+    sync.wait()
+    assert sync.last_error == "" and snapshot(root).execute(
+        "SELECT suspended FROM questions WHERE id=?", (ids[1],)).fetchone()[0] == 1

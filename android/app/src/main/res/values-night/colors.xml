@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="surface">#1f1e1d</color>
+    <!-- theme.py's DARK surface -->
+    <color name="surface">#1c1b19</color>
 </resources>

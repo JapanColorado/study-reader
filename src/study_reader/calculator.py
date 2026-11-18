@@ -73,6 +73,59 @@ def _factorial(n):
     return math.factorial(n)
 
 
+def _whole(n):
+    return int(n) if isinstance(n, Fraction) and n.denominator == 1 else n
+
+
+def _comb(n, k):
+    n, k = _whole(n), _whole(k)
+    if isinstance(n, int) and isinstance(k, int) and 0 <= k <= n and min(k, n - k) * n.bit_length() > 40 * MAX_INT_BITS:
+        raise CalcError("Result is too large")  # before the work: these take minutes when big
+    return math.comb(n, k)
+
+
+def _perm(n, k=None):
+    n, k = _whole(n), _whole(k)
+    if k is None:
+        return _factorial(n)
+    if isinstance(n, int) and isinstance(k, int) and 0 <= k <= n and k * n.bit_length() > 40 * MAX_INT_BITS:
+        raise CalcError("Result is too large")
+    return math.perm(n, k)
+
+
+def _half_away(x: Fraction) -> int:
+    """x to the nearest whole number, halves away from zero (2.5 → 3, −2.5 → −3), as taught
+    at school; Python's own round() sends halves to the even neighbour."""
+    whole = (abs(x) + Fraction(1, 2)).__floor__()
+    return -whole if x < 0 else whole
+
+
+def _round(x, digits=None):
+    if isinstance(digits, Fraction) and digits.denominator == 1:
+        digits = int(digits)
+    if isinstance(digits, int) and abs(digits) > 1000:
+        raise CalcError("That is too many digits to round to")
+    if isinstance(x, float) and not math.isfinite(x) or not isinstance(digits, int | None):
+        return round(x) if digits is None else round(x, digits)  # Python's errors and oddities
+    if digits is None:
+        return _half_away(Fraction(x))
+    if isinstance(x, float):  # by its exact value, so 2.675 (really 2.67499…) gives 2.67
+        if digits > 323:
+            return x
+        if digits < -308:
+            return 0.0 * x
+        shift = Fraction(10) ** digits
+        rounded = float(Fraction(_half_away(Fraction(x) * shift)) / shift)  # OverflowError past the float range
+        return math.copysign(0.0, x) if rounded == 0 else rounded
+    shift = Fraction(10) ** digits
+    return Fraction(_half_away(x * shift)) / shift
+
+
+def _log(x, base=None):
+    """log is the base-10 logarithm, as on a calculator's key; ln is the natural one."""
+    return math.log10(x) if base is None else math.log(x, base)
+
+
 BINARY = {
     ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: _div,
     ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod, ast.Pow: _pow,
@@ -80,10 +133,10 @@ BINARY = {
 UNARY = {ast.UAdd: operator.pos, ast.USub: operator.neg}
 CONSTANTS = {"pi": math.pi, "e": math.e, "tau": math.tau, "inf": math.inf}
 FUNCTIONS = {
-    "sqrt": math.sqrt, "cbrt": math.cbrt, "exp": math.exp, "ln": math.log, "log": math.log,
+    "sqrt": math.sqrt, "cbrt": math.cbrt, "exp": math.exp, "ln": math.log, "log": _log,
     "log10": math.log10, "log2": math.log2, "abs": abs, "floor": math.floor, "ceil": math.ceil,
-    "round": round, "trunc": math.trunc, "factorial": _factorial, "gcd": math.gcd, "lcm": math.lcm,
-    "comb": math.comb, "perm": math.perm, "hypot": math.hypot, "min": min, "max": max,
+    "round": _round, "trunc": math.trunc, "factorial": _factorial, "gcd": math.gcd, "lcm": math.lcm,
+    "comb": _comb, "perm": _perm, "hypot": math.hypot, "min": min, "max": max,
     "sinh": math.sinh, "cosh": math.cosh, "tanh": math.tanh,
     "asinh": math.asinh, "acosh": math.acosh, "atanh": math.atanh,
     "deg": math.degrees, "rad": math.radians,
@@ -91,6 +144,8 @@ FUNCTIONS = {
 TRIG = {"sin": math.sin, "cos": math.cos, "tan": math.tan}
 INVERSE_TRIG = {"asin": math.asin, "acos": math.acos, "atan": math.atan, "atan2": math.atan2}
 RESERVED = {*CONSTANTS, *FUNCTIONS, *TRIG, *INVERSE_TRIG, "ans"}
+CALLABLE = {*FUNCTIONS, *TRIG, *INVERSE_TRIG}
+BY_LENGTH = sorted(CALLABLE, key=len, reverse=True)  # function names, longest first
 ASSIGNMENT = re.compile(r"^\s*([A-Za-z_]\w*)\s*=(?!=)(.*)$")
 
 
@@ -138,6 +193,8 @@ class Calculator:
             raise CalcError("Division by zero") from None
         except OverflowError:
             raise CalcError("Result is too large") from None
+        except RecursionError:
+            raise CalcError("That expression is too long") from None
         except (ValueError, TypeError) as e:
             raise CalcError(_friendly(e)) from None
         if isinstance(value, float) and math.isnan(value):
@@ -174,13 +231,28 @@ class Calculator:
             return self.variables[name]
         if name in CONSTANTS:
             return CONSTANTS[name]
-        if len(name) > 1 and all(c in self.variables or c in CONSTANTS for c in name):
-            return math.prod(self._lookup(c) for c in name)  # xy is x times y, as written in math
-        if name in FUNCTIONS or name in TRIG or name in INVERSE_TRIG:
+        if name in CALLABLE:  # before reading it as a product: sin is not s·i·n
             raise CalcError(f"'{name}' is a function — try {name}(…)")
+        if len(name) > 1:
+            # sinx (from `sin x` too, as spaces are dropped) is sin(x): a function name, then what it
+            # is applied to, the longest name first (sinhx is sinh(x)).
+            for func in BY_LENGTH:
+                if name.startswith(func) and len(name) > len(func):
+                    try:
+                        arg = self._lookup(name[len(func):])
+                    except CalcError:
+                        break
+                    return self._call(func, [arg])
+            if all(c in self.variables or c in CONSTANTS for c in name):
+                if func := next((f for f in BY_LENGTH if f in name), None):
+                    raise CalcError(f"'{name}' holds the function {func} without a value — try {func}(…), "
+                                    "or * between letters to multiply")
+                return math.prod(self._lookup(c) for c in name)  # xy is x times y, as written in math
         raise CalcError(f"Unknown name '{name}'")
 
     def _call(self, name: str, args: list):
+        if not args and name in CALLABLE:  # sin() — or `sin` in the math field, with nothing after it
+            raise CalcError(f"'{name}' needs a value — try {name}(…)")
         if name in TRIG:
             if len(args) != 1:
                 raise CalcError(f"{name} takes one value")
@@ -244,7 +316,7 @@ HELP = (
     "Operators: + − * / % (mod) and ! (factorial)\n"
     "Constants: pi, e, tau, inf · ans = the last result\n"
     "Variables: x = 2.5, then use x\n"
-    "Functions: sqrt cbrt exp ln log(x[, base]) log10 log2 abs floor ceil round trunc\n"
+    "Functions: sqrt cbrt exp ln log (base 10; log(x, base) for another) log2 abs floor ceil round trunc\n"
     "  sin cos tan asin acos atan atan2 sinh cosh tanh asinh acosh atanh\n"
     "  factorial gcd lcm comb perm hypot min max deg rad\n"
     "Whole numbers and decimals stay exact: click a result's ½ button to see it as a fraction"
@@ -266,9 +338,9 @@ class _Bridge(QObject):
     def submit(self, latex: str) -> None:
         self.panel.submit(latex)
 
-    @Slot(int, bool)
-    def menu(self, key: int, fraction: bool) -> None:
-        self.panel.history_menu(key, fraction)
+    @Slot(int)
+    def menu(self, key: int) -> None:
+        self.panel.history_menu(key)
 
 
 class CalculatorPanel(QWidget):
@@ -461,7 +533,7 @@ class CalculatorPanel(QWidget):
     def _entry(self, key: int) -> dict | None:
         return next((e for e in self.entries if e["key"] == key), None)
 
-    def history_menu(self, key: int, fraction_shown: bool) -> None:
+    def history_menu(self, key: int) -> None:
         entry = self._entry(key)
         if not entry:
             return

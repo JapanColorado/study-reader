@@ -68,6 +68,7 @@ def test_section_titles():
 
 
 def test_ctrl_f_in_the_window(tmp_path, monkeypatch, pdf_path):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")  # on a real display the window may not be active
     monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
     from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest
@@ -124,3 +125,112 @@ def test_folding_that_changes_length_maps_back_to_the_printed_word():
     assert m.context == ("ﬁ", "nal Straß", "e")  # each printed character goes to one side
     [(x0, _, x1, _)] = m.rects
     assert x0 == words[0].x1 / 4 and x1 == words[1].x0 + (words[1].x1 - words[1].x0) * 5 / 6
+
+
+def test_find_left_open_survives_other_pages_and_closes_for_another_book(tmp_path, monkeypatch, pdf_path):
+    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    from PySide6.QtWidgets import QApplication
+    from study_reader.db import Database
+    from study_reader.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    win = MainWindow(Database(tmp_path / "t.db"))
+    win.show()
+    win.open_book(pdf_path)
+    win.find.open()
+    win.find.start("zorblatt")
+    while not win.find.search.done:
+        win.find._step()
+    win.show_page("library")
+    assert win.find.active  # hidden with the reader, not closed
+    win.show_page("book")
+    app.processEvents()
+    assert win.sidebar_title.text() == "3 matches"
+
+    win.show_page("library")
+    other = tmp_path / "other.pdf"
+    import pymupdf
+    copy = pymupdf.open(pdf_path)
+    copy.new_page(width=400, height=300)  # other contents, so another book
+    copy.save(other)
+    win.open_book(str(other))
+    assert not win.find.active and win.find.search is None
+
+
+def test_removing_the_open_book_closes_it(tmp_path, monkeypatch, pdf_path):
+    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    from PySide6.QtWidgets import QApplication
+    from study_reader.db import Database
+    from study_reader.main_window import MainWindow
+
+    QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "t.db")
+    win = MainWindow(db)
+    win.show()
+    win.open_book(pdf_path)
+    book_id = win.book_id
+    win.show_page("library")
+    win.library.removing.emit(book_id)  # what the Library's Remove does, before deleting the row
+    db.delete_book(book_id)
+    assert win.book_id is None and win.doc is None
+    assert win.center.currentWidget() is win.pages["library"]
+    win.show_page("home")  # nothing still reaches for the removed book
+
+
+def test_removing_a_book_removes_what_the_app_kept_for_it(tmp_path, monkeypatch, pdf_path):
+    """Its sessions (a later book gets the same id), cover and web snapshot go; the user's file stays."""
+    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    import shutil
+    from pathlib import Path
+    from PySide6.QtWidgets import QApplication
+    from study_reader import claude_client, covers
+    from study_reader.db import Database, data_dir
+    from study_reader.main_window import MainWindow
+
+    forgotten = []
+    monkeypatch.setattr(claude_client, "forget_session", lambda sid, cwd: forgotten.append((sid, Path(cwd).name)))
+    QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "t.db")
+    win = MainWindow(db)
+    win.open_book(pdf_path)
+    mine = win.book_id
+    web = data_dir() / "web"
+    web.mkdir(parents=True, exist_ok=True)
+    other = tmp_path / "other.pdf"
+    shutil.copy(pdf_path, other)
+    with open(other, "ab") as f:
+        f.write(b"\n% another book")  # another hash
+    snapshot = web / "page.pdf"
+    shutil.copy(other, snapshot)
+    win.open_book(str(snapshot))
+    page = win.book_id
+    db.update_book(page, source_url="https://example.com/page", base_session_id="base-1")
+    chat = db.create_chat(page, "A chat")
+    db.update_chat(chat, session_id="chat-1")
+    db.add_message(chat, "assistant", "Hi", session_id="branch-1")
+    folder = win.worker.service.cwd(page)
+    folder.mkdir(parents=True, exist_ok=True)
+    cover = covers.cover_file(db.book(page)["hash"])
+    cover.write_bytes(b"png")
+
+    for book_id in (page, mine):
+        win.library.removing.emit(book_id)
+        db.delete_book(book_id)
+    assert sorted(forgotten) == [("base-1", f"book-{page}"), ("branch-1", f"book-{page}"), ("chat-1", f"book-{page}")]
+    assert not folder.exists() and not cover.exists() and not snapshot.exists()
+    assert Path(pdf_path).exists()  # a book the user opened from their own folder
+
+
+def test_a_relative_path_is_stored_absolute(tmp_path, monkeypatch, pdf_path):
+    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    import os
+    from PySide6.QtWidgets import QApplication
+    from study_reader.db import Database
+    from study_reader.main_window import MainWindow
+
+    QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "t.db")
+    win = MainWindow(db)
+    monkeypatch.chdir(os.path.dirname(pdf_path))
+    win.open_book(os.path.basename(pdf_path))
+    assert db.book(win.book_id)["path"] == pdf_path and db.get_setting("last_dir") == os.path.dirname(pdf_path)

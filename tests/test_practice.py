@@ -1,5 +1,4 @@
 import json
-import time
 
 from PySide6.QtCore import Qt
 
@@ -80,34 +79,55 @@ def test_ratings_space_attempts_out(tmp_path):
     assert set(previews) == {1, 2, 3, 4} and all(previews.values())
 
 
+def test_previewed_interval_is_the_one_scheduled(tmp_path, monkeypatch):
+    import random
+
+    monkeypatch.setattr(practice, "format_interval", lambda seconds: seconds)  # previews in seconds
+    db, book_id, chat, reply = setup(tmp_path, SELF_CHECKS)
+    ids = practice.add_quiz_questions(db, book_id, reply, SELF_CHECKS, now=NOW)
+    for question_id in ids:
+        t = NOW
+        for _ in range(6):  # learned, with intervals long enough to be fuzzed
+            row = db.question(question_id)
+            random.seed(7)
+            previews = practice.previews(row, now=t)
+            assert random.random() == random.Random(7).random()  # `random` is left as it was
+            practice.attempt(db, question_id, 3, now=t)
+            after = db.question(question_id)
+            assert after["due"] - t == previews[3]
+            t = after["due"]
+        assert after["stage"] == 2 and after["due"] - after["last_attempt"] > 30 * 86400
+
+
 def test_queue_order_new_question_limit_and_suspension(tmp_path):
     db, book_id, chat, reply = setup(tmp_path)
     a, b, c, d = practice.add_quiz_questions(db, book_id, reply, QUIZ, now=NOW)
-    assert practice.counts(db, book_id, NOW) == {"due": 0, "new": 4, "new_total": 4, "total": 4, "suspended": 0}
-    assert practice.next_question(db, book_id, NOW)["id"] == a  # new questions in the order they were written
+    here = [{"book": book_id, "section": None}]
+    assert practice.counts(db, NOW, picks=here) == {"due": 0, "new": 4, "new_total": 4, "total": 4, "suspended": 0}
+    assert practice.next_question(db, NOW, picks=here)["id"] == a  # new questions in the order they were written
 
     db.set_setting(practice.NEW_PER_DAY_SETTING, "1")
     practice.attempt(db, a, 1, now=NOW)  # introduced in practice: uses up today's one new question
-    assert practice.counts(db, book_id, NOW)["new"] == 0
+    assert practice.counts(db, NOW, picks=here)["new"] == 0
     # `a` is back in a minute; until then, with no new questions left today, it is shown early...
-    assert practice.next_question(db, book_id, NOW)["id"] == a
+    assert practice.next_question(db, NOW, picks=here)["id"] == a
     # ...and once due it comes before anything else.
-    assert practice.counts(db, book_id, NOW + 120)["due"] == 1 and practice.next_question(db, book_id, NOW + 120)["id"] == a
+    assert practice.counts(db, NOW + 120, picks=here)["due"] == 1 and practice.next_question(db, NOW + 120, picks=here)["id"] == a
     # A chat answer isn't counted against the new-question allowance.
     practice.answered_in_chat(db, reply, 0, 1, "correct", {"value": False}, now=NOW)
     assert db.new_questions_attempted_since(practice.day_start(NOW)) == 1
 
     db.update_question(a, suspended=1)
     db.set_quiz_suspended(reply, 0, True)
-    assert practice.next_question(db, book_id, NOW + 3600) is None and practice.counts(db, book_id, NOW)["suspended"] == 4
+    assert practice.next_question(db, NOW + 3600, picks=here) is None and practice.counts(db, NOW, picks=here)["suspended"] == 4
     db.set_quiz_suspended(reply, 0, False)
     db.set_setting(practice.NEW_PER_DAY_SETTING, "20")
     # Skipping the question just shown, unless it's the only one.
-    first = practice.next_question(db, book_id, NOW + 3600)
-    second = practice.next_question(db, book_id, NOW + 3600, skip=[first["id"]])
-    third = practice.next_question(db, book_id, NOW + 3600, skip=[first["id"], second["id"]])
+    first = practice.next_question(db, NOW + 3600, picks=here)
+    second = practice.next_question(db, NOW + 3600, skip=[first["id"]], picks=here)
+    third = practice.next_question(db, NOW + 3600, skip=[first["id"], second["id"]], picks=here)
     assert len({first["id"], second["id"], third["id"]}) == 3
-    assert practice.counts(db, None, NOW)["total"] == 4  # all books
+    assert practice.counts(db, NOW)["total"] == 4  # all books
 
 
 def test_practice_days_roll_over_at_4am():
@@ -190,10 +210,13 @@ def test_quiz_questions_are_tagged_with_their_section(tmp_path):
     assert db.question_group(db.question_for(later, 0, 1)["group_id"])["tags"] == " A::Part_I::Chapter_2::2.1_Storage "
 
     # Practicing one section (or the part holding it).
-    assert practice.counts(db, book_id, NOW, tag="A::Part_I::Chapter_2")["total"] == 4
-    assert practice.counts(db, None, NOW, tag="A::Part_I")["total"] == 6
-    assert practice.counts(db, book_id, NOW, tag="A::Part_I::Chapter_")["total"] == 0  # whole parts only
-    row = practice.next_question(db, book_id, NOW, tag="A::Part_I::Chapter_1:_Rinsing_mostly")
+    def section(tag):
+        return [{"book": book_id, "section": tag}]
+
+    assert practice.counts(db, NOW, picks=section("A::Part_I::Chapter_2"))["total"] == 4
+    assert practice.counts(db, NOW, picks=section("A::Part_I"))["total"] == 6
+    assert practice.counts(db, NOW, picks=section("A::Part_I::Chapter_"))["total"] == 0  # whole parts only
+    row = practice.next_question(db, NOW, picks=section("A::Part_I::Chapter_1:_Rinsing_mostly"))
     assert row["id"] == db.question_for(reply, 0, 0)["id"]
 
     tree = practice.sections(db, NOW)[book_id]
@@ -374,6 +397,55 @@ def test_skipped_questions_stay_skipped_for_the_session(chat_panel):
     assert page.question_id is None and shown[-1][0] == "showOverview"
 
 
+def run_js(page, code: str):
+    """Run code in a loaded QWebEnginePage and wait for its value."""
+    import time
+    from PySide6.QtWidgets import QApplication
+    out = []
+    page.runJavaScript(code, 0, out.append)
+    end = time.monotonic() + 10
+    while not out and time.monotonic() < end:
+        QApplication.processEvents()
+        time.sleep(0.01)
+    assert out, f"no answer from {code!r}"
+    return out[0]
+
+
+def wait_ready(view, page, ready: str = "true") -> None:
+    """Wait for a page (a PracticePanel's, a QuestionView) to have loaded and the JS ready to be true in it."""
+    import time
+    from PySide6.QtWidgets import QApplication
+    end = time.monotonic() + 10
+    while not (view._ready and run_js(page, ready)) and time.monotonic() < end:
+        QApplication.processEvents()
+        time.sleep(0.01)
+    assert view._ready
+
+
+def test_practice_page_empty_state_and_twisting_rows(chat_panel):
+    """The desktop's Make a deck with Claude link shows in the empty state too (never without
+    o.make, as on the phone); expanding a picker row is drawn in the page, without a round trip."""
+    from study_reader.practice_view import PracticePanel
+
+    _, _, db, _ = chat_panel
+    panel = PracticePanel(db)
+    page = panel.view.page()
+    wait_ready(panel, page, "bridge !== null")
+    root = 'document.getElementById("root").innerHTML'
+    assert 'data-act="make"' in run_js(page, f'showOverview({{"total": 0, "make": true}}); {root}')
+    assert 'data-act="make"' not in run_js(page, f'showOverview({{"total": 0}}); {root}')
+
+    refreshed = []
+    panel.refresh = lambda: refreshed.append(1)
+    overview = {"total": 1, "due": 1, "new": 0, "new_total": 0, "picks": [], "all_due": 1, "all_new": 0, "books": [],
+                "quick": {"questions": 5, "minutes": 5},
+                "decks": [{"id": 1, "parent": None, "name": "Physics", "path": "Physics", "due": 1, "new": 0},
+                          {"id": 2, "parent": 1, "name": "Optics", "path": "Physics::Optics", "due": 1, "new": 0}]}
+    assert "Optics" not in run_js(page, f"showOverview({json.dumps(overview)}); {root}")
+    run_js(page, 'document.querySelector("[data-act=twist][data-key=d1]").click()')
+    assert "Optics" in run_js(page, root) and not refreshed
+
+
 def test_practicing_one_book_or_section(chat_panel):
     from study_reader.practice_view import PracticePanel
 
@@ -456,6 +528,8 @@ def test_main_window_practice_of_the_open_book(pdf_path, tmp_path, monkeypatch):
     reply = db.add_message(chat, "assistant", SELF_CHECKS)
     practice.add_quiz_questions(db, win.book_id, reply, SELF_CHECKS)
     win._on_questions_changed()
+    assert win._counts_timer.isActive()  # counted once the burst of changes is over
+    QTest.qWait(win._counts_timer.interval() + 50)
     assert "2 questions waiting" in win.practice_action.toolTip()
 
     assert win.practice_action.text() == "Practice · 2" and win.nav.buttons["practice"].badge == "2"
@@ -511,7 +585,9 @@ def test_navigating_pages_keeps_the_book_open(pdf_path, tmp_path, monkeypatch):
     rows = [win.library.list.item(i).data(Qt.ItemDataRole.UserRole + 1) for i in range(win.library.list.count())]
     assert rows[0]["id"] == book_id and rows[0]["questions"] == 0 and not rows[0]["due"]
     win.show_page("home")
-    assert win.home.data["reading"][0]["id"] == book_id and win.home.data["reading"][0]["cover"].startswith("file:")
+    assert win.home.data["reading"][0]["id"] == book_id
+    QApplication.processEvents()  # covers not drawn yet come a turn of the event loop later
+    assert win.home.data["reading"][0]["cover"].startswith("file:")
     win.show_page("book")
     assert win.reader.current_page() == 2 and win.right.isVisible() and win.quiz_action.isEnabled()
 
@@ -648,7 +724,7 @@ def test_a_revised_quiz_takes_over_the_questions_it_keeps(tmp_path):
     assert quiz.revised_quiz([(reply, 0, quiz.quizzes(QUIZ)[0])], "nothing like it") == (reply, 0)
 
 
-def test_chat_panel_revises_quizzes_and_shares_tags(chat_panel):
+def test_chat_panel_revises_quizzes_and_shares_tags(chat_panel, monkeypatch):
     panel, worker, db, book_id = chat_panel
     panel.start_quiz("Quiz me.", "Quiz", 0)
     panel.send()
@@ -662,6 +738,14 @@ def test_chat_panel_revises_quizzes_and_shares_tags(chat_panel):
     revision = db.messages(panel.chat_id)[-1]["id"]
     assert panel._revisions(db.messages(panel.chat_id)) == {(reply, 0): revision}
     assert db.quiz_questions(revision, 0)[1]["id"] == first and not db.quiz_questions(reply, 0)
+    # A redraw reads each reply's quizzes once, revisions included.
+    read, split = [], quiz.split
+    monkeypatch.setattr(quiz, "split", lambda text: read.append(text) or split(text))
+    panel._refresh_transcript()
+    assert sorted(read) == sorted([REVISED, TAGGED])
+    read.clear()
+    panel._update_quiz(revision, 0)
+    assert sorted(read) == sorted([REVISED, TAGGED])
 
 
 def test_browser_sidebar_orders_and_filters_tags(chat_panel):
@@ -691,3 +775,11 @@ def test_a_passage_across_pages_gives_its_questions_all_its_pages(tmp_path):
     db.add_message(chat, "user", "Quiz me on this passage", [{"kind": "text", "page": 3, "text": "x", "rects": rects}])
     reply = db.add_message(chat, "assistant", "...")
     assert practice._asked_pages(db, reply) == (3, 5)
+
+
+def test_a_book_narrows_picks_rather_than_replacing_them(tmp_path):
+    db, book_id, chat, reply = setup(tmp_path)
+    practice.add_quiz_questions(db, book_id, reply, QUIZ, now=NOW)
+    other = db.upsert_book("h2", "/other.pdf", "Other", 3)["id"]
+    assert db.count_questions(book_id) > 0
+    assert db.count_questions(book_id, picks=[{"book": other, "section": None}]) == 0

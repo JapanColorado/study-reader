@@ -128,10 +128,10 @@ class AnkiImportDialog(QDialog):
             return
         finally:
             QApplication.restoreOverrideCursor()
-        self.parameters.setEnabled(self.collection.fsrs_enabled())
-        if not self.collection.fsrs_enabled():
-            self.parameters.setChecked(False)
-            self.parameters.setToolTip("FSRS is off in this Anki collection")
+        fsrs = self.collection.fsrs_enabled()  # the box follows the profile picked
+        self.parameters.setEnabled(fsrs)
+        self.parameters.setChecked(fsrs)
+        self.parameters.setToolTip("" if fsrs else "FSRS is off in this Anki collection")
         here = self._already_here()
         previous = set(self.db.get_setting(DECKS_SETTING, "").split())
         items: dict[str, QTreeWidgetItem] = {}
@@ -202,13 +202,6 @@ class AnkiImportDialog(QDialog):
     def chosen(self) -> list[int]:
         return [item.data(0, Qt.ItemDataRole.UserRole) for item in self._items()
                 if item.checkState(0) == Qt.CheckState.Checked]
-
-    def check_decks(self, names) -> None:
-        """Tick decks by full name (and their subdecks)."""
-        wanted = set(names)
-        for item in self._items():
-            if item.data(0, NAME_ROLE) in wanted:
-                item.setCheckState(0, Qt.CheckState.Checked)
 
     def _update_picked(self) -> None:
         decks = [i for i in self._items() if i.checkState(0) == Qt.CheckState.Checked]

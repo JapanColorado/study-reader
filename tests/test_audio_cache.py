@@ -3,14 +3,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
-import pymupdf
 import pytest
 import soundfile as sf
 
 from study_reader.audio_cache import RATE, AudioCache, render_speed, sentence_key, skip_silence, stretch, sync
-from study_reader.db import Database
 
-ASSETS = Path(__file__).parent.parent / "src" / "study_reader" / "assets"
 
 
 def _tone(seconds, freq=200.0):
@@ -65,6 +62,56 @@ def test_sync_copies_new_parts_and_skips_unfinished_ones(tmp_path):
     assert sync(src, dst) == 1 and sorted(p.name for p in dst.iterdir()) == ["part-0001.json", "part-0001.opus"]
     _part(dst, "part-a1b2c3-0000", {"Red fish.": 0.5})  # downloaded from a Colab VM, not on Drive
     assert sync(src, dst) == 0 and (dst / "part-a1b2c3-0000.json").exists()
+
+
+def test_sync_removes_an_index_before_replacing_its_audio(tmp_path, monkeypatch):
+    import os
+    import shutil
+
+    from study_reader import audio_cache
+
+    src, dst = tmp_path / "drive", tmp_path / "local"
+    _part(src, "part-0000", {"One fish.": 0.5})
+    sync(src, dst)
+    _part(src, "part-0000", {"Two fish.": 0.4, "One fish.": 0.5})  # the notebook made it again
+    for f in src.iterdir():
+        os.utime(f, (f.stat().st_mtime + 10,) * 2)
+    seen, real = [], shutil.copyfile
+
+    def copyfile(a, b):
+        if str(a).endswith(".opus"):
+            seen.append((dst / "part-0000.json").exists())
+        return real(a, b)
+
+    monkeypatch.setattr(audio_cache.shutil, "copyfile", copyfile)
+    assert sync(src, dst) == 1 and seen == [False]  # no old index pointing into the new audio
+    assert AudioCache(dst).has("af_heart", "Two fish.")
+
+
+def test_a_cache_takes_in_only_the_parts_that_changed(tmp_path, monkeypatch):
+    import os
+
+    from study_reader import tts_engines
+
+    _part(tmp_path, "part-aaaaaa-0000", {"One fish.": 0.3})
+    _part(tmp_path, "part-aaaaaa-0001", {"Two fish.": 0.3})
+    cache = AudioCache(tmp_path)
+    assert len(cache) == 2 and cache.get("af_heart", "One fish.", 1.0) is not None
+    _part(tmp_path, "part-aaaaaa-0002", {"Red fish.": 0.3})
+    (tmp_path / "part-aaaaaa-0001.json").unlink()
+    (tmp_path / "part-aaaaaa-0001.opus").unlink()
+    _part(tmp_path, "part-aaaaaa-0000", {"Blue fish.": 0.3})  # rewritten in place
+    os.utime(tmp_path / "part-aaaaaa-0000.json", ns=(1, 1))
+    read = []
+    real = Path.read_text
+    monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: read.append(self.name) or real(self, *a, **k))
+    same = tts_engines._cache_for(cache, str(tmp_path))
+    assert same is cache and sorted(read) == ["part-aaaaaa-0000.json", "part-aaaaaa-0002.json"]
+    assert {t for t in ("One fish.", "Two fish.", "Red fish.", "Blue fish.") if cache.has("af_heart", t)} == {
+        "Red fish.", "Blue fish."}
+    assert cache.get("af_heart", "Blue fish.", 1.0) is not None
+    assert tts_engines._cache_for(cache, str(tmp_path / "other")) is not cache
+    assert tts_engines._cache_for(cache, None) is None
 
 
 def test_stretch_keeps_pitch_and_scales_length():

@@ -72,13 +72,13 @@ def reading(db: Database, now: float | None = None, limit: int = READING_SHOWN) 
     return out
 
 
-def heat(db: Database, now: float | None = None, weeks: int = HEAT_WEEKS) -> dict:
+def heat(db: Database, now: float | None = None, weeks: int = HEAT_WEEKS, days: dict | None = None) -> dict:
     """Attempts per practice day over the last `weeks` weeks (as gamify's calendar), with the days
-    streak freezes covered when rewards are on."""
+    streak freezes covered when rewards are on. days: gamify.practice_days, if already read."""
     now = time.time() if now is None else now
     today = day_of(now)
     start = today - timedelta(days=weeks * 7 - 1)
-    days = gamify.practice_days(db)
+    days = gamify.practice_days(db) if days is None else days
     frozen = gamify.load(db, now)["frozen"] if gamify.enabled(db) else []
     return {
         "start": start.isoformat(), "end": today.isoformat(),
@@ -113,16 +113,17 @@ def greeting(now: float) -> str:
 def home(db: Database, now: float | None = None) -> dict:
     """Everything the Home page shows."""
     now = time.time() if now is None else now
-    c = practice.counts(db, None, now)
-    upcoming = practice.next_due(db, None, now)
-    game = gamify.status(db, now) if gamify.enabled(db) else None
+    c = practice.counts(db, now)
+    upcoming = practice.next_due(db, now)
+    days = gamify.practice_days(db)
+    game = gamify.status(db, now, days) if gamify.enabled(db) else None
     if game:
         game = {k: v for k, v in game.items() if k not in ("heat", "achievements")}
     return {
         "greeting": greeting(now),
         "date": datetime.fromtimestamp(now).strftime("%A, %-d %B"),
         **c,
-        "ready": practice.next_question(db, None, now) is not None,
+        "ready": practice.next_question(db, now) is not None,
         "next": f"in {practice.format_interval(upcoming - now)}" if upcoming else "",
         "new_per_day": practice.new_per_day(db),
         "quick": {"questions": gamify.QUICK_QUESTIONS, "minutes": gamify.QUICK_SECONDS // 60},
@@ -130,6 +131,6 @@ def home(db: Database, now: float | None = None) -> dict:
         "reading": reading(db, now),
         "books": db.conn.execute("SELECT COUNT(*) FROM books").fetchone()[0],
         "decks": deck_rows(db, now),
-        "heat": heat(db, now),
+        "heat": heat(db, now, days=days),
         "forecast": forecast(db, now),
     }

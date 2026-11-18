@@ -18,7 +18,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.Json
 
 // A port of py-fsrs 6.3.2 (the desktop's scheduler): Scheduler.review_card and
-// get_card_retrievability, and Card's JSON, which the desktop stores in cards.fsrs. Cards keep
+// get_card_retrievability, and Card's JSON, which the desktop stores in questions.fsrs. Cards keep
 // times as epoch microseconds (UTC), exact as py's datetimes are: a Double of epoch seconds stops
 // holding microseconds after 2106, within reach of long intervals. FsrsTest checks the port
 // against py-fsrs's own results (android/scripts/fsrs_fixtures.py).

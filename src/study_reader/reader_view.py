@@ -21,6 +21,7 @@ GAP = 14
 MARGIN = 16
 CROP_GAP = 6  # between pages when margins are cropped; the side margin is then 0
 CACHE_PAGES = 10
+RESIZE_SETTLE_MS = 150  # fit width: pages are drawn afresh once a resize has paused this long
 CAPTURE_SCALE = 2.0
 MIN_ZOOM, MAX_ZOOM = 0.4, 4.0
 
@@ -60,6 +61,7 @@ class ReaderView(QAbstractScrollArea):
     readRequested = Signal(object, bool)  # selected words by page; whether to read on past them
     speechClicked = Signal(int, float, float)  # a click while reading aloud: page, x, y
     escapePressed = Signal()  # Escape with nothing selected
+    contentBoxFound = Signal(object)  # the book's content box (or None), just worked out, for the caller to keep
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -69,17 +71,23 @@ class ReaderView(QAbstractScrollArea):
         self.fit_mode = True
         self.crop = False
         self._content_box: Rect | None = None
+        self._box_known = False  # _content_box worked out (or handed in): finding it renders pages
         self._clips: list[Rect] = []  # visible part of each page, in page points
         self._sizes: list[tuple[float, float]] = []  # size of each clip
         self._tops: list[float] = []
         self._total_h = 0.0
         self._max_w = 0.0
         self._cache: OrderedDict[tuple, QImage] = OrderedDict()
+        # While a fit-width resize is under way, pages already drawn are scaled instead of redrawn.
+        self._resize_timer = QTimer(self, singleShot=True, interval=RESIZE_SETTLE_MS)
+        self._resize_timer.timeout.connect(lambda: self.viewport().update())
         self._anchor: tuple[int, float, float] | None = None
         self._dragging = False
         self._selection: dict[int, list[Word]] = {}
         self._region: tuple[int, tuple[float, float, float, float]] | None = None
         self._flash: dict[int, list] | None = None  # page -> rects
+        self._flash_timer = QTimer(self, singleShot=True, interval=1800)
+        self._flash_timer.timeout.connect(self._end_flash)
         self._page = 0
         self._marks: dict[int, list[dict]] = {}  # page -> dict(kind, rects, pages, snippets, notes)
         self._hover: list[dict] = []
@@ -141,17 +149,21 @@ class ReaderView(QAbstractScrollArea):
 
     # -- document / layout -----------------------------------------------------
     def set_document(
-        self, doc: Document | None, page: int = 0, zoom: float | None = None, crop: bool = False
+        self, doc: Document | None, page: int = 0, zoom: float | None = None, crop: bool = False,
+        content_box: Rect | None | bool = False,
     ) -> None:
+        """content_box: the book's, as contentBoxFound gave it before (a box or None); False: not known."""
         self.doc = doc
         self._cache.clear()
         self._marks, self._hover, self._hover_link = {}, [], None
         self._back = []
         self._back_bar.hide()
         self._speech = None
+        self._flash = None
         self._find, self._find_current = {}, None
         self.clear_selection()
-        self._content_box = None
+        self._box_known = content_box is not False
+        self._content_box = tuple(content_box) if self._box_known and content_box else None
         self.crop = crop
         self._set_clips()
         # zoom <= 0 (or None) means "fit width", the default for new books.
@@ -164,8 +176,10 @@ class ReaderView(QAbstractScrollArea):
     def _set_clips(self) -> None:
         """Each page's visible rect: the whole page, or the book's content box when cropping."""
         n = self.doc.page_count if self.doc else 0
-        if self.crop and self._content_box is None and n:
+        if self.crop and not self._box_known and n:
             self._content_box = self.doc.content_box()
+            self._box_known = True
+            self.contentBoxFound.emit(self._content_box)
         box = self._content_box if self.crop else None
         self._clips = []
         for i in range(n):
@@ -248,7 +262,10 @@ class ReaderView(QAbstractScrollArea):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         if self.fit_mode and self._sizes:
-            self.set_zoom(self._fit_width_zoom(), keep_fit=True)
+            zoom = self._fit_width_zoom()
+            if self._tops and abs(zoom - self.zoom) >= 1e-3:
+                self._resize_timer.start()
+            self.set_zoom(zoom, keep_fit=True)
         self._update_scrollbars()
         self._place_back_bar()
 
@@ -507,7 +524,7 @@ class ReaderView(QAbstractScrollArea):
         self.go_to(page, min((r[1] for r in by_page.get(page, [])), default=0.0) or 0.001)
         self._flash = by_page
         self.viewport().update()
-        QTimer.singleShot(1800, self._end_flash)
+        self._flash_timer.start()  # restarted: an earlier flash's timer mustn't end this one early
 
     def _end_flash(self) -> None:
         self._flash = None
@@ -538,6 +555,11 @@ class ReaderView(QAbstractScrollArea):
         clip = self._clips[i] if self.crop else None
         key = (i, round(self.zoom, 3), dpr, clip, c and (c["page_bg"], c["page_fg"]))
         img = self._cache.get(key)
+        if img is None and self._resize_timer.isActive():
+            # Mid-resize: the page as drawn at another zoom, scaled by drawImage, until the resize settles.
+            stale = next((im for k, im in reversed(self._cache.items()) if k[0] == i and k[2:] == key[2:]), None)
+            if stale is not None:
+                return stale
         if img is None:
             pix = self.doc.render(i, self.zoom * dpr, clip=clip)
             samples, stride = pix.samples, pix.stride

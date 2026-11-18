@@ -25,7 +25,7 @@ if (SRC / "study_reader").is_dir():
     sys.path.insert(0, str(SRC))
 
 from study_reader import quiz  # noqa: E402
-from study_reader.calc_latex import LatexError, expr_to_latex, latex_to_expr  # noqa: E402
+from study_reader.calc_latex import LatexError, latex_to_expr  # noqa: E402
 from study_reader.calculator import CalcError, Calculator  # noqa: E402
 
 OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else ANDROID / "core/src/test/resources/grading_cases.json"
@@ -215,13 +215,6 @@ EXPRS = [
     "(-0.5) ** 10000.5", "(-589) ^ 1e3.5", "(-1.5) ** 1750.5", "(-1.5) ** 1751.5",
 ]
 
-EXPR_TO_LATEX = [
-    "2**10", "2 ** -3", "2^x", "x ** 2.5", "2 **(3)", "a**b**c", "50%", "10 % 3", "2***3", "x**  -y", "**2",
-    "2**-", "2 ** - 3", "sqrt(2) * sin(pi/4) + 3^10 % 7", "log10(100) + 2**10 // 3", "e**é", "2**_a", "1**.5",
-    "2**x²", "2^\u00a0x", "", "plain",
-]
-
-
 def enc(v: float):
     if math.isnan(v):
         return "nan"
@@ -359,10 +352,10 @@ def grade_cases() -> list[dict]:
               {"rating": 3.0}, {"rating": 3.5}, {"rating": True}, {"rating": False}, {"rating": "3"},
               {"rating": None}, {}, {"rating": [3]}, {"rating": {"a": 1}}, {"rating": -1}, {"rating": 2 ** 40}]:
         cases.append((self_check, r))
-    # Kinds graded elsewhere. (The old names flashcard and numeric are left out: Grading.kt reads them as
-    # self_check and calculation, which the desktop does before grading, when it parses a quiz.)
+    # Kinds graded elsewhere, and names that aren't kinds (the old ones among them: questions hold
+    # today's names, and quiz.py's parse reads the old ones before grading).
     for kind in ["short_answer", "fill_in", "image_labels", "both_ways", "written", "free", "cloze", "occlusion",
-                 "basic", "", 5, None]:
+                 "basic", "flashcard", "numeric", "", 5, None]:
         cases.append(({"type": kind, "question": "Why?", "answer": "Because"}, {"text": "x"}))
     cases.append(({"question": "no type"}, {"choice": 1}))
 
@@ -427,7 +420,6 @@ def main() -> None:
     data = {
         "latex": [latex_case(s) for s in dict.fromkeys(latex)],
         "compute": [{"expr": s, **computed(s)} for s in dict.fromkeys(exprs)],
-        "expr_to_latex": [{"expr": s, "latex": expr_to_latex(s)} for s in dict.fromkeys(EXPR_TO_LATEX + EXPRS)],
         "grade": grade_cases(),
         "expected_value": expected_cases(),
     }

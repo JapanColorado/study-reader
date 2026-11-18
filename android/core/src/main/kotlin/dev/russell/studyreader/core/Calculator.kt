@@ -27,7 +27,9 @@ object Calc {
     private const val MAX_PARSE_DEPTH = 1_000
     private const val MAX_EVAL_DEPTH = 2_000
     private const val MAX_FACTORS = 20_000L
-    private const val MAX_ROUND_DIGITS = 20_000
+
+    /** round(x, n) refuses more digits than this either way, as the desktop does. */
+    private const val MAX_ROUND_DIGITS = 1000L
 
     /** Value of an expression as a Double. Throws [CalcError] with the desktop's messages. */
     fun compute(expr: String): Double = try {
@@ -355,17 +357,28 @@ object Calc {
     )
     private val TRIG = setOf("sin", "cos", "tan")
     private val INVERSE_TRIG = setOf("asin", "acos", "atan", "atan2")
+    private val CALLABLE = FUNCTIONS + TRIG + INVERSE_TRIG
+    /** Function names, longest first (calculator.BY_LENGTH). */
+    private val BY_LENGTH = CALLABLE.sortedByDescending { it.length }
 
+    /** calculator.Calculator._lookup (with no variables, and no previous answer). */
     private fun lookup(name: String): Num {
         if (name == "ans") throw CalcError("No previous answer yet")
         CONSTANTS[name]?.let { return F(it) }
-        if (name.length > 1 && name.all { it == 'e' }) { // "ee" is e times e, as written in math
-            var p: Num = Q.int(1)
-            repeat(name.length) { p = mul(p, F(Math.E)) }
-            return p
-        }
-        if (name in FUNCTIONS || name in TRIG || name in INVERSE_TRIG) {
-            throw CalcError("'$name' is a function — try $name(…)")
+        if (name in CALLABLE) throw CalcError("'$name' is a function — try $name(…)") // sin is not s·i·n
+        if (name.length > 1) {
+            // sinx (from `sin x` too, as spaces are dropped) is sin(x): a function name, then what it is
+            // applied to, the longest name first (sinhx is sinh(x)).
+            val func = BY_LENGTH.firstOrNull { name.startsWith(it) && name.length > it.length }
+            if (func != null) {
+                val arg = try { lookup(name.substring(func.length)) } catch (_: CalcError) { null }
+                if (arg != null) return call(func, listOf(arg))
+            }
+            if (name.all { it == 'e' }) { // "ee" is e times e, as written in math (e is the one one-letter constant)
+                var p: Num = Q.int(1)
+                repeat(name.length) { p = mul(p, F(Math.E)) }
+                return p
+            }
         }
         throw CalcError("Unknown name '$name'")
     }
@@ -390,6 +403,8 @@ object Calc {
     }
 
     private fun call(name: String, args: List<Num>): Num {
+        // sin(), or `sin` in the math field with nothing after it
+        if (args.isEmpty() && name in CALLABLE) throw CalcError("'$name' needs a value — try $name(…)")
         if (name in TRIG) {
             if (args.size != 1) throw CalcError("$name takes one value")
             val v = math1(args[0], false) {
@@ -414,8 +429,9 @@ object Calc {
             "exp" -> math1(one(args), true, Math::exp)
             "ln", "log" -> {
                 if (args.isEmpty() || args.size > 2) wrongCount()
+                // log alone is base 10, as on a calculator's key; ln is the natural one
+                if (args.size == 1) return F(logOf(args[0], if (name == "log") LogKind.LOG10 else LogKind.LN))
                 val num = logOf(args[0], LogKind.LN)
-                if (args.size == 1) return F(num)
                 val den = logOf(args[1], LogKind.LN)
                 if (den == 0.0) zeroDiv()
                 F(num / den)
@@ -453,7 +469,7 @@ object Calc {
                 if (k.signum() < 0) valueError("k must be a non-negative integer")
                 if (k > n) return Q.int(0)
                 val m = k.min(n - k)
-                if (m.bitLength() > 31 || m.toLong() * n.bitLength() > MAX_FACTORS * 64) overflow()
+                if (m.bitLength() > 31 || m.toLong() * n.bitLength() > 40L * MAX_INT_BITS) overflow()  // calculator._comb
                 var r = BigInteger.ONE
                 for (i in 0 until m.toInt()) {
                     r = r * (n - BigInteger.valueOf(i.toLong())) / BigInteger.valueOf(i + 1L)
@@ -462,17 +478,13 @@ object Calc {
             }
             "perm" -> {
                 if (args.isEmpty() || args.size > 2) wrongCount()
+                if (args.size == 1) return factorial(args[0])  // calculator._perm
                 val n = index(args[0])
-                if (args.size == 1) {
-                    if (n.signum() < 0) valueError("factorial() not defined for negative values")
-                    if (n > BigInteger.valueOf(MAX_FACTORS / 4)) overflow()
-                    return Q.of(product(n, n.toInt()))
-                }
                 val k = index(args[1])
                 if (n.signum() < 0) valueError("n must be a non-negative integer")
                 if (k.signum() < 0) valueError("k must be a non-negative integer")
                 if (k > n) return Q.int(0)
-                if (k.bitLength() > 31 || k.toLong() * n.bitLength() > MAX_FACTORS * 64) overflow()
+                if (k.bitLength() > 31 || k.toLong() * n.bitLength() > 40L * MAX_INT_BITS) overflow()  // calculator._perm
                 Q.of(product(n, k.toInt()))
             }
             "hypot" -> {
@@ -686,57 +698,44 @@ object Calc {
         return Math.copySign(t, x)
     }
 
-    /** Python's round(x) and round(x, n) for ints, Fractions and floats. */
+    /** The calculator's round(x) and round(x, n) (calculator._round): halves away from zero, as taught at
+     *  school (Python's own round sends them to the even neighbour), floats by their exact value. */
     private fun round(args: List<Num>): Num {
         if (args.isEmpty() || args.size > 2) wrongCount()
         val x = args[0]
-        if (args.size == 1) {
+        val nd = args.getOrNull(1)
+        val digits = (nd as? Q)?.takeIf { it.isInt }?.n
+        if (digits != null && digits.abs() > BigInteger.valueOf(MAX_ROUND_DIGITS)) throw CalcError("That is too many digits to round to")
+        if (nd == null) {
             return when (x) {
-                is Q -> if (x.isInt) x else Q.of(roundHalfEven(x.n, x.d))
-                is F -> Q.of(toInt(Math.rint(x.v)))
+                is Q -> Q.of(halfAway(x.n, x.d))
+                is F -> if (x.v.isFinite()) Q.exact(x.v).let { Q.of(halfAway(it.n, it.d)) } else Q.of(toInt(x.v))
             }
         }
-        val nd = args[1]
-        when {
-            x is F -> {
-                val digits = index(nd)
+        if (digits == null) {  // Python's errors and oddities
+            if (x is F) index(nd)
+            return roundFraction(x as Q, nd)
+        }
+        val d = digits.toInt()
+        when (x) {
+            is F -> {
                 val v = x.v
-                if (!v.isFinite()) return x
-                if (digits > BigInteger.valueOf(323)) return x
-                if (digits < BigInteger.valueOf(-308)) return F(0.0 * v)
-                val r = BigDecimal(v).setScale(digits.toInt(), RoundingMode.HALF_EVEN).toString().toDouble()
+                if (!v.isFinite() || d > 323) return x
+                if (d < -308) return F(0.0 * v)
+                // The exact value rounded, then the nearest double; past the double range it is too large
+                val r = BigDecimal(v).setScale(d, RoundingMode.HALF_UP).toString().toDouble()
                 if (r.isInfinite()) overflow()
                 return F(if (r == 0.0) Math.copySign(0.0, v) else r)
             }
-            x is Q && x.isInt -> {
-                val digits = index(nd)
-                if (digits.signum() >= 0) return x
-                val m = digits.negate()
-                // 10^m beyond twice |x| rounds everything to 0
-                if (m > BigInteger.valueOf(x.n.abs().toString().length + 1L)) return Q.int(0)
-                val p = BigInteger.TEN.pow(m.toInt())
-                return Q.of(roundHalfEven(x.n, p) * p)
+            is Q -> {
+                val p = BigInteger.TEN.pow(abs(d))
+                return if (d >= 0) Q.of(halfAway(x.n * p, x.d), p) else Q.of(halfAway(x.n, x.d * p) * p)
             }
-            x is Q -> return roundFraction(x, nd)
         }
-        throw IllegalStateException()
     }
 
-    /** Fraction.__round__(ndigits) */
+    /** Fraction.__round__(ndigits) for an ndigits that isn't a whole number. */
     private fun roundFraction(x: Q, nd: Num): Num {
-        if (nd is Q && nd.isInt) {
-            val digits = nd.n
-            if (digits.abs() > BigInteger.valueOf(MAX_ROUND_DIGITS.toLong())) {
-                if (digits.signum() < 0) return Q.int(0)
-                throw CalcError("Result is too large")
-            }
-            val shift = BigInteger.TEN.pow(digits.abs().toInt())
-            return if (digits.signum() > 0) {
-                Q.of(roundHalfEven(x.n * shift, x.d), shift)
-            } else {
-                Q.of(roundHalfEven(x.n, x.d * shift) * shift)
-            }
-        }
         // A non-integer ndigits: shift = 10 ** abs(ndigits) is a float.
         val ndv = nd.float()
         val shift = floatPow(10.0, abs(ndv))
@@ -749,16 +748,10 @@ object Calc {
         return Q.exact(v)
     }
 
-    private fun roundHalfEven(n: BigInteger, d: BigInteger): BigInteger {
-        val fl = floorDiv(n, d)
-        val rem = n - fl * d
-        val twice = rem.shiftLeft(1)
-        return when {
-            twice < d -> fl
-            twice > d -> fl + BigInteger.ONE
-            !fl.testBit(0) -> fl
-            else -> fl + BigInteger.ONE
-        }
+    /** n / d (d > 0) to the nearest whole number, halves away from zero (calculator._half_away). */
+    private fun halfAway(n: BigInteger, d: BigInteger): BigInteger {
+        val whole = floorDiv(n.abs().shiftLeft(1) + d, d.shiftLeft(1))
+        return if (n.signum() < 0) whole.negate() else whole
     }
 
     // -- parsing (Python's expression grammar) --------------------------------------------------

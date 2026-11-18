@@ -142,3 +142,29 @@ def test_old_achievement_ids_are_read_as_the_new_ones(tmp_path):
     assert gamify.achievement_key("reviews_10000") == "attempts_10000" and gamify.achievement_key("first") == "first"
     status = {a["id"]: a["unlocked"] for a in gamify.status(db, NOW)["achievements"]}
     assert status["attempts_100"] and status["attempts_1000"] and not status["attempts_10000"]
+
+
+def test_practice_days_match_day_of_across_clock_changes(db, monkeypatch):
+    import collections
+    import time
+    from datetime import datetime
+
+    from study_reader import stats
+
+    group = db.add_question_group("self_check", {"front": "Q", "back": "A"}, db.ensure_deck("D"), now=NOW)
+    (q,) = db.group_questions(group)
+    monkeypatch.setenv("TZ", "XST5XDT,M3.2.0/4:30,M11.1.0/4:30")  # clocks change across the 4 am rollover
+    time.tzset()
+    try:
+        start = datetime(2026, 3, 1, 4).timestamp()
+        moments = [s + d for _, s, _, _ in stats.day_spans(start, start + 300 * DAY)[::3]
+                   for d in (-3601, -1800, -0.0004, 0, 1800, 3601)]
+        for t in moments:
+            db.record_attempt(q["id"], 3, "practice", "", None, t, 0)
+        expected = collections.Counter(stats.day_of(t) for t in moments)
+        assert gamify.practice_days(db) == expected
+        day = stats.day_of(moments[40])
+        assert gamify._attempts_on(db, day) == expected[day]
+    finally:
+        monkeypatch.undo()
+        time.tzset()

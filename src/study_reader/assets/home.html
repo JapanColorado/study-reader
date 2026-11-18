@@ -153,6 +153,14 @@ function readingHtml(d) {
   }).join("") + `</div>`;
 }
 
+// A cover drawn after the page was shown (HomeView draws missing ones a turn at a time).
+function setCover(id, url) {
+  const b = DATA && DATA.reading.find(b => b.id === id);
+  if (b) b.cover = url;
+  const el = document.querySelector(`.book[data-book="${id}"] .cover`);
+  if (el) { el.style.backgroundImage = `url('${url}')`; el.textContent = ""; }
+}
+
 function decksHtml(d) {
   let html = `<div class="panel-head"><h2>Decks</h2><span class="grow"></span><a href="#" data-act="go" data-page="questions">Browse questions →</a></div>`;
   if (!d.decks.length) return html + `<div class="muted">Your decks show here once you have questions. Each book's questions also have a deck of their own.</div>`;

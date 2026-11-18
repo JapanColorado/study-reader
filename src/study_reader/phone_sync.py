@@ -34,10 +34,12 @@ Batches in format 1, from phones not yet updated, are read too: their events say
 
 Attempts are replayed through FSRS at the time they happened. An attempt older than the
 question's last one (it was also practiced here meanwhile) rebuilds the question's schedule from
-its whole attempt log in time order. Applied events are remembered by id (phone_events), so a
-batch read twice changes nothing. The snapshot lists the batches it already reflects (its acks
-table); the phone then deletes those files and replays only its newer events on top of the
-snapshot.
+its whole attempt log in time order. A batch is applied whole or not at all. Applied events are
+remembered by id (phone_events), so a batch read twice, or an event sent again in a later batch,
+changes nothing. They are kept for good: the phone sends an event again when it couldn't record
+that its file was written, and nothing tells the desktop when that can no longer happen. The
+snapshot lists the batches it already reflects (its acks table); the phone then deletes those
+files and replays only its newer events on top of the snapshot.
 """
 
 from __future__ import annotations
@@ -49,6 +51,7 @@ import shutil
 import sqlite3
 import time
 import uuid
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -120,15 +123,31 @@ def folder(db: Database) -> Path | None:
     return Path(raw) if raw else None
 
 
-def sync(db: Database, root: Path, now: float | None = None, force: bool = False) -> Result:
-    """Apply what the phones sent, then write a new snapshot if anything changed (or force)."""
+@dataclass
+class Export:
+    """A snapshot to write: what it needs from the settings and the folder, read on the database's
+    own thread (plan_export), so that write_snapshot can copy the rest from any connection."""
+    root: Path
+    now: float
+    fingerprint: str  # of what it is made from, stored once it is written (finish_export)
+    settings: list[tuple[str, str]]
+    variants: bool  # new versions of questions are on (variants.ENABLED_SETTING)
+    acks: list[tuple[str, str]]
+
+
+def sync(db: Database, root: Path, now: float | None = None, force: bool = False, write=None) -> Result:
+    """Apply what the phones sent, then write a new snapshot if anything changed (or force).
+    write: called with the snapshot's plan (an Export) instead of writing it here, to write it on
+    another thread (write_snapshot_apart, then finish_export back here)."""
     now = time.time() if now is None else now
     result = import_batches(db, root)
-    fingerprint = _fingerprint(db, root)
-    if force or result.batches or fingerprint != db.get_setting(FINGERPRINT_SETTING) \
-            or not (root / SNAPSHOT).exists():
-        export_snapshot(db, root, now)
-        db.set_setting(FINGERPRINT_SETTING, _fingerprint(db, root))
+    plan = plan_export(db, root, now, force=force or bool(result.batches))
+    if plan is not None:
+        if write is None:
+            write_snapshot(db.conn, plan)
+            finish_export(db, plan)
+        else:
+            write(plan)
         result.exported = True
     db.set_setting(LAST_SYNC_SETTING, str(now))
     return result
@@ -156,30 +175,59 @@ def import_batches(db: Database, root: Path) -> Result:
             continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("not a batch")
             if data.get("format") not in FORMATS or not isinstance(data.get("events"), list):
                 raise ValueError(f"unknown format {data.get('format')!r}")
         except (OSError, ValueError) as e:  # half-synced, most likely: read it next time
             result.errors.append(f"{device}/{path.name}: {e}")
             continue
         events = sorted((_current(e) for e in data["events"] if isinstance(e, dict) and e.get("id")),
-                        key=lambda e: (float(e.get("at") or 0), str(e["id"])))
-        with db.conn:
-            seen = {r[0] for r in db.conn.execute("SELECT id FROM phone_events WHERE device=?", (device,))}
+                        key=lambda e: (_at(e), str(e["id"])))
+        applied, attempted, errors = 0, [], []
+        # A batch is applied whole or not at all (and then read again next time): its events, the
+        # record of them and of the batch are one transaction.
+        with db.transaction():
+            seen = _applied_events(db, [str(e["id"]) for e in events])
             for event in events:
-                if event["id"] in seen:
+                if str(event["id"]) in seen:
                     continue
+                seen.add(str(event["id"]))
                 try:
-                    if apply_event(db, event) and event.get("type") == "attempt":
-                        result.attempted.append(int(event["question"]))
+                    with db.conn:  # a savepoint: an event that fails leaves nothing behind
+                        if apply_event(db, event) and event.get("type") == "attempt":
+                            attempted.append(int(event["question"]))
                 except (KeyError, TypeError, ValueError) as e:
-                    result.errors.append(f"{device}/{path.name}: event {event['id']}: {e}")
+                    errors.append(f"{device}/{path.name}: event {event['id']}: {e}")
                 db.conn.execute("INSERT OR IGNORE INTO phone_events (id, device, applied_at) VALUES (?,?,?)",
-                                (event["id"], device, time.time()))
-                result.applied += 1
+                                (str(event["id"]), device, time.time()))
+                applied += 1
             db.conn.execute("INSERT OR IGNORE INTO phone_batches (device, batch, applied_at) VALUES (?,?,?)",
                             (device, batch, time.time()))
+        result.applied += applied
+        result.attempted += attempted
+        result.errors += errors
         result.batches += 1
     return result
+
+
+def _applied_events(db: Database, ids: list[str]) -> set[str]:
+    """Which of these event ids were applied already (from any batch)."""
+    seen: set[str] = set()
+    for i in range(0, len(ids), 900):
+        chunk = ids[i:i + 900]
+        seen.update(r[0] for r in db.conn.execute(
+            f"SELECT id FROM phone_events WHERE id IN ({','.join('?' * len(chunk))})", chunk))
+    return seen
+
+
+def _at(e: dict) -> float:
+    """An event's time, for putting a batch in order (0 for one without a usable time, which
+    apply_event then turns down by itself)."""
+    try:
+        return float(e.get("at") or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _current(e: dict) -> dict:
@@ -225,12 +273,30 @@ def apply_attempt(db: Database, question, rating: int, at: float, response: dict
         return
     # Practiced here too, after the phone's attempt: put the phone's in the log, then replay the log.
     db.record_attempt(question["id"], rating, "practice", json.dumps(response) if response else "", verdict, at,
-                      duration, was_new=new)
+                      duration, was_new=_introduced(db, question["id"], at, new))
     if not rebuild(db, question["id"]):
         # Nothing to replay from (history from Anki, say): schedule it as if attempted with the last one.
         fsrs_card, _ = practice.scheduler(db).review_card(practice._fsrs_card(question, at), Rating(rating),
                                                           practice.dt(question["last_attempt"]))
         db.update_question(question["id"], **practice.schedule_columns(fsrs_card), reps=question["reps"] + 1)
+
+
+def _introduced(db: Database, question_id: int, at: float, new: bool) -> bool:
+    """Whether a phone attempt at `at`, older than the question's last attempt here, introduced the
+    question (attempts.was_new: its first attempt, or its first after a Forget), so that an
+    introduction is marked once: the first attempt in the log always is one, and an attempt the
+    phone made while the question was new in its copy (forgotten here before) is one if the next
+    attempt here was. That next attempt then loses its mark."""
+    earlier = db.conn.execute("SELECT 1 FROM attempts WHERE question_id=? AND attempted_at<=? LIMIT 1",
+                              (question_id, at)).fetchone()
+    after = db.conn.execute("SELECT id, was_new FROM attempts WHERE question_id=? AND attempted_at>? "
+                            "ORDER BY attempted_at, id LIMIT 1", (question_id, at)).fetchone()
+    if earlier is not None and not (new and after is not None and after["was_new"]):
+        return False
+    if after is not None and after["was_new"]:
+        with db.conn:
+            db.conn.execute("UPDATE attempts SET was_new=0 WHERE id=?", (after["id"],))
+    return True
 
 
 def rebuild(db: Database, question_id: int) -> bool:
@@ -333,46 +399,86 @@ def _media_listing() -> list:
     return sorted((f.name, f.stat().st_size, int(f.stat().st_mtime)) for f in d.iterdir() if f.is_file())
 
 
-def export_snapshot(db: Database, root: Path, now: float | None = None) -> Path:
-    """Write the snapshot for the phone (and mirror the media)."""
+def plan_export(db: Database, root: Path, now: float | None = None, force: bool = False) -> Export | None:
+    """The snapshot to write, if one is due: something it holds changed since the last one, there
+    is none in the folder, or force."""
     now = time.time() if now is None else now
-    out = root / SNAPSHOT
+    gamify.load(db, now)  # made from the log the first time, so the phone starts from the same state
+    fingerprint = _fingerprint(db, root)
+    if not force and fingerprint == db.get_setting(FINGERPRINT_SETTING) and (root / SNAPSHOT).exists():
+        return None
+    return Export(root, now, fingerprint, [(k, db.get_setting(k)) for k in SETTINGS if db.get_setting(k) != ""],
+                  variants.enabled(db), _acks(db, root))
+
+
+def finish_export(db: Database, plan: Export) -> None:
+    """Remember what the written snapshot was made from. (What changed while it was being
+    written shows as a change next time.)"""
+    db.set_setting(FINGERPRINT_SETTING, plan.fingerprint)
+
+
+def export_snapshot(db: Database, root: Path, now: float | None = None) -> Path:
+    """Write the snapshot for the phone (and mirror the media), whether or not anything changed."""
+    return write_snapshot(db.conn, plan_export(db, root, now, force=True))
+
+
+def write_snapshot_apart(db_path: str, plan: Export) -> Path:
+    """write_snapshot for a thread of its own: it reads the database through a read-only
+    connection of its own, in one read transaction, so the tables it copies agree with each other
+    while the app goes on writing (the database is in WAL mode)."""
+    conn = sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("BEGIN")
+        return write_snapshot(conn, plan)
+    finally:
+        conn.close()
+
+
+def write_snapshot(conn: sqlite3.Connection, plan: Export) -> Path:
+    """Write the snapshot plan_export planned, from the database connection given (and mirror
+    the media)."""
+    out = plan.root / SNAPSHOT
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(f"{TEMP_PREFIX}{out.name}.{uuid.uuid4().hex[:8]}.tmp")
-    snap = sqlite3.connect(tmp)
     try:
-        snap.executescript(SNAPSHOT_SCHEMA)
-        meta = {"format": SNAPSHOT_FORMAT, "schema": SNAPSHOT_VERSION, "id": uuid.uuid4().hex, "made_at": now,
-                "day_starts_at_hour": practice.DAY_STARTS_AT_HOUR}
-        snap.executemany("INSERT INTO meta VALUES (?,?)", [(k, str(v)) for k, v in meta.items()])
-        snap.executemany("INSERT INTO decks VALUES (?,?)", db.conn.execute("SELECT id, name FROM decks"))
-        books = db.conn.execute("SELECT id, title, toc, deck_id FROM books").fetchall()
-        snap.executemany("INSERT INTO books VALUES (?,?,?,?)",
-                         [(b["id"], b["title"], practice.section_root(b), b["deck_id"]) for b in books])
-        snap.executemany("INSERT INTO section_starts VALUES (?,?,?)", [
-            (b["id"], tag, page) for b in books
-            for tag, page in practice._section_starts(practice.section_root(b), b["toc"]).items()
-        ])
-        snap.executemany("INSERT INTO question_groups VALUES (?,?,?)",
-                         db.conn.execute("SELECT id, kind, tags FROM question_groups"))
-        cols = ", ".join(QUESTION_COLUMNS)
-        # With new versions turned off (variants.ENABLED_SETTING) the phone shows the questions as written.
-        shown = cols.replace("variant", "variant" if variants.enabled(db) else "'' AS variant")
-        snap.executemany(f"INSERT INTO questions ({cols}) VALUES ({', '.join('?' * len(QUESTION_COLUMNS))})",
-                         db.conn.execute(f"SELECT {shown} FROM questions"))
-        snap.executemany("INSERT INTO attempts VALUES (?,?,?,?,?,?,?)", db.conn.execute(
-            "SELECT id, question_id, rating, source, attempted_at, duration, was_new FROM attempts"))
-        gamify.load(db, now)  # made from the log the first time, so the phone starts from the same state
-        snap.executemany("INSERT INTO settings VALUES (?,?)",
-                         [(k, db.get_setting(k)) for k in SETTINGS if db.get_setting(k) != ""])
-        snap.executemany("INSERT INTO acks VALUES (?,?)", _acks(db, root))
-        snap.executescript(SNAPSHOT_INDEXES)
-        snap.commit()
-    finally:
-        snap.close()
-    os.replace(tmp, out)
-    mirror_media(root)
+        with closing(sqlite3.connect(tmp)) as snap:
+            _fill_snapshot(snap, conn, plan)
+        os.replace(tmp, out)
+    except BaseException:  # never leave a half-written copy behind
+        for leftover in (tmp, tmp.with_name(tmp.name + "-journal")):
+            leftover.unlink(missing_ok=True)
+        raise
+    mirror_media(plan.root)
     return out
+
+
+def _fill_snapshot(snap: sqlite3.Connection, conn: sqlite3.Connection, plan: Export) -> None:
+    snap.executescript(SNAPSHOT_SCHEMA)
+    meta = {"format": SNAPSHOT_FORMAT, "schema": SNAPSHOT_VERSION, "id": uuid.uuid4().hex, "made_at": plan.now,
+            "day_starts_at_hour": practice.DAY_STARTS_AT_HOUR}
+    snap.executemany("INSERT INTO meta VALUES (?,?)", [(k, str(v)) for k, v in meta.items()])
+    snap.executemany("INSERT INTO decks VALUES (?,?)", conn.execute("SELECT id, name FROM decks"))
+    books = conn.execute("SELECT id, title, toc, deck_id FROM books").fetchall()
+    snap.executemany("INSERT INTO books VALUES (?,?,?,?)",
+                     [(b["id"], b["title"], practice.section_root(b), b["deck_id"]) for b in books])
+    snap.executemany("INSERT INTO section_starts VALUES (?,?,?)", [
+        (b["id"], tag, page) for b in books
+        for tag, page in practice._section_starts(practice.section_root(b), b["toc"]).items()
+    ])
+    snap.executemany("INSERT INTO question_groups VALUES (?,?,?)",
+                     conn.execute("SELECT id, kind, tags FROM question_groups"))
+    cols = ", ".join(QUESTION_COLUMNS)
+    # With new versions turned off (variants.ENABLED_SETTING) the phone shows the questions as written.
+    shown = cols.replace("variant", "variant" if plan.variants else "'' AS variant")
+    snap.executemany(f"INSERT INTO questions ({cols}) VALUES ({', '.join('?' * len(QUESTION_COLUMNS))})",
+                     conn.execute(f"SELECT {shown} FROM questions"))
+    snap.executemany("INSERT INTO attempts VALUES (?,?,?,?,?,?,?)", conn.execute(
+        "SELECT id, question_id, rating, source, attempted_at, duration, was_new FROM attempts"))
+    snap.executemany("INSERT INTO settings VALUES (?,?)", plan.settings)
+    snap.executemany("INSERT INTO acks VALUES (?,?)", plan.acks)
+    snap.executescript(SNAPSHOT_INDEXES)
+    snap.commit()
 
 
 def mirror_media(root: Path) -> int:

@@ -36,10 +36,12 @@ INPUT_LINES = (2, 10)  # composer height range, in lines
 class ChatHub:
     """What the chat panels share: the replies on their way (chat id -> text so far) and the panel
     that asked for each, which alone handles its events, so a chat open in both panels streams once,
-    is saved once, and can't be sent to twice at the same time."""
+    is saved once, and can't be sent to twice at the same time; and the short answers being graded,
+    so neither panel takes the other's for one that was interrupted or grades it again."""
 
     def __init__(self):
         self.streams: dict[int, str] = {}
+        self.grading: dict[int, int] = {}  # quiz answer id -> its message id, while Claude grades it
         self.owners: dict[int, ChatPanel] = {}
         self.panels: list[ChatPanel] = []
 
@@ -104,7 +106,7 @@ class ChatPanel(QWidget):
         # A Quiz me request drafted in the composer, sent (with whatever the user adds) by the next send.
         self._quiz: dict | None = None
         self._draft_model = self.default_model()  # for the chat the next send creates
-        self._grading: dict[int, int] = {}  # quiz answer id -> its message id, while Claude grades it
+        self._grading = self.hub.grading
 
         self.model = QComboBox()
         for label, value in MODELS:
@@ -608,6 +610,7 @@ class ChatPanel(QWidget):
         self._restore_draft()
         self._refresh_list()
         self._refresh_transcript()
+        self._changed(self.chat_id)
         if snippets:
             self.highlightsChanged.emit()
 
@@ -635,6 +638,7 @@ class ChatPanel(QWidget):
         self._ask(text, [], messages, branch=False)
         self._refresh_list()
         self._refresh_transcript()
+        self._changed(self.chat_id)
 
     def pending_snippets(self) -> list[dict]:
         """Snippets waiting in the composer, not yet saved with a message."""
@@ -667,6 +671,10 @@ class ChatPanel(QWidget):
             if chat_id == self.chat_id:
                 self.cancel_edit()
                 self.cancel_quiz()
+            if chat_id in self.hub.owners:  # its reply is on the way: nothing would keep it
+                self.worker.stop(chat_id)
+                self.hub.streams.pop(chat_id, None)
+                self.hub.owners.pop(chat_id, None)
             self.db.delete_chat(chat_id)
             if chat_id == self.chat_id:
                 self.chat_id = None
@@ -772,6 +780,7 @@ class ChatPanel(QWidget):
         self.questionsChanged.emit()
         self._ask(message["text"], message["snippets"], messages[:asked], branch=True)
         self._refresh_transcript()
+        self._changed(self.chat_id)
 
     def _ask(
         self, text: str, snippets: list[dict], prior: list[dict], branch: bool, page: int | None = None
@@ -925,26 +934,34 @@ class ChatPanel(QWidget):
             self.db, message_id, row["quiz"], row["question"], fields["verdict"], json.loads(row["response"])
         ):
             self._first_attempt(message_id, row["quiz"], row["question"])
-        message = self.db.message(message_id)
-        if message is not None and message["chat_id"] == self.chat_id:
+        if self.db.message(message_id) is not None:
             self._update_quiz(message_id, row["quiz"])
 
     def _update_quiz(self, message_id: int, index: int) -> None:
+        """Redraw one quiz in every panel showing its chat."""
         message = self.db.message(message_id)
+        panels = [p for p in self.hub.panels if p.chat_id == message["chat_id"]]
+        if not panels:
+            return
         rows = self.db.quiz_answers(message["chat_id"]).get(message_id, [])
-        revised = self._revisions(self.db.messages(message["chat_id"]))
-        self.transcript.update_quiz(message_id, index, self._quiz_view(
-            quiz.quizzes(message["text"])[index], index, rows, message_id, revised.get((message_id, index))))
+        messages = self.db.messages(message["chat_id"])
+        parsed = {m["id"]: quiz.quizzes(m["text"]) for m in messages if m["role"] == "assistant"}
+        revised = self._revisions(messages, parsed)
+        quizzes = parsed.get(message_id) or quiz.quizzes(message["text"])
+        view = self._quiz_view(quizzes[index], index, rows, message_id, revised.get((message_id, index)))
+        for p in panels:
+            p.transcript.update_quiz(message_id, index, view)
 
     @staticmethod
-    def _revisions(messages) -> dict[tuple[int, int], int]:
-        """{(message id, quiz index): id of the reply whose quiz revises it}, latest revision winning."""
+    def _revisions(messages, parsed: dict[int, list[dict]] | None = None) -> dict[tuple[int, int], int]:
+        """{(message id, quiz index): id of the reply whose quiz revises it}, latest revision winning.
+        parsed: each reply's quizzes by message id, when the caller has already read them."""
         earlier: list[tuple[int, int, dict]] = []
         out = {}
         for m in messages:
             if m["role"] != "assistant":
                 continue
-            quizzes = quiz.quizzes(m["text"])
+            quizzes = parsed[m["id"]] if parsed is not None and m["id"] in parsed else quiz.quizzes(m["text"])
             for q in quizzes:
                 if q.get("revises") and (old := quiz.revised_quiz(earlier, q["revises"])):
                     out[old] = m["id"]
@@ -1079,8 +1096,11 @@ class ChatPanel(QWidget):
             self._finish(chat_id, "error", f"Claude request failed: {message}")
 
     def _on_base(self, book_id: int, session_id: str, mode: str) -> None:
+        if self is not self.hub.panels[0]:  # every panel hears it: the first saves it, once, for them all
+            return
         self.db.update_book(book_id, base_session_id=session_id or None, context_mode=mode)
-        self._refresh_status()
+        for p in self.hub.panels:
+            p._refresh_status()
 
     def _on_status(self, book_id: int, text: str) -> None:
         if book_id == self.book_id:
@@ -1120,10 +1140,11 @@ class ChatPanel(QWidget):
     def _refresh_transcript(self) -> None:
         messages = self.db.messages(self.chat_id) if self.chat_id is not None else []
         answers = self.db.quiz_answers(self.chat_id) if messages else {}
-        revised = self._revisions(messages)
+        split = {m["id"]: quiz.split(m["text"]) for m in messages if m["role"] == "assistant"}  # each reply read once
+        revised = self._revisions(messages, {k: quizzes for k, (_, quizzes) in split.items()})
         for m in messages:
             if m["role"] == "assistant":
-                m["text"], quizzes = quiz.split(m["text"])
+                m["text"], quizzes = split[m["id"]]
                 m["quizzes"] = [self._quiz_view(q, i, answers.get(m["id"], []), m["id"], revised.get((m["id"], i)))
                                 for i, q in enumerate(quizzes)]
         if self.practice:

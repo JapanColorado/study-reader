@@ -92,6 +92,21 @@ def test_old_database_gets_chat_model_column(tmp_path):
     assert db.book(1)["crop_margins"] == 0
     assert (db.book(1)["show_toc"], db.book(1)["right_panel"], db.book(1)["show_chat_list"]) == (1, "chat", 1)
     assert db.book(1)["finished_at"] is None
+    assert db.book(1)["deck_id"] is None
+
+
+def test_fresh_database_needs_no_migration(tmp_path, monkeypatch):
+    """SCHEMA has every column: the ALTER steps in _migrate are only for older databases."""
+    statements = []
+    rename = Database._rename_old_schema
+
+    def traced(self):
+        self.conn.set_trace_callback(statements.append)
+        rename(self)
+
+    monkeypatch.setattr(Database, "_rename_old_schema", traced)
+    Database(tmp_path / "t.db")
+    assert not [s for s in statements if s.lstrip().upper().startswith("ALTER")]
 
 
 
@@ -459,6 +474,13 @@ def test_transcript_navigation_routes_links_and_confines_visualizations(monkeypa
     assert not nav(page, QUrl("https://example.com/leak"), scripted, False)
     assert not nav(page, QUrl("https://example.com/doc"), clicked, False)
     assert len(emitted) == 7 and opened == ["https://example.com/doc"]
+    # The transcript itself loads (and may follow a #fragment in it); no other link replaces it.
+    assert nav(page, tv.TRANSCRIPT, scripted, True)
+    assert nav(page, QUrl(tv.TRANSCRIPT.toString() + "#part-2"), clicked, True)
+    assert not nav(page, tv.TRANSCRIPT.resolved(QUrl("notes.html")), clicked, True)  # a relative link
+    assert not nav(page, QUrl("file:///etc/passwd"), clicked, True)
+    assert not nav(page, QUrl("ftp://example.com/file"), clicked, True)
+    assert len(emitted) == 7 and opened == ["https://example.com/doc"]
 
 
 def test_visualization_window_navigation_toggles_full_screen_only_from_its_toolbar(monkeypatch):
@@ -718,3 +740,62 @@ def test_darken_page_keeps_hue():
     px = [tuple(out[i:i + 3]) for i in range(0, 12, 3)]
     assert px[0] == (0x20, 0x1E, 0x1C) and px[1] == (0xDC, 0xD7, 0xCE)
     assert px[2][2] > px[2][0] and px[3][0] > px[3][2]  # blue stays blue, orange stays orange
+
+
+def test_fit_width_resizes_scale_pages_until_the_resize_settles(pdf_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+    from study_reader import reader_view
+    from study_reader.reader_view import ReaderView
+
+    QApplication.instance() or QApplication([])
+    view = ReaderView()
+    view.resize(600, 400)
+    view.show()
+    doc = Document(pdf_path)
+    view.set_document(doc)
+    view.grab()  # draws the pages at this width
+    renders = []
+    real = doc.render
+    monkeypatch.setattr(doc, "render", lambda *a, **k: (renders.append(a), real(*a, **k))[1])
+    zoom = view.zoom
+    for width in (620, 640, 660):  # a splitter being dragged
+        view.resize(width, 400)
+        view.grab()
+    assert view.zoom > zoom and view.fit_mode and renders == []  # the pages drawn already, scaled
+    QTest.qWait(reader_view.RESIZE_SETTLE_MS + 100)
+    view.grab()
+    assert renders and all(abs(a[1] - view.zoom * view.devicePixelRatioF()) < 1e-9 for a in renders)
+
+
+def test_reading_position_and_content_box_are_written_once(pdf_path, tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("STUDY_READER_DATA", str(tmp_path / "data"))
+    from PySide6.QtWidgets import QApplication
+    from study_reader.db import Database
+    from study_reader.main_window import MainWindow
+
+    QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "t.db")
+    win = MainWindow(db)
+    win.show()
+    win.open_book(pdf_path)
+    writes = []
+    real = db.update_book
+    monkeypatch.setattr(db, "update_book", lambda book_id, **kw: (writes.append(kw), real(book_id, **kw)))
+    win._save_position()
+    win._save_position()  # the 10 s timer, with nothing changed
+    win.reader.go_to(2)
+    win._save_position()
+    assert [w.get("last_page") for w in writes if "last_page" in w] == [0, 2]
+
+    # Cropping margins finds the content box once per book (rendering pages); reopening reuses it.
+    win.crop_action.trigger()
+    box = win.reader._content_box
+    assert box and win.reader.crop
+    win.close_book()
+    monkeypatch.setattr(Document, "content_box", lambda self: pytest.fail("the content box was found again"))
+    win.open_book(pdf_path)
+    assert win.reader.crop and win.reader._content_box == pytest.approx(box)
+    win.close()

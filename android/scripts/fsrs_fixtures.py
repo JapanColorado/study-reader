@@ -2,7 +2,7 @@
 on random review sequences, for FsrsTest to check the Kotlin port against.
 
 Run with the desktop's Python, which has fsrs installed:
-    ../.pixi/envs/default/bin/python scripts/fsrs_fixtures.py      (from android/)
+    ../.pixi/envs/default/bin/python scripts/fsrs_fixtures.py [out.json]      (from android/)
 
 Times are integer microseconds since the epoch (UTC), as py-fsrs keeps them. Sequences with
 fuzzing on record the random() draws each review made, so the Kotlin side can replay them.
@@ -26,9 +26,9 @@ from fsrs import Card, Rating, Scheduler, State
 HERE = Path(__file__).resolve().parent
 # The desktop app's source (STUDY_READER_SRC overrides, for a copy of android/ elsewhere).
 sys.path.insert(0, os.environ.get("STUDY_READER_SRC", str(HERE.parent.parent / "src")))
-from study_reader.srs import fsrs6_parameters  # noqa: E402
+from study_reader.practice import fsrs6_parameters  # noqa: E402
 
-OUT = HERE.parent / "core" / "src" / "test" / "resources" / "fsrs_cases.json"
+OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE.parent / "core" / "src" / "test" / "resources" / "fsrs_cases.json"
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 SECOND = 1_000_000
 DAY = 86400 * SECOND

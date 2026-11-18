@@ -440,6 +440,7 @@ class MakeWindow(QWidget):
         self._throttle = QTimer(self, singleShot=True, interval=1000)
         self._throttle.timeout.connect(self._throttle_over)
         self._stale = False
+        self._shown: dict | None = None  # the draft as last sent to the page (showDraft)
         maker.changed.connect(self._changed)
 
     def _models(self) -> QComboBox:
@@ -572,7 +573,7 @@ class MakeWindow(QWidget):
                          else f"Rewrote {rewritten} question{'s' * (rewritten != 1)}")
         self.done_label.setText((" and ".join(parts) + ".") if parts else "Nothing was ticked, so nothing changed.")
         ids = r["added"] + r["rewritten"]
-        self._done_query = f"cid:{','.join(map(str, ids))}" if ids else ""
+        self._done_query = f"qid:{','.join(map(str, ids))}" if ids else ""
         self.show_button.setVisible(bool(ids))
         self.pages.setCurrentIndex(3)
 
@@ -606,8 +607,13 @@ class MakeWindow(QWidget):
         items = self.db.draft_items(draft["id"])
         batches = self.db.draft_batches(draft["id"])
         c = dm.counts(self.db, draft["id"])
-        self.view.js("showDraft", {"busy": busy, "note": "\n\n".join(b["note"] for b in batches if b["note"]),
-                                   "items": [self._item(i) for i in items]})
+        shown = {"busy": busy, "note": "\n\n".join(b["note"] for b in batches if b["note"]),
+                 "items": [self._item(i) for i in items]}
+        if _without_ticks(shown) == _without_ticks(self._shown):  # just ticked: the page needn't be drawn again
+            self.view.js("setTicks", {str(i["id"]): i["checked"] for i in shown["items"]})
+        else:
+            self.view.js("showDraft", shown)
+        self._shown = shown
         if draft["mode"] == "new":
             request = json.loads(draft["request"] or "{}")
             about = " ".join(request.get("description", "").split())
@@ -665,3 +671,10 @@ class MakeWindow(QWidget):
         if draft is not None:
             self.maker.set_deck(self.deck.currentText())
         super().closeEvent(event)
+
+
+def _without_ticks(shown: dict | None):
+    """A draft as MakeWindow sends it to the page, less which questions are ticked."""
+    if shown is None:
+        return None
+    return {**shown, "items": [{k: v for k, v in i.items() if k != "checked"} for i in shown["items"]]}

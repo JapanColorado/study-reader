@@ -26,7 +26,6 @@ class PracticeController(
     val js: (String) -> Unit,
     val now: () -> Double = { System.currentTimeMillis() / 1000.0 },
     val mono: () -> Double = ::monotonic,
-    val onOpen: (String) -> Unit = {},
     val onChanged: () -> Unit = {},
 ) {
     companion object {
@@ -111,7 +110,6 @@ class PracticeController(
         val upcoming = practice.nextDue(null, t, picks = picks)
         val o = buildJsonObject {
             c.forEach { (k, v) -> put(k, v) }
-            put("all", true)
             put("title", scopeTitle())
             put("picks", JsonArray(picks.map(::pickJson)))
             put("ready", practice.nextQuestion(null, t, picks = picks) != null)
@@ -284,7 +282,7 @@ class PracticeController(
         if (id != questionId || answer != null || practice.question(id) == null) return
         val q = content ?: return
         val response = try { Json.parseToJsonElement(responseJson).jsonObject } catch (_: Exception) { JsonObject(emptyMap()) }
-        val type = Practice.kind((q["type"] as? JsonPrimitive)?.content)
+        val type = (q["type"] as? JsonPrimitive)?.content
         var verdict: String? = null
         if (type !in SELF_RATED) {
             try {
@@ -359,5 +357,8 @@ class PracticeController(
         }
     }
 
-    fun open(what: String) = onOpen(what)
+    /** The page's links to the desktop's own panels (calculator, chat, Make with Claude), which the phone
+     *  never shows, and the overview's `links`, which it sends none of. */
+    @Suppress("UNUSED_PARAMETER")
+    fun open(what: String) {}
 }
