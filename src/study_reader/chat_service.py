@@ -81,7 +81,9 @@ class ChatService:
     for quiz grading graded(answer_id, text), gradeFailed(answer_id, message),
     titled(chat_id, title) when a chat's auto-title is ready, varied(question_id, text) and
     variantFailed(question_id, message) for a question's next version (variants.py), and for Make with Claude
-    (deck_maker.py) made(batch_id, session_id, text) and makeFailed(batch_id, message)."""
+    (deck_maker.py) made(batch_id, session_id, text) and makeFailed(batch_id, message), and for a page's
+    read-aloud narration (narration.py) narrated(book hash, page, key, text) and
+    narrationFailed(book hash, page, message)."""
 
     def __init__(self, emit: Callable[..., None], sessions_dir: str | Path):
         self.emit = emit
@@ -90,6 +92,7 @@ class ChatService:
         self._base: dict[int, tuple[str | None, str]] = {}
         self._making: asyncio.Semaphore | None = None  # made on the worker's loop
         self._making_tasks: set[asyncio.Task] = set()
+        self._narrating: set[asyncio.Task] = set()
 
     def forget_base(self, book_id: int) -> None:
         """Drop the cached base session, e.g. after the book's file was replaced."""
@@ -203,6 +206,32 @@ class ChatService:
         finally:
             self._making_tasks.discard(task)
 
+    async def narrate(self, book: str, page: int, key: str, blocks: list[dict]) -> None:
+        """A page's read-aloud narration (narration.py), in a fresh bookless session that is
+        deleted afterwards (it holds the page's picture)."""
+        from . import narration
+
+        task = asyncio.current_task()
+        self._narrating.add(task)
+        cwd = self.sessions_dir / "narration"
+        try:
+            res = await asyncio.wait_for(
+                cc.run_turn(blocks, cwd=cwd, model=narration.MODEL, system_prompt=narration.SYSTEM_PROMPT,
+                            thinking=False),
+                narration.TIMEOUT,
+            )
+            await asyncio.to_thread(cc.forget_session, res.session_id, cwd)
+            self.emit("narrated", book, page, key, res.text)
+        except Exception as e:
+            self.emit("narrationFailed", book, page, str(e) or type(e).__name__)
+        finally:
+            self._narrating.discard(task)
+
+    def stop_narrating(self) -> None:
+        """Cancel the narration requests on their way; they report nothing."""
+        for task in self._narrating:
+            task.cancel()
+
     def stop_making(self) -> None:
         """Cancel every Make with Claude request, running or waiting its turn; they report nothing."""
         for task in self._making_tasks:
@@ -253,6 +282,8 @@ class ChatWorker(QObject):
     titled = Signal(int, str)
     made = Signal(int, str, str)
     makeFailed = Signal(int, str)
+    narrated = Signal(str, int, str, str)
+    narrationFailed = Signal(str, int, str)
 
     def __init__(self, sessions_dir: str | Path, parent: QObject | None = None):
         super().__init__(parent)
@@ -310,6 +341,12 @@ class ChatWorker(QObject):
 
     def stop_making(self) -> None:
         self.loop.call_soon_threadsafe(self.service.stop_making)
+
+    def submit_narration(self, book: str, page: int, key: str, blocks: list[dict]) -> None:
+        asyncio.run_coroutine_threadsafe(self.service.narrate(book, page, key, blocks), self.loop)
+
+    def stop_narrating(self) -> None:
+        self.loop.call_soon_threadsafe(self.service.stop_narrating)
 
     def shutdown(self) -> None:
         self.loop.call_soon_threadsafe(self.loop.stop)

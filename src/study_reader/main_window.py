@@ -85,7 +85,10 @@ class MainWindow(QMainWindow):
         side.addWidget(self.side_stack, 1)
 
         self.home = HomeView(self.db)
-        self.read_aloud = ReadAloud(self.db, self.reader, self)
+        self.read_aloud = ReadAloud(self.db, self.reader, self, self.worker)
+        self._narration_progress: QProgressDialog | None = None
+        self.read_aloud.narrator.progress.connect(self._on_narration_progress)
+        self.read_aloud.narrator.prepared.connect(self._on_narration_prepared)
         self.read_aloud.renderRequested.connect(self.render_on_colab)
         self.audio_sync = AudioSync(self.db, self)  # audio the old Drive notebook rendered, copied here
         self.audio_sync.synced.connect(self._on_audio_synced)
@@ -423,6 +426,15 @@ class MainWindow(QMainWindow):
             a.triggered.connect(lambda _=False, n=name: self.read_aloud.set_engine(n))
             group.addAction(a)
         voice_menu.addSeparator()
+        voice_menu.setToolTipsVisible(True)
+        narrate = voice_menu.addAction("Narrate with Claude")
+        narrate.setCheckable(True)
+        narrate.setChecked(self.read_aloud.narration)
+        narrate.setToolTip("Claude Haiku goes through each page before it is read aloud: it puts the text in "
+                           "reading order, leaves out the labels inside figures, and says equations in words")
+        narrate.toggled.connect(lambda on: on != self.read_aloud.narration and self.read_aloud.set_narration(on))
+        self.read_aloud.narrationChanged.connect(narrate.setChecked)
+        voice_menu.addAction("Narrate the whole book now…").triggered.connect(self.narrate_book)
         voice_menu.addAction("Render audio on Colab…").triggered.connect(self.render_on_colab)
         menu.addSeparator()
         menu.addAction(icon("import"), "Migrate from Anki…").triggered.connect(self.migrate_from_anki)
@@ -800,7 +812,7 @@ class MainWindow(QMainWindow):
                                      content_box=self._content_box(book["hash"]))
         finally:
             QApplication.restoreOverrideCursor()
-        self.read_aloud.set_document(doc, local_audio(book["hash"]))
+        self.read_aloud.set_document(doc, local_audio(book["hash"]), book["hash"])
         self.audio_sync.start(book["hash"])  # bring in any audio the Drive notebook has finished since
         self._on_page_changed(self.reader.current_page())
         self.chat.set_book(self.book_id)
@@ -1216,7 +1228,48 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Render audio on Colab", "Open a book first.")
             return
         voice = self.db.get_setting("tts_voice:kokoro", "af_heart")
-        RenderDialog(self.db, self.db.book(self.book_id), voice, self.read_aloud.speed, self.colab, self).exec()
+        if self._narration_progress is not None:  # the dialog narrates what's left itself
+            self.read_aloud.narrator.stop_preparing()
+        narrator = self.read_aloud.narrator if self.read_aloud.narrated else None
+        RenderDialog(self.db, self.db.book(self.book_id), voice, self.read_aloud.speed, self.colab, self,
+                     narrator=narrator).exec()
+
+    def narrate_book(self) -> None:
+        """Send every page that has no narration yet to Claude, so reading aloud never waits for one."""
+        narrator = self.read_aloud.narrator
+        if self.book_id is None or narrator.text is None:
+            QMessageBox.information(self, "Narrate the whole book", "Open a book first.")
+            return
+        if narrator.preparing:
+            return
+        pages = narrator.text.book.doc.page_count
+        box = QProgressDialog("Narrating the book with Claude…", "Stop", 0, pages, self)
+        box.setWindowTitle("Narrate the whole book")
+        box.setWindowModality(Qt.WindowModality.NonModal)
+        box.setMinimumDuration(0)
+        box.setAutoClose(False)
+        box.setAutoReset(False)
+        box.canceled.connect(narrator.stop_preparing)
+        self._narration_progress = box
+        box.setValue(0)
+        narrator.prepare()
+
+    def _on_narration_progress(self, done: int, pages: int) -> None:
+        if (box := self._narration_progress) is not None:
+            box.setLabelText(f"Narrating the book with Claude… page {done} of {pages}")
+            box.setValue(min(done, pages))
+
+    def _on_narration_prepared(self, finished: bool) -> None:
+        box, self._narration_progress = self._narration_progress, None
+        if box is None:
+            return
+        box.canceled.disconnect()
+        box.close()
+        box.deleteLater()
+        if self.read_aloud.narrator.gave_up:
+            QMessageBox.warning(self, "Narrate the whole book",
+                                "Narrating stopped before the end: Claude couldn't be reached for several pages. "
+                                "The pages done so far are kept.")
 
     def _on_audio_synced(self, file_hash: str, copied: int) -> None:
         if copied > 0 and self.book_id is not None and self.db.book(self.book_id)["hash"] == file_hash:

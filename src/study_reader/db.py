@@ -74,6 +74,13 @@ CREATE TABLE IF NOT EXISTS calculations (
     value TEXT NOT NULL,            -- int, float or "num/den" fraction, to restore `ans` and variables
     created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS narrations (  -- read-aloud narration of a page, as Claude wrote it (narration.py)
+    hash TEXT NOT NULL,             -- the book file's
+    page INTEGER NOT NULL,
+    key TEXT NOT NULL,              -- digest of what was sent: another means the reply is out of date
+    text TEXT NOT NULL,
+    PRIMARY KEY (hash, page)
+);
 CREATE TABLE IF NOT EXISTS quiz_answers (
     id INTEGER PRIMARY KEY AUTOINCREMENT, -- never reused: a grading in flight finds its answer by id
     message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
@@ -748,6 +755,7 @@ class Database:
         attempted ones stay in their decks, no longer linked to the book."""
         with self.conn:
             self._drop_new_questions("SELECT m.id FROM messages m JOIN chats c ON c.id=m.chat_id WHERE c.book_id=?", (book_id,))
+            self.conn.execute("DELETE FROM narrations WHERE hash=(SELECT hash FROM books WHERE id=?)", (book_id,))
             self.conn.execute("DELETE FROM books WHERE id=?", (book_id,))
 
     # -- chats ---------------------------------------------------------------
@@ -950,6 +958,16 @@ class Database:
 
     def calculations(self, book_id: int | None) -> list[sqlite3.Row]:
         return self.conn.execute("SELECT * FROM calculations WHERE book_id IS ? ORDER BY id", (book_id,)).fetchall()
+
+    def narrations(self, hash: str) -> dict[int, tuple[str, str]]:
+        """page -> (key, reply) of a book's stored read-aloud narration."""
+        rows = self.conn.execute("SELECT page, key, text FROM narrations WHERE hash=?", (hash,))
+        return {r["page"]: (r["key"], r["text"]) for r in rows}
+
+    def set_narration(self, hash: str, page: int, key: str, text: str) -> None:
+        with self.conn:
+            self.conn.execute("INSERT OR REPLACE INTO narrations (hash, page, key, text) VALUES (?,?,?,?)",
+                              (hash, page, key, text))
 
     def delete_calculation(self, calc_id: int) -> None:
         with self.conn:

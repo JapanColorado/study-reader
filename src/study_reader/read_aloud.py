@@ -9,9 +9,10 @@ from collections.abc import Iterator
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QSlider, QToolButton
 
-from . import tts_engines
+from . import narration, tts_engines
 from .db import Database
 from .document import Document, Word, nearest_word
+from .narration import WAIT, NarratedText
 from .speech_pages import BookText
 from .speech_text import Utterance, reply_utterances
 from .theme import icon
@@ -22,14 +23,124 @@ SPEED_DEBOUNCE_MS = 400
 UID_SPAN = 1 << 20  # uids of one reading; a new reading starts past them
 
 
+class Narrator(QObject):
+    """Gets the open book's narration from Claude (narration.py): the pages reading asks for
+    as it goes, and on request (``prepare``) the whole book, ``AT_ONCE`` pages at a time.
+    Replies are kept in the ``narrations`` table."""
+
+    ready = Signal(int)  # a page's narration is here, or failed (the page is read as extracted)
+    progress = Signal(int, int)  # pages done and pages in the book, while preparing all of it
+    prepared = Signal(bool)  # the whole book has been gone through (False: stopped before the end)
+    failed = Signal(str)
+    AT_ONCE = 3
+    GIVE_UP = 3  # failures in a row that stop preparing the whole book
+
+    def __init__(self, db: Database, worker, parent=None):
+        super().__init__(parent)
+        self.db, self.worker = db, worker
+        self.text: NarratedText | None = None
+        self.hash = ""
+        self._flying: set[int] = set()
+        self._todo: Iterator[int] | None = None
+        self._seen = 0
+        self._fails = 0
+        self.gave_up = False  # preparing the whole book stopped because Claude kept failing
+        self._timer = QTimer(self, singleShot=True, interval=0)
+        self._timer.timeout.connect(self._pump)
+        worker.narrated.connect(self._on_narrated)
+        worker.narrationFailed.connect(self._on_failed)
+
+    def set_document(self, book: BookText | None, file_hash: str) -> None:
+        self.stop_preparing()
+        if self._flying:
+            self.worker.stop_narrating()
+            self._flying.clear()
+        self.hash = file_hash if book else ""
+        self.text = NarratedText(book, self.db.narrations(file_hash), self.want) if book and file_hash else None
+
+    def want(self, page: int) -> None:
+        if page not in self._flying:
+            self._flying.add(page)
+            self.worker.submit_narration(self.hash, page, self.text.key(page), self.text.blocks(page))
+
+    @property
+    def preparing(self) -> bool:
+        return self._todo is not None
+
+    def prepare(self) -> None:
+        """Narrate every page that isn't yet."""
+        if self.text is None or self.preparing:
+            return
+        self._todo, self._seen, self._fails = iter(range(self.text.book.doc.page_count)), 0, 0
+        self.gave_up = False
+        self._timer.start()
+
+    def stop_preparing(self) -> None:
+        if self.preparing:
+            self._todo = None
+            self._timer.stop()
+            self.prepared.emit(False)
+
+    def _pump(self) -> None:
+        """Look at the next page (one a turn of the event loop: reading a page takes a moment)."""
+        if not self.preparing or len(self._flying) >= self.AT_ONCE:
+            return
+        page = next(self._todo, None)
+        if page is None:
+            if not self._flying:
+                self._todo = None
+                self.prepared.emit(True)
+            return
+        self.text.script(page)  # asks for it if it isn't here
+        self._seen = page + 1
+        self.progress.emit(self._seen - len(self._flying), self.text.book.doc.page_count)
+        self._timer.start()
+
+    def _landed(self, book: str, page: int) -> bool:
+        if book != self.hash or self.text is None or page not in self._flying:
+            return False
+        self._flying.discard(page)
+        return True
+
+    def _on_narrated(self, book: str, page: int, key: str, text: str) -> None:
+        if not self._landed(book, page):
+            return
+        if self.text.accept(page, key, text):
+            self.db.set_narration(book, page, key, text)
+            self._fails = 0
+        self._after(page)
+
+    def _on_failed(self, book: str, page: int, message: str) -> None:
+        if not self._landed(book, page):
+            return
+        self.text.fail(page)
+        self._fails += 1
+        if self.preparing and self._fails >= self.GIVE_UP:
+            self.gave_up = True
+            self.stop_preparing()
+        self._after(page)
+        self.failed.emit(message)
+
+    def _after(self, page: int) -> None:
+        self.ready.emit(page)
+        if self.preparing:
+            self.progress.emit(self._seen - len(self._flying), self.text.book.doc.page_count)
+            self._timer.start()
+
+
 class ReadAloud(QObject):
     activeChanged = Signal(bool)
     renderRequested = Signal()  # the bar's "Render on Colab" button
+    narrationChanged = Signal(bool)
 
-    def __init__(self, db: Database, reader, parent=None):
+    def __init__(self, db: Database, reader, parent=None, worker=None):
         super().__init__(parent)
         self.db, self.reader = db, reader
         self.book: BookText | None = None
+        # Claude's narration of the pages (None: no worker to ask through).
+        self.narrator = Narrator(db, worker, self) if worker is not None else None
+        self.narration = db.get_setting(narration.ENABLED_SETTING, narration.ENABLED_DEFAULT) == "1"
+        self._waiting = False  # for a page's narration
         self.engine: Engine | None = None
         self.engine_name = db.get_setting("tts_engine", "kokoro")
         self._fallback = False  # Kokoro failed this session: use speech-dispatcher
@@ -51,6 +162,10 @@ class ReadAloud(QObject):
         self._speed_timer.timeout.connect(self._apply_speed)
         self.bar = ReadAloudBar(self)
         reader.speechClicked.connect(self.jump_to)
+        if self.narrator is not None:
+            self.narrator.ready.connect(self._on_narration)
+            self.narrator.failed.connect(
+                lambda why: self.active and self.bar.set_status(f"No narration for a page ({why}); reading it as it is."))
 
     # -- the engine ---------------------------------------------------------------------
     @property
@@ -155,10 +270,13 @@ class ReadAloud(QObject):
             self._jump(self._cur)
 
     # -- starting -------------------------------------------------------------------------
-    def set_document(self, doc: Document | None, audio=None) -> None:
-        """Read ``doc`` (None: nothing), playing sentences rendered on Colab from ``audio``."""
+    def set_document(self, doc: Document | None, audio=None, file_hash: str = "") -> None:
+        """Read ``doc`` (None: nothing), playing sentences rendered on Colab from ``audio``;
+        ``file_hash`` is what the book's narration is kept under."""
         self.stop()
         self.book = BookText(doc) if doc else None
+        if self.narrator is not None:
+            self.narrator.set_document(self.book, file_hash)
         self.audio = audio if doc else None
         if self.engine is not None:
             self.engine.set_cache(self.audio)
@@ -171,10 +289,36 @@ class ReadAloud(QObject):
         if self.engine is not None:
             self.engine.set_cache(audio)
 
+    @property
+    def narrated(self) -> NarratedText | None:
+        """The book's narration, when it is to be read from."""
+        return self.narrator.text if self.narration and self.narrator is not None else None
+
+    def set_narration(self, on: bool) -> None:
+        """Read Claude's narration of each page, or the page as extracted; while reading, carry on
+        from the sentence being read."""
+        self.narration = on
+        self.db.set_setting(narration.ENABLED_SETTING, "1" if on else "0")
+        self.bar.narrate.setChecked(on)
+        self.narrationChanged.emit(on)
+        if not self.active or self._reply or not self.book:
+            return
+        u = self._items[self._cur] if self._cur < len(self._items) else None
+        if u is None or not u.rects:
+            self.start_from_view()
+            return
+        page = min(u.rects)
+        self._start_at(page, min(r[1] for r in u.rects[page]) + 1)
+
     def start_from_view(self) -> None:
         if not self.book:
             return
-        page, y = self.reader._position()
+        self._start_at(*self.reader._position())
+
+    def _start_at(self, page: int, y: float) -> None:
+        if self.narrated:
+            self._read_book(self.narrated.from_view(page, y))
+            return
         start = self.book.start_at(page, y)
         engine = self._engine()
         if engine.cached() and (u := self.book.utterance_at(*start)) and engine.has(u.text):
@@ -190,6 +334,9 @@ class ReadAloud(QObject):
         doc = self.book.doc
         p0, p1 = min(sel), max(sel)
         start = (p0, doc.words(p0).index(sel[p0][0]))
+        if onward and self.narrated:
+            self._read_book(self.narrated.from_word(*start))
+            return
         end = None if onward else (p1, doc.words(p1).index(sel[p1][-1]))
         self._read_book(self.book.utterances(start, end))
 
@@ -198,7 +345,9 @@ class ReadAloud(QObject):
         if not self.book or not self.active or self._reply:
             return
         idx = nearest_word(self.book.doc.words(page), x, y)
-        if idx is not None and (u := self.book.utterance_at(page, idx)):
+        if idx is not None and self.narrated:
+            self._read_book(self.narrated.from_word(page, idx))
+        elif idx is not None and (u := self.book.utterance_at(page, idx)):
             self._read_book(self._after(u), first=u)
 
     def _after(self, u: Utterance, end: tuple[int, int] | None = None) -> Iterator[Utterance]:
@@ -210,6 +359,9 @@ class ReadAloud(QObject):
             self.stop()
             return
         self._end_reply()
+        if first is WAIT:  # the page's narration is on its way: _feed starts once it lands
+            self._begin([], source)
+            return
         self._begin([first], source)
         self.reader.follow_speech(first.rects, force=True)
 
@@ -251,14 +403,28 @@ class ReadAloud(QObject):
         self._feed()
         self.bar.set_playing(not engine.is_paused())
 
+    def _on_narration(self, _page: int) -> None:
+        if self.active and self._waiting:
+            self._feed()
+
+    def _wait(self, on: bool) -> None:
+        if on != self._waiting:
+            self._waiting = on
+            self.bar.set_status("Preparing the narration…" if on else "")
+
     def _feed(self) -> None:
         engine = self._engine()
+        self._wait(False)
+        started = not self._items
         while self._fed < self._cur + engine.lookahead or (
             sum(len(u.text) for u in self._items[self._cur:self._fed + 1]) < engine.lookahead_chars
         ):
             n = self._fed + 1
             if n >= len(self._items):
                 nxt = next(self._source, None) if self._source else None
+                if nxt is WAIT:
+                    self._wait(True)
+                    break
                 if nxt is None:
                     self._source = None
                     break
@@ -266,8 +432,11 @@ class ReadAloud(QObject):
             u = self._items[n]
             engine.enqueue(self._first_uid + n, u.text, u.pause)
             self._fed = n
-        if self._cur >= len(self._items):
+        if self._cur >= len(self._items) and not self._waiting:
             self.stop()
+        elif started and self._items:  # the first sentence, after waiting for its page
+            self._show(self._items[0], None)
+            self.reader.follow_speech(self._items[0].rects, force=True)
 
     # -- engine events -------------------------------------------------------------------
     def _index(self, uid: int) -> int | None:
@@ -325,6 +494,8 @@ class ReadAloud(QObject):
         n = self._cur + 1
         if n >= len(self._items):
             nxt = next(self._source, None) if self._source else None
+            if nxt is WAIT:  # its page isn't narrated yet: reading gets there by itself
+                return
             if nxt is None:
                 self.stop()
                 return
@@ -339,13 +510,16 @@ class ReadAloud(QObject):
             self._jump(self._cur)
         elif self._cur > 0:
             self._jump(self._cur - 1)
-        elif self.book and not self._reply and (u := self.book.utterance_before(self._items[0])):
+        elif self.book and not self._reply and self._items and (u := self._before(self._items[0])):
             self._items.insert(0, u)
             self._first_uid -= 1  # the queued sentences keep their uids
             self._jump(0)
         else:
             self._jump(self._cur)
         self._follow_now()
+
+    def _before(self, u: Utterance) -> Utterance | None:
+        return self.narrated.before(u) if self.narrated else self.book.utterance_before(u)
 
     def _follow_now(self) -> None:
         if not self._reply and self._cur < len(self._items):
@@ -359,6 +533,7 @@ class ReadAloud(QObject):
         self._end_reply()
         self.reader.clear_speech()
         self._items, self._source = [], None
+        self._wait(False)
         self._set_active(False)
 
     def _end_reply(self) -> None:
@@ -423,6 +598,15 @@ class ReadAloudBar(QFrame):
         self.skip.setChecked(ctl.skip_silence)
         self.skip.toggled.connect(lambda on: on != ctl.skip_silence and ctl.set_skip_silence(on))
         row.addWidget(self.skip)
+        self.narrate = QToolButton(self, autoRaise=True, checkable=True, text="Narrate")
+        self.narrate.setToolTip("Narrate with Claude: Haiku puts each page in reading order, leaves out the labels "
+                                "inside figures, and says equations in words (each page is prepared once)")
+        self.narrate.setIcon(icon("sparkles"))
+        self.narrate.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.narrate.setChecked(ctl.narration)
+        self.narrate.setVisible(ctl.narrator is not None)
+        self.narrate.toggled.connect(lambda on: on != ctl.narration and ctl.set_narration(on))
+        row.addWidget(self.narrate)
         row.addSpacing(10)
         self.voice = QComboBox(self, toolTip="Voice")
         self.voice.setMinimumContentsLength(12)

@@ -77,20 +77,25 @@ class AudioSync(QObject):
         task.run(lambda: sync(src, dst))
 
 
-def book_sentences(path: str, progress=None) -> list[str]:
-    """Every sentence read aloud in the book, in order, as the reader speaks them. Uses its
-    own Document, so it can run on a thread while the reader shows the book."""
+def book_sentences(path: str, progress=None, narrations: dict | None = None) -> list[str]:
+    """Every sentence read aloud in the book, in order, as the reader speaks them: Claude's
+    narration (``narrations``: page -> (key, reply), as Database.narrations gives them; pages
+    without one as extracted) or, with None, the book as extracted. Uses its own Document, so
+    it can run on a thread while the reader shows the book."""
     from .document import Document
+    from .narration import NarratedText
     from .speech_pages import BookText
 
     doc = Document(path)
     try:
         book = BookText(doc)
+        narrated = narrations is not None
         texts, page = [], -1
-        for u in book.utterances((0, 0)):
+        for u in NarratedText(book, narrations).all() if narrated else book.utterances((0, 0)):
             texts.append(u.text)
-            if progress and u.first[0] != page:
-                page = u.first[0]
+            at = u.seq[0] if narrated else u.first[0]
+            if progress and at != page:
+                page = at
                 progress(page, doc.page_count)
         return texts
     finally:
@@ -159,9 +164,14 @@ class RenderDialog(QDialog):
 
     progress = Signal(int, int)  # page, pages (from the export thread)
 
-    def __init__(self, db: Database, book: dict, voice: str, speed: float, colab: ColabRender, parent=None):
+    def __init__(self, db: Database, book: dict, voice: str, speed: float, colab: ColabRender, parent=None,
+                 narrator=None):
+        """narrator: the open book's read_aloud.Narrator when its narration is what is read
+        aloud, so that is what gets rendered (after narrating the pages that aren't yet)."""
         super().__init__(parent)
         self.db, self.book, self.voice, self.speed, self.colab = db, book, voice, speed, colab
+        self.narrator = narrator
+        self._narrating = False
         self.setWindowTitle("Render audio on Colab")
         self.setMinimumWidth(560)
         col = QVBoxLayout(self)
@@ -169,6 +179,8 @@ class RenderDialog(QDialog):
             "Renders this book's audio on a Colab GPU (rented through the <code>colab</code> CLI), "
             "so reading aloud starts at once and never waits on your computer. Each finished part is "
             "copied here as it goes, and the GPU is released when every book is done."
+            + (" The book is rendered as Claude narrates it, so the pages not narrated yet are sent to Claude "
+               "first; keep this window open while that runs." if narrator else "")
         )
         intro.setWordWrap(True)
         intro.setTextFormat(Qt.TextFormat.RichText)
@@ -198,6 +210,10 @@ class RenderDialog(QDialog):
         self.progress.connect(lambda p, n: self.status.setText(f"Reading the book for its sentences… page {p + 1} of {n}"))
         colab.changed.connect(self.refresh)
         self.finished.connect(lambda: colab.changed.disconnect(self.refresh))
+        if narrator:
+            narrator.progress.connect(self._show_narrating)
+            narrator.prepared.connect(self._narrated)
+            self.finished.connect(self._leave_narrator)
         self._task: _Task | None = None
         self._exporting = False
         self.refresh()
@@ -329,11 +345,40 @@ class RenderDialog(QDialog):
         return headline, details, False
 
     def send(self) -> None:
+        if self.narrator:  # narrate what's left of the book first; _narrated carries on
+            self._narrating = True
+            self._busy(True, "Narrating the book with Claude…")
+            self.narrator.prepare()
+        else:
+            self._export(None)
+
+    def _show_narrating(self, done: int, pages: int) -> None:
+        if self._narrating:
+            self.status.setText(f"Narrating the book with Claude… page {done} of {pages}")
+
+    def _narrated(self, finished: bool) -> None:
+        if not self._narrating:
+            return
+        self._narrating = False
+        if finished:
+            self._export(dict(self.narrator.text.texts))
+        else:
+            self._busy(False, "Claude couldn't be reached for several pages, so narrating the book stopped. "
+                              "Nothing was sent to Colab; the pages narrated so far are kept.")
+
+    def _leave_narrator(self) -> None:
+        self.narrator.progress.disconnect(self._show_narrating)
+        self.narrator.prepared.disconnect(self._narrated)
+        if self._narrating:
+            self._narrating = False
+            self.narrator.stop_preparing()
+
+    def _export(self, narrations: dict | None) -> None:
         path, title, file_hash = self.book["path"], self.book["title"], self.hash
         voice, speed, gpu = self.voice, self.speed, self.gpu.currentText()
 
         def export():
-            return book_sentences(path, lambda p, n: self.progress.emit(p, n))
+            return book_sentences(path, lambda p, n: self.progress.emit(p, n), narrations)
 
         def queue(texts):
             self._busy(False)

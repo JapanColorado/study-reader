@@ -257,7 +257,7 @@ def _prefer_subscription_login() -> None:
 
 def _options(
     cwd: str | Path, model: str | None, resume: str | None, fork: bool, resume_at: str | None = None,
-    system_prompt: str = SYSTEM_PROMPT,
+    system_prompt: str = SYSTEM_PROMPT, thinking: bool = True,
 ) -> ClaudeAgentOptions:
     _prefer_subscription_login()
     Path(cwd).mkdir(parents=True, exist_ok=True)
@@ -279,6 +279,7 @@ def _options(
         resume_session_at=resume_at,
         include_partial_messages=True,
         max_turns=1,
+        thinking=None if thinking else {"type": "disabled"},
     )
 
 
@@ -292,8 +293,12 @@ async def run_turn(
     resume_at: str | None = None,
     on_delta: Callable[[str], None] | None = None,
     system_prompt: str = SYSTEM_PROMPT,
+    thinking: bool = True,
 ) -> TurnResult:
     """Send one user message and return the reply, streaming text through on_delta.
+
+    thinking: False answers straight away (for mechanical side jobs, where thinking only adds
+    minutes).
 
     resume_at: a TurnResult.message_uuid of the resumed session; only the conversation
     up to it is loaded (use with fork, so the original session stays intact)."""
@@ -311,7 +316,7 @@ async def run_turn(
     last_uuid: str | None = None
     try:
         # aclosing: a stopped reply (the task cancelled) ends the CLI right away, not when collected.
-        stream = query(prompt=prompt(), options=_options(cwd, model, resume, fork, resume_at, system_prompt))
+        stream = query(prompt=prompt(), options=_options(cwd, model, resume, fork, resume_at, system_prompt, thinking))
         async with contextlib.aclosing(stream) as messages:
             async for msg in messages:
                 if isinstance(msg, StreamEvent):

@@ -472,6 +472,7 @@ class Utterance:
     marks: list[tuple[int, int, dict[int, list[Rect]]]] = field(default_factory=list)
     pause: float = 0.12
     block: int = -1
+    seq: tuple[int, int] = (-1, -1)  # (page, index) in the page's narration (narration.py)
 
     def word_at(self, char: int) -> dict[int, list[Rect]] | None:
         """Highlight of the word being said at `char` of `text`: the last mark starting at or before it."""

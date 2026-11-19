@@ -127,6 +127,15 @@ def _no_kokoro(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_narration(monkeypatch):
+    """Reading aloud would send each page to Claude for its narration; tests that want it turn
+    the setting on and answer through a fake worker."""
+    from study_reader import narration
+
+    monkeypatch.setattr(narration, "ENABLED_DEFAULT", "0")
+
+
+@pytest.fixture(autouse=True)
 def _hide_windows():
     """Windows a test showed are hidden when it ends: a QtWebEngine view left on the (offscreen)
     screen crashes a later test that runs the event loop for a while."""
