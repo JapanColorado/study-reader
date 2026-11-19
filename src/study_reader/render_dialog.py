@@ -129,8 +129,9 @@ class ColabRender(QObject):
         if not cr.watcher_running(self.base):
             cr.start_watcher(self.base)
 
-    def render(self, file_hash: str, title: str, voice: str, speed: float, gpu: str, texts, drive=None) -> int:
-        n = cr.queue(self.base, file_hash, title, voice, speed, gpu, texts, drive)
+    def render(self, file_hash: str, title: str, voice: str, speed: float, gpu: str, texts, drive=None,
+               narrated: bool = False) -> int:
+        n = cr.queue(self.base, file_hash, title, voice, speed, gpu, texts, drive, narrated)
         self._ensure_watcher()
         self.changed.emit()
         return n
@@ -296,6 +297,18 @@ class RenderDialog(QDialog):
             what = f"voice {request['voice']}, made at {request['speed']:g}×"
             changed = request["voice"] != self.voice or abs(request["speed"] - render_speed(self.speed)) > 0.01
             again = f"You now read with {self.voice} at {self.speed:g}×: Render on Colab again for that."
+            # Rendered from the text as extracted while Claude's narration is what is read, or
+            # the other way round: reading aloud finds none of these sentences.
+            narrated = bool(request.get("narrated"))
+            other_text = narrated != bool(self.narrator)
+            if narrated:
+                what += ", from Claude's narration"
+                other = ("These are Claude's narration, but narration is off, so reading aloud doesn't play them. "
+                         "Turn Narrate back on, or Render on Colab again for the text as it is on the page.")
+            else:
+                what += ", from the text as extracted"
+                other = ("These were made from the text as extracted, before Claude's narration: with Narrate on, "
+                         "reading aloud doesn't play them. Render on Colab again to render the narration.")
         if stopping and (active or running):
             return "Stopping, and releasing the Colab GPU…", details, True
         if failed:
@@ -326,11 +339,17 @@ class RenderDialog(QDialog):
                                "as long as the computer stays on.")
                 if changed:
                     details.append(again)
-                return headline, details, not changed
+                if other_text:
+                    details.append(other)
+                return headline, details, not (changed or other_text)
             details.append("Render on Colab carries on where it stopped.")
             return "Not rendering: paused partway.", details, False
         if request:  # done
             headline = f"Rendered: all {total:,} sentences are here."
+            if other_text:
+                headline = ("Not rendered as Claude narrates it yet." if self.narrator
+                            else "Not rendered as the page's own text.")
+                details.append(f"{total:,} sentences are here. " + other)
             details.append(f"Made with {what}.")
             if changed:
                 details.append(again)
@@ -340,7 +359,8 @@ class RenderDialog(QDialog):
                 details.append(f"{here:,} sentences of this book are here already.")
         if active and others:
             details.append(f"Colab is rendering {others[0]} now; this book would wait its turn.")
-        elif not active and state.get("phase") in ("done", "stopped") and state.get("message"):
+        elif (not active and state.get("phase") in ("done", "stopped") and state.get("message")
+              and not (request and other_text)):  # "All rendered" would be about the other text
             details.append(state["message"])
         return headline, details, False
 
@@ -382,7 +402,8 @@ class RenderDialog(QDialog):
 
         def queue(texts):
             self._busy(False)
-            self.colab.render(file_hash, title, voice, speed, gpu, texts, remote_audio(self.db, file_hash) / "audio")
+            self.colab.render(file_hash, title, voice, speed, gpu, texts, remote_audio(self.db, file_hash) / "audio",
+                              narrated=narrations is not None)
             self.refresh()
 
         self._busy(True, "Reading the book for its sentences…")

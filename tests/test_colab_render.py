@@ -509,6 +509,21 @@ def test_render_dialog_says_whether_colab_is_working_on_the_book(pdf_path, tmp_p
     assert any("Gizmos now" in line for line in lines)
     head, _, rendering = dlg.describe(None, 0, busy, None, True, True, 1000)
     assert head.startswith("Stopping") and rendering
+    # A book rendered before Claude narrated it isn't "rendered" while the narration is what is read.
+    finished = {"phase": "done", "message": "All rendered, and the Colab GPU was released."}
+    old, new = dict(req, done=True), dict(req, done=True, narrated=True)
+    assert dlg.describe(old, 2, finished, None, False, False, 1000)[1][-1] == finished["message"]
+    head, lines, _ = dlg.describe(new, 2, finished, None, False, False, 1000)
+    assert head == "Not rendered as the page's own text." and "Turn Narrate back on" in lines[0]
+    dlg.narrator = object()
+    head, lines, rendering = dlg.describe(old, 2, finished, None, False, False, 1000)
+    assert head == "Not rendered as Claude narrates it yet." and not rendering
+    assert "Render on Colab again to render the narration." in lines[0] and finished["message"] not in lines
+    assert lines[1] == "Made with voice af_heart, made at 1.3×, from the text as extracted."
+    assert dlg.describe(new, 2, finished, None, False, False, 1000)[0] == "Rendered: all 2 sentences are here."
+    head, lines, rendering = dlg.describe(req, 1, busy, None, True, False, 1000)  # the old text still rendering
+    assert not rendering and any("render the narration" in line for line in lines)
+    dlg.narrator = None
 
 
 def test_a_hung_cli_call_is_killed(tmp_path, monkeypatch):

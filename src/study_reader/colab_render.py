@@ -263,10 +263,11 @@ def _read_json(path: Path):
 
 
 def queue(base: Path, file_hash: str, title: str, voice: str, speed: float, gpu: str, texts,
-          drive: Path | None = None) -> int:
+          drive: Path | None = None, narrated: bool = False) -> int:
     """Ask for a book's sentences (in reading order) to be rendered; how many there are.
     ``drive`` is where the old Drive notebook put the book's audio: what it finished is copied
-    in before working out what is left to render."""
+    in before working out what is left to render. ``narrated`` says the sentences are Claude's
+    narration (narration.py), not the text as extracted, for the Render dialog to tell apart."""
     seen, sentences = set(), []
     for text in texts:
         key = sentence_key(voice, text)
@@ -277,7 +278,7 @@ def queue(base: Path, file_hash: str, title: str, voice: str, speed: float, gpu:
     _write_json(base / "requests" / f"{key}.json", {
         "version": 1, "id": secrets.token_hex(4), "key": key, "hash": file_hash, "title": title,
         "voice": voice, "speed": render_speed(speed), "gpu": gpu, "sentences": sentences, "queued": time.time(),
-        "drive": str(drive) if drive else None})
+        "drive": str(drive) if drive else None, "narrated": narrated})
     (base / "failed").unlink(missing_ok=True)
     (base / "stop").unlink(missing_ok=True)
     return len(sentences)
