@@ -81,6 +81,12 @@
   [data-act="calc"] svg, [data-act="chatpanel"] svg { width:14px; height:14px; flex:none; stroke:currentColor; fill:none;
                           stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
   [data-act="calc"].on, [data-act="chatpanel"].on { color:var(--accent); }
+  .calc-import { display:inline-flex; align-items:center; justify-content:center; vertical-align:middle; margin:0 2px 0 4px;
+                 width:22px; height:20px; padding:0; border:1px solid var(--border); border-radius:5px; background:var(--raised);
+                 color:var(--muted); cursor:pointer; }
+  .calc-import:hover { color:var(--accent); border-color:var(--accent); }
+  .calc-import svg { width:13px; height:13px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+  .katex-display .calc-import { margin-left:8px; }
   .ach-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(170px, 1fr)); gap:4px; margin-top:8px; }
   .ach { display:flex; gap:8px; align-items:center; padding:4px 6px; border-radius:7px; font-size:12.5px; line-height:1.3; }
   .ach .i { font-size:20px; flex:none; }
@@ -175,6 +181,37 @@ function setCalc(on) {
   if (LAST) LAST.calc = on;
   if (SHOWN) SHOWN.calc = on;
   document.querySelectorAll('[data-act="calc"]').forEach(el => el.classList.toggle("on", on));
+}
+// The desktop's calculator also takes a question's definitions: beside each formula like f(x) = 3x² − 2x
+// or v₀ = 12 (a number, perhaps with units) is a button that defines it there (bridge.calculate).
+const CALC_NAME = String.raw`[A-Za-z](?:_(?:\{[A-Za-z0-9]+\}|[A-Za-z0-9]))?`;
+const CALC_FUNCTION = new RegExp(String.raw`^${CALC_NAME}\s*(?:\\left)?\(\s*${CALC_NAME}(?:\s*,\s*${CALC_NAME})*\s*(?:\\right)?\)\s*=\s*\S`);
+const CALC_VARIABLE = new RegExp(String.raw`^(${CALC_NAME})\s*=\s*(.+)$`);
+const UNITS = /(?:\\[,;:! ]|\\quad|~|\s)*\\(?:text|textrm|mathrm|mathit|operatorname)\s*\{.*$/s;
+function calcImport(tex) {
+  tex = tex.trim().replace(/(?:\\[,;:! ]|\s)*[.,;]$/, "");  // a sentence's comma or full stop inside the math
+  if (CALC_FUNCTION.test(tex)) return tex;
+  const m = tex.match(CALC_VARIABLE);
+  if (!m) return null;
+  const value = m[2].replace(UNITS, "").trim();
+  // Only a given: a number, not a formula (letters other than in commands like \frac or \pi).
+  if (!value || value.includes("=") || /[A-Za-z]/.test(value.replace(/\\[A-Za-z]+/g, ""))) return null;
+  return `${m[1]}=${value}`;
+}
+function addCalcImports(root) {
+  for (const el of root.querySelectorAll(".q-text .katex, .back .katex, .explain .katex")) {
+    const tex = el.querySelector('annotation[encoding="application/x-tex"]')?.textContent;
+    const latex = tex && calcImport(tex);
+    if (!latex) continue;
+    const name = latex.split(/[=(\\]/)[0].replace(/_\{?([A-Za-z0-9]+)\}?/, "$1");
+    const button = document.createElement("button");
+    button.className = "calc-import";
+    button.dataset.act = "calcimport";
+    button.dataset.tex = latex;
+    button.title = `Define ${name} in the calculator`;
+    button.innerHTML = CALC_ICON;
+    el.after(button);
+  }
 }
 // The desktop's Chat button (theme.py's "message" icon), and setChatPanel to show it open or closed.
 const CHAT_ICON = `<svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
@@ -489,6 +526,7 @@ function showQuestion(c) {
   const root = document.getElementById("root");
   root.innerHTML = html;
   setupMathFields(root, qEl => answer("calculation", qEl));
+  if (c.calc != null) addCalcImports(root);  // the desktop's, which the phone app never sends
   if (!MOBILE || c.id !== SHOWN_ID) window.scrollTo(0, 0);  // the phone keeps its place when the question is redrawn
   SHOWN_ID = c.id;
   const field = root.querySelector("math-field");
@@ -597,6 +635,7 @@ document.addEventListener("click", ev => {
     else pickRow(target, { toggle: ev.ctrlKey || ev.metaKey, range: ev.shiftKey });
   }
   else if (act === "calc") bridge.open("calc");
+  else if (act === "calcimport") bridge.calculate(target.dataset.tex);
   else if (act === "chatpanel") bridge.open("chat");
   else if (act === "make") bridge.open("make");
   else if (act === "open") bridge.open(target.dataset.what);

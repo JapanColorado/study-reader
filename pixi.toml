@@ -14,6 +14,8 @@ pymupdf = ">=1.24"
 claude-agent-sdk = "*"
 pytest = "*"
 numpy = ">=2.5.3, <3"
+# The calculator's derivatives and formulas (calc_symbolic.py).
+sympy = ">=1.13, <2"
 readability-lxml = ">=0.9, <0.10"
 lxml = ">=6.1.3, <7"
 fsrs = ">=6.3, <7"

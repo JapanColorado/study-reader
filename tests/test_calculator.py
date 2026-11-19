@@ -279,3 +279,212 @@ def test_a_function_name_is_never_a_product_of_variables():
     assert c.compute("nx") == 35 and c.compute("nis") == 30  # products as before
     c.evaluate("sinx = 1")
     assert c.compute("sinx") == 1  # a variable of that name comes first
+
+
+# -- functions, derivatives, integrals, sums, solve ----------------------------------------------
+from study_reader.calculator import Formula, Function, Roots  # noqa: E402
+
+
+def test_defined_functions_and_their_derivatives():
+    c = Calculator()
+    name, fn = c.evaluate("f(x) = x^3 + 2*x")
+    assert name == "f" and isinstance(fn, Function) and fn.params == ("x",)
+    assert c.compute("f(2)") == 12 and c.compute("f'(2)") == 14 and c.compute("f''(2)") == 12
+    assert c.compute("f'''(5)") == 6 and c.compute("2*f(1) + f'(0)") == 8
+    assert c.compute("f'(1/2)") == Fraction(11, 4)  # exact, like the rest
+    formula = c.compute("f'(x)", rich=True)
+    assert isinstance(formula, Formula) and formula.latex == "3 x^{2} + 2"
+    with pytest.raises(CalcError):
+        c.compute("f'(x)")  # a formula only where one is asked for (not in quiz grading)
+    assert c.derivative_latex(fn) == r"f^{\prime}\left(x\right)=3 x^{2} + 2"
+
+
+def test_functions_see_variables_when_used():
+    c = Calculator()
+    c.evaluate("h(x) = a*x^2")
+    with pytest.raises(CalcError, match="Unknown name 'a'"):
+        c.compute("h(2)")
+    c.evaluate("a = 3")
+    assert c.compute("h(2)") == 12 and c.compute("h'(2)") == 12
+    assert c.compute("h'(x)", rich=True).latex == "6 x"  # a's value goes in
+    c.evaluate("x = 5")
+    assert c.compute("h'(x)", rich=True) == 30  # x has a value now
+    assert c.compute("h(2)") == 12  # the variable x doesn't reach inside h
+
+
+def test_several_variables_and_partial_derivatives():
+    c = Calculator()
+    c.evaluate("g(x, y) = x^2*y + y")
+    assert c.compute("g(1, 2)") == 4
+    assert c.compute("diff(g, x)(1, 2)") == 4 and c.compute("diff(g, y)(3, 0)") == 10
+    assert c.compute("diff(g, x, y)", rich=True).latex == "2 x"
+    with pytest.raises(CalcError, match="variables"):
+        c.compute("g'(1)")
+    with pytest.raises(CalcError, match="takes 2 values"):
+        c.compute("g(1)")
+
+
+def test_derivatives_of_expressions():
+    c = Calculator()
+    assert c.compute("diff(x^2*sin(x), x)", rich=True).latex == r"x^{2} \cos\left(x \right) + 2 x \sin\left(x \right)"
+    c.evaluate("x = 2")
+    assert c.compute("diff(x^3, x)") == 12 and c.compute("diff(x^3, x, 2)") == 12
+    assert math.isclose(c.compute("diff(sin(x), x)"), math.cos(2))
+    assert c.compute("diff(t^2, t)", rich=True).latex == "2 t"
+
+
+def test_derivatives_follow_the_angle_unit():
+    c = Calculator(degrees=True)
+    c.evaluate("s(x) = sin(x)")
+    assert math.isclose(c.compute("s'(0)"), math.pi / 180)
+    assert math.isclose(c.compute("s(30)"), 0.5)
+
+
+@pytest.mark.parametrize("expr, message", [
+    ("k'(2)", "Can't differentiate floor"), ("r(2)", "can't call itself"), ("q", "is a function"),
+])
+def test_function_errors(expr, message):
+    c = Calculator()
+    c.evaluate("k(x) = floor(x)")
+    c.evaluate("r(x) = r(x - 1)")
+    c.evaluate("q(x) = x")
+    with pytest.raises(CalcError, match=message):
+        c.compute(expr)
+
+
+def test_definitions_replace_variables_and_back():
+    c = Calculator()
+    c.evaluate("f = 2")
+    c.evaluate("f(x) = x + 1")
+    assert "f" not in c.variables and c.compute("f(1)") == 2
+    c.evaluate("f = 3")
+    assert "f" not in c.functions and c.compute("f") == 3
+    with pytest.raises(CalcError):
+        c.evaluate("sin(x) = x")
+    with pytest.raises(CalcError):
+        c.evaluate("f(pi) = 1")
+
+
+def test_integrals_sums_and_products():
+    c = Calculator()
+    assert c.compute("integral(x^2, x, 0, 1)") == Fraction(1, 3)  # a polynomial: exact
+    assert math.isclose(c.compute("integral(sin(x), x, 0, pi)"), 2)
+    assert math.isclose(c.compute("integral(exp(-x^2), x, -inf, inf)"), math.sqrt(math.pi))
+    assert math.isclose(c.compute("integral(1/x^2, x, 1, inf)"), 1)
+    with pytest.raises(CalcError, match="settle"):
+        c.compute("integral(1/x, x, 1, inf)")
+    assert c.compute("sum(n^2, n, 1, 10)") == 385 and c.compute("prod(n, n, 1, 6)") == 720
+    assert c.compute("sum(1/2^n, n, 1, 3)") == Fraction(7, 8)
+    assert math.isclose(c.compute("sum(1/n^2, n, 1, 5000)"), math.pi**2 / 6, rel_tol=1e-3)
+    c.evaluate("f(x) = 3*x^2")
+    assert c.compute("integral(f(x), x, 0, 2)") == 8 and c.compute("integral(f'(t), t, 0, 1)") == 3
+
+
+def test_solve():
+    c = Calculator()
+    roots = c.compute("solve(x^2 = 2, x)", rich=True)
+    assert isinstance(roots, Roots) and [round(r, 12) for r in roots.values] == [round(-2**0.5, 12), round(2**0.5, 12)]
+    assert c.compute("solve(2*x + 1 = 0, x)") == Fraction(-1, 2)  # exact when it is a simple fraction
+    assert math.isclose(c.compute("solve(x^2 = 2, x, 1)"), 2**0.5)
+    assert math.isclose(c.compute("solve(cos(x) = x, x)"), 0.7390851332151607)
+    assert c.compute("solve((x-3)^2, x)") == 3  # touches zero without crossing
+    assert [r for r in c.compute("solve(sin(x), x, 1, 7)", rich=True).values] == pytest.approx([math.pi, 2 * math.pi])
+    with pytest.raises(CalcError, match="No solution"):
+        c.compute("solve(1/x, x)")  # a pole is not a root
+    with pytest.raises(CalcError, match="several"):
+        c.compute("solve(x^2 = 2, x) + 1", rich=True)
+    c.evaluate("f(x) = x^3 - x")
+    assert len(c.compute("solve(f(x) = 0, x)", rich=True).values) == 3
+
+
+@pytest.mark.parametrize("latex, expr", [
+    (r"f(x)=x^3+2x", "f(x)=x^(3)+2*x"),
+    (r"f\left(x\right)=x^2", "f(x)=x^(2)"),
+    (r"g(x,y)=x^2y", "g(x,y)=x^(2)*y"),
+    (r"f^{\prime}(2)", "f'(2)"),
+    (r"f^{\prime}^{\prime}\left(x\right)", "f''(x)"),
+    (r"f^{\prime\prime}(x)", "f''(x)"),
+    (r"af(3)", "a*f(3)"),
+    (r"\frac{d}{dx}\left(x^2\sin x\right)", "diff(x^(2)*sin(x), x)"),
+    (r"\frac{d}{dx}x^2\sin x+1", "diff(x^(2)*sin(x), x)+1"),
+    (r"\frac{d^2}{dx^2}\left(x^3\right)", "diff(x^(3), x, x)"),
+    (r"\frac{df}{dx}(2)", "diff(f, x)(2)"),
+    (r"\frac{\partial^2g}{\partial x\partial y}\left(1,2\right)", "diff(g, x, y)(1,2)"),
+    (r"\int_0^1x^2dx", "integral(x^(2), x, 0, 1)"),
+    (r"\int_{0}^{\pi}\sin\left(x\right)\,\mathrm{d}x+1", "integral(sin(x), x, 0, pi)+1"),
+    (r"\sum_{n=1}^{10}\frac{1}{n}+1", "sum((1)/(n), n, 1, 10)+1"),
+    (r"\prod\limits_{k=1}^{5}k", "prod(k, k, 1, 5)"),
+    (r"\operatorname{solve}\left(x^2=2,x\right)", "solve(x^(2)=2,x)"),
+])
+def test_calculus_latex(latex, expr):
+    assert latex_to_expr(latex, {"f", "g"}) == expr
+
+
+def test_quiz_answers_read_latex_as_before():
+    """Without the calculator's functions, LaTeX reads as the phone's port reads it."""
+    assert latex_to_expr(r"f(x)") == "f*(x)"
+    with pytest.raises(LatexError, match="doesn't know"):
+        latex_to_expr(r"\int_0^1 x dx")
+
+
+def test_formulas_read_back_into_the_math_field():
+    c = Calculator()
+    for expr in ["diff(x^2*sin(x)*cos(x), x)", "diff(tan(x)/x, x)", "diff(asinh(x) + abs(x) + ln(x), x)"]:
+        formula = c.compute(expr, rich=True)
+        again = Calculator()
+        again.variables["x"] = Fraction(7, 10)
+        expected = Calculator()
+        expected.variables["x"] = Fraction(7, 10)
+        assert math.isclose(again.compute(latex_to_expr(formula.latex, set())), expected.compute(expr))
+
+
+def test_panel_keeps_functions_and_plots_them(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from study_reader.calculator import CalculatorPanel
+
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "t.db")
+    book = db.upsert_book("h", "/a.pdf", "A", 1)["id"]
+    panel = CalculatorPanel(db)
+    panel.set_book(book)
+    assert panel.submit(r"f(x)=x^3+2x") and panel.submit(r"f^{\prime}(2)") and panel.submit(r"f^{\prime}(t)")
+    assert panel.submit(r"\operatorname{solve}\left(x^2=4,x\right)")
+    page = [panel._page_entry(e) for e in panel.entries]
+    assert [p["kind"] for p in page] == ["function", "number", "formula", "roots"]
+    assert page[0]["derivative"] == r"f^{\prime}\left(x\right)=3 x^{2} + 2" and page[0]["plot"]
+    assert page[2]["result"] == "3 t^{2} + 2" and page[3]["roots"] == ["-2", "2"] and page[3]["exact"]
+    assert panel.calc.ans == 14  # formulas and lists of solutions leave ans alone
+
+    sent = []
+    monkeypatch.setattr(panel, "_js", lambda *a: sent.append(a))
+    panel.plot(panel.entries[0]["key"], -1.0, 1.0, 5)
+    name, key, data = sent[-1]
+    assert name == "setPlot" and data["f"] == [-3.0, -1.125, 0.0, 1.125, 3.0] and data["df"] == [5.0, 2.75, 2.0, 2.75, 5.0]
+
+    panel.preview(r"g(x)=x^2")
+    assert panel.preview_text == r"g^{\prime}\left(x\right)=2 x"
+    assert "g" not in panel.calc.functions  # only a preview
+
+    again = CalculatorPanel(db)
+    again.set_book(book)
+    assert again.calc.compute("f(3)") == 33 and again.calc.ans == 14
+    again._delete(again.entries[0])  # the definition goes, and f with it
+    assert "f" not in again.calc.functions
+
+
+def test_panel_imports_math_keeping_the_draft(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from study_reader.calculator import CalculatorPanel
+
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "t.db")
+    panel = CalculatorPanel(db, shared=True)
+    panel.preview("1+")
+    inputs = []
+    monkeypatch.setattr(panel, "_set_input", lambda latex, focus=False: inputs.append(latex))
+    assert panel.import_math(r"P(t)=200e^{0.03t}") and panel.import_math(r"v_{0}=12")
+    assert inputs[-1] == "1+" and panel.calc.variables["v_0"] == 12
+    assert math.isclose(panel.calc.compute("P(10)"), 200 * math.exp(0.3))
+    assert not panel.import_math(r"y=\frac{1}{\placeholder{}}") and panel.preview_error and inputs[-1] == r"y=\frac{1}{\placeholder{}}"

@@ -52,12 +52,26 @@
   #preview:empty { display:none; }
   #preview.error { color:var(--error); white-space:normal; font-size:0.95em; }
   #preview .alt { color:var(--faint); margin-left:10px; }
+  .deriv { color:var(--muted); font-size:0.95em; overflow-x:auto; overflow-y:hidden; white-space:nowrap; text-align:right; }
+  .roots { display:flex; flex-wrap:wrap; justify-content:flex-end; align-items:center; gap:4px 6px; font-size:1.15em; }
+  .root { border:1px solid var(--border); border-radius:6px; padding:0 6px; background:var(--raised); }
+  .root:hover { border-color:var(--faint); }
+  .more { color:var(--muted); font-size:0.8em; }
+  .plot { position:relative; margin-top:4px; height:150px; border:1px solid var(--border); border-radius:6px;
+          background:var(--raised); cursor:grab; overflow:hidden; }
+  .plot.dragging { cursor:grabbing; }
+  .plot canvas { display:block; width:100%; height:100%; }
+  .plot .readout { position:absolute; right:6px; top:4px; font-size:11px; color:var(--muted); pointer-events:none;
+                   background:var(--raised); padding:0 3px; border-radius:3px; }
+  .plot .readout:empty { display:none; }
 </style>
 </head>
 <body class="empty">
 <div id="history"></div>
 <div id="empty"><div>Type an expression below, e.g.<br><span class="math" data-latex="\frac{\sqrt{2}}{3}\sin\left(\frac{\pi}{4}\right)+3^2"></span><br>
-  Type <b>/</b> for a fraction, <b>^</b> for a power, <b>sqrt</b> for a root;<br>→ steps out of them.</div></div>
+  Type <b>/</b> for a fraction, <b>^</b> for a power, <b>sqrt</b> for a root;<br>→ steps out of them.<br>
+  Define functions: <span class="math" data-latex="f(x)=x^3+2x"></span>,<br>then <span class="math" data-latex="f^{\prime}(2)"></span>,
+  <b>ddx</b> for <span class="math" data-latex="\frac{d}{dx}"></span>, <b>int</b> for <span class="math" data-latex="\int"></span>.</div></div>
 <div id="composer">
   <div id="field"><math-field id="mf" math-virtual-keyboard-policy="manual"></math-field><div id="placeholder">Calculate…</div></div>
   <div id="preview"></div>
@@ -67,6 +81,10 @@ const mf = document.getElementById("mf");
 const historyEl = document.getElementById("history");
 const preview = document.getElementById("preview");
 configureMathField(mf);
+mf.inlineShortcuts = {
+  ...MATH_SHORTCUTS, int: "\\int_{#?}^{#?}", sum: "\\sum_{#?}^{#?}", prod: "\\prod_{#?}^{#?}",
+  ddx: "\\frac{d}{dx}", ddy: "\\frac{d}{dy}", ddt: "\\frac{d}{dt}", partial: "\\partial", solve: "\\operatorname{solve}",
+};
 
 let bridge = null;
 new QWebChannel(qt.webChannelTransport, channel => { bridge = channel.objects.calc; });
@@ -83,6 +101,19 @@ function markup(latex) {
 }
 
 function rowHtml(e) {
+  if (e.kind === "function") {
+    const deriv = e.derivative ? `<div class="deriv">${markup(e.derivative)}</div>` : "";
+    const plot = e.plot ? `<div class="plot" title="Drag to pan · Ctrl+scroll to zoom · double-click to reset">`
+      + `<canvas></canvas><div class="readout"></div></div>` : "";
+    return `<div class="expr">${markup(e.latex)}</div>${deriv}${plot}`;
+  }
+  if (e.kind === "formula")
+    return `<div class="expr">${markup(e.latex)}</div><div class="result"><span class="value">${markup("=" + e.result)}</span></div>`;
+  if (e.kind === "roots") {
+    const chips = e.roots.map((r, i) => `<span class="root" data-i="${i}" title="Insert this solution">${markup(r)}</span>`).join("");
+    return `<div class="expr">${markup(e.latex)}</div><div class="roots">${markup(e.var + (e.exact ? "=" : "\\approx"))}${chips}`
+      + `${e.more ? `<span class="more" title="There are more: give limits, as in solve(…, x, 0, 10)">and more</span>` : ""}</div>`;
+  }
   const frac = showFraction.has(e.key);
   const value = "=" + (frac ? e.fraction : e.result);
   const toggle = e.fraction
@@ -96,6 +127,7 @@ function rowEl(e) {
   row.className = "row";
   row.dataset.key = e.key;
   row.innerHTML = rowHtml(e);
+  if (e.plot) setupPlot(row.querySelector(".plot"), e);
   return row;
 }
 
@@ -109,6 +141,7 @@ function syncEmpty() {
 }
 
 function setEntries(list) {
+  plots.clear();
   entries = list;
   showFraction.clear();
   historyEl.replaceChildren(...entries.map(rowEl));
@@ -126,6 +159,7 @@ function addEntry(e) {
 }
 
 function removeEntry(key) {
+  plots.delete(key);
   entries = entries.filter(e => e.key !== key);
   historyEl.querySelector(`.row[data-key="${key}"]`)?.remove();
   recall = entries.length;
@@ -141,13 +175,19 @@ historyEl.addEventListener("click", ev => {
   const e = entryOf(ev.target);
   if (!e) return;
   if (ev.target.closest(".toggle")) { toggleFraction(e); return; }
-  if (ev.detail > 1) return;  // part of a double-click
+  if (ev.target.closest(".plot") || ev.detail > 1) return;  // part of a double-click
   mf.focus();
-  mf.insert(showFraction.has(e.key) ? e.fraction : e.result, { insertionMode: "replaceSelection", selectionMode: "after" });
+  const insert = (latex, selectionMode = "after") => mf.insert(latex, { insertionMode: "replaceSelection", selectionMode });
+  if (e.kind === "function") {
+    if (e.signature) insert(e.signature.replace(/\\left\((.*)\\right\)$/, () => `\\left(${Array(e.args).fill("#?").join(",")}\\right)`), "placeholder");
+  } else if (e.kind === "roots") {
+    const chip = ev.target.closest(".root");
+    insert(e.roots[chip ? +chip.dataset.i : 0]);
+  } else insert(e.kind === "formula" ? e.result : showFraction.has(e.key) ? e.fraction : e.result);
 });
 historyEl.addEventListener("dblclick", ev => {
   const e = entryOf(ev.target);
-  if (e && !ev.target.closest(".toggle")) setInput(e.latex);
+  if (e && !ev.target.closest(".toggle") && !ev.target.closest(".plot")) setInput(e.latex);
 });
 historyEl.addEventListener("contextmenu", ev => {
   const e = entryOf(ev.target);
@@ -183,7 +223,168 @@ function setPreview(p) {
   preview.className = p.error ? "error" : "";
   if (p.error) preview.textContent = p.error;
   else if (!p.result) preview.textContent = "";
-  else preview.innerHTML = markup("=" + p.result) + (p.fraction ? `<span class="alt">${markup("=" + p.fraction)}</span>` : "");
+  else preview.innerHTML = markup((p.plain ? "" : "=") + p.result) + (p.fraction ? `<span class="alt">${markup("=" + p.fraction)}</span>` : "");
+}
+
+// -- plots of defined functions ---------------------------------------------------------------
+// Python sends samples (setPlot) for the range asked for (bridge.plot); y is fitted to them.
+const plots = new Map();  // key -> {el, canvas, xmin, xmax, data, names}
+const HOME = [-10, 10];
+
+function setupPlot(el, e) {
+  const p = { el, canvas: el.querySelector("canvas"), readout: el.querySelector(".readout"), xmin: HOME[0], xmax: HOME[1],
+              data: null, names: e.names, key: e.key, hover: null };
+  plots.set(e.key, p);
+  let drag = null;
+  el.addEventListener("pointerdown", ev => {
+    if (ev.button !== 0) return;
+    drag = { x: ev.clientX, xmin: p.xmin, xmax: p.xmax };
+    el.setPointerCapture(ev.pointerId);
+    el.classList.add("dragging");
+  });
+  el.addEventListener("pointermove", ev => {
+    const rect = el.getBoundingClientRect();
+    if (drag) {
+      const dx = (ev.clientX - drag.x) / rect.width * (drag.xmax - drag.xmin);
+      p.xmin = drag.xmin - dx; p.xmax = drag.xmax - dx;
+      draw(p); request(p);
+    }
+    p.hover = (ev.clientX - rect.left) / rect.width;
+    draw(p);
+  });
+  const end = () => { drag = null; el.classList.remove("dragging"); };
+  el.addEventListener("pointerup", end);
+  el.addEventListener("pointercancel", end);
+  el.addEventListener("pointerleave", () => { p.hover = null; draw(p); });
+  el.addEventListener("wheel", ev => {
+    if (!ev.ctrlKey) return;  // plain scrolling scrolls the history
+    ev.preventDefault();
+    const rect = el.getBoundingClientRect();
+    const at = p.xmin + (ev.clientX - rect.left) / rect.width * (p.xmax - p.xmin);
+    const k = Math.exp(Math.sign(ev.deltaY) * 0.15);
+    p.xmin = at - (at - p.xmin) * k; p.xmax = at + (p.xmax - at) * k;
+    request(p);
+  }, { passive: false });
+  el.addEventListener("dblclick", () => { p.xmin = HOME[0]; p.xmax = HOME[1]; request(p); });
+  new ResizeObserver(() => request(p)).observe(el);
+}
+
+function request(p) {
+  if (p.pending) { p.again = true; return; }
+  const width = Math.max(50, Math.round(p.el.clientWidth));
+  if (!p.el.isConnected || !width) return;
+  p.pending = true;
+  call("plot", p.key, p.xmin, p.xmax, Math.min(800, Math.round(width * 1.5)));
+}
+
+function refreshPlots() {
+  for (const p of plots.values()) request(p);
+}
+
+function setPlot(key, data) {
+  const p = plots.get(key);
+  if (!p) return;
+  p.pending = false;
+  p.data = data;
+  draw(p);
+  if (p.again) { p.again = false; request(p); }
+}
+
+function niceStep(span, count) {
+  const raw = span / count, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const n = raw / mag;
+  return (n < 1.5 ? 1 : n < 3.5 ? 2 : n < 7.5 ? 5 : 10) * mag;
+}
+
+function label(v, step) {
+  const digits = Math.max(0, -Math.floor(Math.log10(step) + 1e-9));
+  const text = Math.abs(v) < step / 2 ? "0" : Math.abs(v) >= 1e5 || (Math.abs(v) < 1e-4) ? v.toExponential(1) : v.toFixed(digits);
+  return text.replace("-", "−");
+}
+
+function yRange(values) {
+  const finite = values.filter(v => v !== null).sort((a, b) => a - b);
+  if (!finite.length) return [-1, 1];
+  const q = f => finite[Math.min(finite.length - 1, Math.max(0, Math.round(f * (finite.length - 1))))];
+  let lo = q(0.02), hi = q(0.98);
+  if (finite.length < 20) { lo = finite[0]; hi = finite[finite.length - 1]; }
+  if (hi - lo < 1e-12 * Math.max(1, Math.abs(hi))) { lo -= 1; hi += 1; }
+  const pad = (hi - lo) * 0.1;
+  return [lo - pad, hi + pad];
+}
+
+function draw(p) {
+  const { canvas } = p, css = getComputedStyle(document.documentElement);
+  const color = name => css.getPropertyValue("--" + name).trim();
+  const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+  if (!w || !h) return;
+  canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const d = p.data;
+  if (!d) return;
+  // Samples are for d.xmin…d.xmax; while dragging the view may have moved since.
+  const [ylo, yhi] = yRange(d.f);  // the derivative may run off the top or bottom
+  const X = x => (x - p.xmin) / (p.xmax - p.xmin) * w, Y = y => h - (y - ylo) / (yhi - ylo) * h;
+  ctx.font = "10px system-ui, sans-serif";
+  ctx.lineWidth = 1;
+  const xs = niceStep(p.xmax - p.xmin, Math.max(2, w / 70)), ys = niceStep(yhi - ylo, Math.max(2, h / 40));
+  ctx.strokeStyle = color("hover"); ctx.fillStyle = color("faint");
+  for (let x = Math.ceil(p.xmin / xs) * xs; x <= p.xmax; x += xs) {
+    ctx.beginPath(); ctx.moveTo(X(x) + 0.5, 0); ctx.lineTo(X(x) + 0.5, h); ctx.stroke();
+  }
+  for (let y = Math.ceil(ylo / ys) * ys; y <= yhi; y += ys) {
+    ctx.beginPath(); ctx.moveTo(0, Y(y) + 0.5); ctx.lineTo(w, Y(y) + 0.5); ctx.stroke();
+  }
+  ctx.strokeStyle = color("faint");
+  const ax = Math.min(Math.max(X(0), 0), w - 1), ay = Math.min(Math.max(Y(0), 0), h - 1);
+  ctx.beginPath(); ctx.moveTo(0, ay + 0.5); ctx.lineTo(w, ay + 0.5); ctx.moveTo(ax + 0.5, 0); ctx.lineTo(ax + 0.5, h); ctx.stroke();
+  const curve = (values, stroke, dash) => {
+    if (!values) return;
+    ctx.strokeStyle = stroke; ctx.lineWidth = 2; ctx.setLineDash(dash);
+    ctx.beginPath();
+    let pen = false, last = null;
+    const n = values.length, span = yhi - ylo;
+    for (let i = 0; i < n; i++) {
+      const v = values[i];
+      if (v === null || (last !== null && Math.abs(v - last) > 3 * span)) { pen = false; last = v; if (v === null) continue; }
+      const px = X(d.xmin + (d.xmax - d.xmin) * i / (n - 1)), py = Math.max(-1e4, Math.min(1e4, Y(v)));
+      pen ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+      pen = true; last = v;
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+  };
+  curve(d.df, color("muted"), [4, 3]);
+  curve(d.f, color("accent"), []);
+  // Tick labels over the curves, each on a halo of the background so a curve never hides a minus sign.
+  ctx.lineWidth = 3; ctx.strokeStyle = color("raised"); ctx.fillStyle = color("faint"); ctx.lineJoin = "round";
+  const text = (t, x, y) => { ctx.strokeText(t, x, y); ctx.fillText(t, x, y); };
+  ctx.textBaseline = "top";
+  for (let x = Math.ceil(p.xmin / xs) * xs; x <= p.xmax; x += xs) {
+    if (Math.abs(x) < xs / 2) continue;
+    text(label(x, xs), X(x) + 2, Math.min(ay + 2, h - 12));
+  }
+  ctx.textBaseline = "middle";
+  for (let y = Math.ceil(ylo / ys) * ys; y <= yhi; y += ys) {
+    if (Math.abs(y) < ys / 2) continue;
+    text(label(y, ys), Math.min(ax + 3, w - 30), Math.min(Math.max(Y(y), 7), h - 7));
+  }
+  let readout = "";
+  if (p.hover !== null) {
+    const x = p.xmin + p.hover * (p.xmax - p.xmin), n = d.f.length;
+    const i = Math.round((x - d.xmin) / (d.xmax - d.xmin) * (n - 1));
+    if (i >= 0 && i < n) {
+      const at = d.xmin + (d.xmax - d.xmin) * i / (n - 1), fmt = v => v === null ? "—" : (+v.toPrecision(5)).toString().replace("-", "−");
+      ctx.strokeStyle = color("faint"); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(X(at) + 0.5, 0); ctx.lineTo(X(at) + 0.5, h); ctx.stroke();
+      if (d.f[i] !== null) { ctx.fillStyle = color("accent"); ctx.beginPath(); ctx.arc(X(at), Y(d.f[i]), 3, 0, 7); ctx.fill(); }
+      readout = `x = ${fmt(at)} · ${p.names[0].replace(/_\{(.*?)\}/, "$1")} = ${fmt(d.f[i])}`
+        + (d.df ? ` · ${p.names[0].replace(/_\{(.*?)\}/, "$1")}′ = ${fmt(d.df[i])}` : "");
+    }
+  }
+  p.readout.textContent = readout;
 }
 
 mf.addEventListener("input", () => { syncPlaceholder(); call("changed", mf.value); });

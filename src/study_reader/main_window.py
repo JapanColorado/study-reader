@@ -157,6 +157,7 @@ class MainWindow(QMainWindow):
         self.practice_calc_action.toggled.connect(self.practice.set_calculator)
         self.practice_chat_action.toggled.connect(self.practice.set_chat_panel)
         self.practice.calculatorRequested.connect(self.practice_calc_action.trigger)
+        self.practice.calculationRequested.connect(self._calculate_in_practice)
         self.practice.chatPanelRequested.connect(self.practice_chat_action.trigger)
         self._sync_practice_right()
         self.nav = NavRail(self._build_settings_menu())
@@ -504,6 +505,12 @@ class MainWindow(QMainWindow):
             self.practice_calc.focus_input()
         else:
             self.practice_chat.input.setFocus()
+
+    def _calculate_in_practice(self, latex: str) -> None:
+        """A question's f(x) = … or v = 12, defined in the Practice page's calculator (opened for it)."""
+        if not self.practice_calc_action.isChecked():
+            self.practice_calc_action.trigger()
+        self.practice_calc.import_math(latex)
 
     def _sync_practice_right(self) -> None:
         chat, calc = self.practice_chat_action.isChecked(), self.practice_calc_action.isChecked()

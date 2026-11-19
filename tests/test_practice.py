@@ -669,7 +669,45 @@ def test_calculator_beside_practice(pdf_path, tmp_path, monkeypatch):
     assert shown[-1][1][0]["calc"] is True
     bridge.open("calc")
     assert not win.practice_calc.isVisible() and win.practice.calculator is False
+
+    # A question's definition, one click away: the calculator opens with it defined.
+    bridge.calculate(r"f(x)=3x^2-2x")
+    assert win.practice_calc.isVisible() and win.practice_calc.calc.compute("f'(1)") == 4
+    bridge.calculate(r"v_{0}=12")
+    assert win.practice_calc.calc.variables["v_0"] == 12
     win.close()
+
+
+def test_practice_questions_offer_their_definitions_to_the_calculator(tmp_path, monkeypatch):
+    """Beside a formula like f(x) = … or a given like k = 4.5 N/m, the desktop draws a button that sends
+    it to the calculator; the phone (no calc in the payload) draws none."""
+    import time
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from study_reader.practice_view import PracticePanel
+
+    app = QApplication.instance() or QApplication([])
+    db = Database(tmp_path / "t.db")
+    text = r"For $f(x) = 3x^2 - 2x$ and $k = 4.5\,\text{N/m}$, find $f'(k)$ if $y = mx$."
+    db.add_question_group("self_check", {"front": text, "back": "Done"}, db.ensure_deck("Calc"))
+    panel = PracticePanel(db)
+    wait_ready(panel, panel.view.page())
+    panel.choose_deck(None)
+    panel.start()
+    wait_ready(panel, panel.view.page(), "!!document.querySelector('.q-text')")
+    assert run_js(panel.view.page(), "document.querySelectorAll('.calc-import').length") == 0  # no calculator
+    panel.set_calculator(False)
+    panel.refresh()
+    wait_ready(panel, panel.view.page(), "document.querySelectorAll('.calc-import').length > 0")
+    tex = run_js(panel.view.page(), "JSON.stringify([...document.querySelectorAll('.calc-import')].map(b => b.dataset.tex))")
+    assert json.loads(tex) == ["f(x) = 3x^2 - 2x", "k=4.5"]
+    asked = []
+    panel.calculationRequested.connect(asked.append)
+    run_js(panel.view.page(), "document.querySelector('.calc-import').click(), true")
+    end = time.monotonic() + 5
+    while not asked and time.monotonic() < end:
+        app.processEvents()
+    assert asked == ["f(x) = 3x^2 - 2x"]
 
 
 # -- Claude's tags and revisions -----------------------------------------------------------

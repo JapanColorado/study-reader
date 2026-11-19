@@ -18,6 +18,8 @@ FUNCTION_NAMES = {
     "factorial", "gcd", "lcm", "comb", "perm", "hypot", "min", "max", "sinh", "cosh", "tanh",
     "asinh", "acosh", "atanh", "deg", "rad", "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
 }
+# The calculator's own, beyond what a quiz answer is read with (the phone's port reads those alike).
+CALCULUS_NAMES = {"sign", "diff", "integral", "sum", "prod", "solve"}
 COMMAND_FUNCTIONS = {
     "sin": "sin", "cos": "cos", "tan": "tan", "sinh": "sinh", "cosh": "cosh", "tanh": "tanh",
     "arcsin": "asin", "arccos": "acos", "arctan": "atan", "arsinh": "asinh", "arcosh": "acosh",
@@ -28,6 +30,7 @@ INVERSES = {"sin": "asin", "cos": "acos", "tan": "atan", "sinh": "asinh", "cosh"
 CONSTANT_COMMANDS = {"pi": "pi", "tau": "tau", "infty": "inf", "exponentialE": "e"}
 OPERATOR_COMMANDS = {"cdot": "*", "times": "*", "ast": "*", "div": "/", "%": "%", "bmod": "%", "mod": "%"}
 NAME_COMMANDS = {"operatorname", "mathrm", "mathit", "mathbf", "text", "textrm", "mathnormal"}
+NAME_COMMANDS_TOKENS = {"\\" + c for c in NAME_COMMANDS}
 IGNORED = {",", ":", ";", "!", " ", "quad", "qquad", "displaystyle", "textstyle", "limits", "nolimits"}
 # Openers of bracketed groups, as {token: (function or "", closing token)}.
 DELIMITERS = {
@@ -36,6 +39,9 @@ DELIMITERS = {
 }
 # Where a function written without brackets (`\sin 2x`) stops taking its argument.
 BARE_STOP = {"+", "-", "=", ",", ")", "]", "}", "|", "*", "/", "\\right", "\\cdot", "\\times", "\\div", "\\%", "\\bmod"}
+# Where what a sum, a product or d/dx applies to stops (\sum_{n=1}^{5} n/2 is the sum of n/2).
+TERM_STOP = {"+", "-", "=", ",", ")", "]", "}", "|", "\\right"}
+PRIME_TOKENS = {"\\prime": 1, "'": 1, "\\doubleprime": 2, "\\tripleprime": 3}
 
 TOKEN = re.compile(r"\\([A-Za-z]+|.)|(\s+)|(.)", re.DOTALL)
 
@@ -44,9 +50,13 @@ class LatexError(Exception):
     pass
 
 
-def latex_to_expr(latex: str) -> str:
-    """Plain calculator expression for the math field's LaTeX. Raises LatexError."""
-    return _Parser(latex).parse()
+def latex_to_expr(latex: str, functions=None) -> str:
+    """Plain calculator expression for the math field's LaTeX. Raises LatexError.
+
+    `functions` (the calculator's; None for a quiz answer) are the names of the user's own functions,
+    so f(x) is a call rather than f times x, and turns on what only the calculator reads: definitions
+    f(x) = …, f'(x), d/dx and ∂/∂x, integrals, sums and products, sign and solve."""
+    return _Parser(latex, functions).parse()
 
 
 def expr_to_latex(expr: str) -> str:
@@ -56,20 +66,115 @@ def expr_to_latex(expr: str) -> str:
 
 
 class _Parser:
-    def __init__(self, latex: str):
-        self.toks: list[str] = []
-        for m in TOKEN.finditer(latex):
-            if m.group(1) is not None:
-                self.toks.append("\\" + m.group(1))
-            elif m.group(3) is not None:
-                self.toks.append(m.group(3))
+    def __init__(self, latex: str, functions=None, toks: list[str] | None = None):
+        self.calculus = functions is not None
+        self.functions = set(functions or ())
+        self.names = FUNCTION_NAMES | CALCULUS_NAMES if self.calculus else FUNCTION_NAMES
+        self.toks: list[str] = [] if toks is None else toks
+        if toks is None:
+            for m in TOKEN.finditer(latex):
+                if m.group(1) is not None:
+                    self.toks.append("\\" + m.group(1))
+                elif m.group(3) is not None:
+                    self.toks.append(m.group(3))
         self.i = 0
 
+    def sub(self, toks: list[str]) -> str:
+        """An expression made of some of the tokens (an integral's body)."""
+        parser = _Parser("", self.functions, toks)
+        return parser.parse()
+
     def parse(self) -> str:
+        head = self.definition_head() if self.calculus else ""
         out = self.seq(set())
         if self.i < len(self.toks):
             raise LatexError(f"Unexpected {self.toks[self.i]}")
-        return _join(out)
+        return head + _join(out)
+
+    def definition_head(self) -> str:
+        """`f(x, y) =` at the start, as `f(x,y)=`, with f taken as a function from then on."""
+        toks, j = self.toks, 0
+        name = ""
+        while j < len(toks) and len(toks[j]) == 1 and toks[j].isalpha() and toks[j].isascii():
+            name += toks[j]
+            j += 1
+        if not name:
+            return ""
+        if j + 1 < len(toks) and toks[j] == "_":
+            sub, j2 = self.raw(j + 1)
+            if not sub or not all(re.fullmatch(r"\w", t) for t in sub):
+                return ""
+            name += "_" + "".join(sub)
+            j = j2
+        if j < len(toks) and toks[j] == "\\left":
+            j += 1
+        if j >= len(toks) or toks[j] != "(":
+            return ""
+        j += 1
+        params, current = [], ""
+        while j < len(toks) and toks[j] not in (")", "\\right"):
+            t = toks[j]
+            if len(t) == 1 and t.isalpha() and t.isascii():
+                current += t
+            elif t == "," and current:
+                params.append(current)
+                current = ""
+            elif t == "_" and current:
+                sub, j = self.raw(j + 1)
+                if not sub or not all(re.fullmatch(r"\w", s) for s in sub):
+                    return ""
+                current += "_" + "".join(sub)
+                continue
+            else:
+                return ""
+            j += 1
+        if not current or j >= len(toks):
+            return ""
+        params.append(current)
+        j += 2 if toks[j] == "\\right" else 1
+        if j >= len(toks) or toks[j] != "=" or name in self.names:
+            return ""
+        self.i = j + 1
+        self.functions.add(name)  # it may use itself (which the calculator refuses, by name)
+        return f"{name}({','.join(params)})="
+
+    def raw(self, j: int) -> tuple[list[str], int]:
+        """The tokens of the TeX argument at j, without its braces, and the index after it."""
+        toks = self.toks
+        if j >= len(toks):
+            return [], j
+        if toks[j] != "{":
+            return [toks[j]], j + 1
+        depth, k = 0, j
+        while k < len(toks):
+            depth += {"{": 1, "}": -1}.get(toks[k], 0)
+            if depth == 0:
+                return toks[j + 1:k], k + 1
+            k += 1
+        return toks[j + 1:], len(toks)
+
+    def term(self) -> str:
+        """What a sum, product or d/dx applies to: brackets, or everything up to the next + or −."""
+        parts: list[str] = []
+        if self.peek() in ("+", "-"):
+            parts.append(self.take())
+        while (tok := self.peek()) is not None and tok not in TERM_STOP:
+            self.item(parts)
+        if not parts or parts == ["-"] or parts == ["+"]:
+            raise LatexError("Something is missing after it")
+        return _join(parts)
+
+    def call_args(self) -> str | None:
+        """`(…)` or `\\left(…\\right)` right here, as its inside; None if there is none."""
+        if self.peek() == "(":
+            self.i += 1
+            return self.group(")")
+        if self.peek() == "\\left" and self.peek(1) == "(":
+            self.i += 1
+            parts: list[str] = []
+            self.command(parts, "left")
+            return parts[0][1:-1]
+        return None
 
     # -- helpers -------------------------------------------------------------------------
     def peek(self, offset: int = 0) -> str | None:
@@ -178,26 +283,62 @@ class _Parser:
         digits = ""
         while (tok := self.peek(len(digits))) is not None and tok.isdigit():
             digits += tok
-        if digits and name + digits in FUNCTION_NAMES:  # log10, log2, atan2
+        if digits and name + digits in self.names:  # log10, log2, atan2
             self.i += len(digits)
             name += digits
-        if self.peek() == "_" and name not in FUNCTION_NAMES:
+        if self.peek() == "_" and name not in self.names:
             self.i += 1
             sub = self.arg()
             if not re.fullmatch(r"\w+", sub):
                 raise LatexError("A subscript can only hold letters and digits")
             name += "_" + sub
-        if name in FUNCTION_NAMES:
+        primes = self.primes() if self.calculus else 0
+        if name in self.names and not primes:
             self.function(out, name)
-        else:
-            out.append(name)
+            return
+        called = self.peek() == "(" or self.peek() == "\\left" and self.peek(1) == "("
+        if called and self.functions:
+            # af(x) is a times f(x): the longest name the user defined that ends it
+            own = next((name[k:] for k in range(len(name)) if name[k:] in self.functions), None)
+            if own:
+                if own != name:
+                    out.append(name[:-len(own)])
+                out.append(f"{own}{chr(39) * primes}({self.call_args()})")
+                return
+        out.append(name + "'" * primes)
+
+    def primes(self) -> int:
+        """f', f^{\\prime}, f^{\\prime\\prime}, f^{\\prime}^{\\prime}: how many primes follow."""
+        count = 0
+        while (tok := self.peek()) is not None:
+            if tok == "'":
+                count += 1
+                self.i += 1
+            elif tok == "^":
+                arg, j = self.raw(self.i + 1)
+                if not arg or not all(t in PRIME_TOKENS for t in arg):
+                    break
+                count += sum(PRIME_TOKENS[t] for t in arg)
+                self.i = j
+            elif tok in PRIME_TOKENS and tok != "'":
+                count += PRIME_TOKENS[tok]
+                self.i += 1
+            else:
+                break
+        return count
 
     def command(self, out: list[str], cmd: str) -> None:
         if cmd in IGNORED:
             return
         if cmd in ("frac", "dfrac", "tfrac", "cfrac"):
+            if self.calculus and self.leibniz(out):
+                return
             num = self.arg()
             out.append(f"({num})/({self.arg()})")
+        elif cmd in ("int", "intop", "intlimits") and self.calculus:
+            self.integral(out)
+        elif cmd in ("sum", "prod") and self.calculus:
+            self.series(out, cmd)
         elif cmd == "sqrt":
             index = None
             if self.peek() == "[":
@@ -238,7 +379,7 @@ class _Parser:
             text = self.raw_arg()
             if not re.fullmatch(r"[A-Za-z_]\w*", text):
                 raise LatexError(f"Unknown name {text!r}")
-            if text in FUNCTION_NAMES:
+            if text in self.names:
                 self.function(out, text)
             else:
                 out.append(text)
@@ -246,6 +387,132 @@ class _Parser:
             raise LatexError("Fill in the empty box first")
         else:
             raise LatexError(f"The calculator doesn't know \\{cmd}")
+
+    # -- calculus ------------------------------------------------------------------------
+    def leibniz(self, out: list[str]) -> bool:
+        r"""\frac{d}{dx}, \frac{d^2}{dx^2}, \frac{df}{dx}, \frac{\partial^2 g}{\partial x\partial y}: the
+        fraction's two arguments read as a derivative, or False (and nothing read) if they aren't one."""
+        num, j = self.raw(self.i)
+        den, k = self.raw(j)
+        num, den = _plain_tokens(num), _plain_tokens(den)
+        if not num or num[0] not in ("d", "\\partial") or not den:
+            return False
+        rest, order = num[1:], None
+        if rest[:1] == ["^"]:
+            digits = "".join(t for t in rest[1:] if t.isdigit())
+            if not digits or rest[1:1 + len(digits)] != list(digits):
+                return False
+            order, rest = int(digits), rest[1 + len(digits):]
+        if not all(len(t) == 1 and t.isalpha() and t.isascii() or t == "_" or t.isdigit() for t in rest):
+            return False
+        target = "".join(rest)
+        variables: list[str] = []
+        d = 0
+        while d < len(den):
+            if den[d] not in ("d", "\\partial"):
+                return False
+            d += 1
+            name = ""
+            while d < len(den) and len(den[d]) == 1 and den[d].isalpha() and den[d].isascii() and den[d] != "d":
+                name += den[d]
+                d += 1
+            if d + 1 < len(den) and den[d] == "_":
+                name += "_" + den[d + 1]
+                d += 2
+            if not name:
+                return False
+            times = 1
+            if d < len(den) and den[d] == "^":
+                digits = ""
+                d += 1
+                while d < len(den) and den[d].isdigit():
+                    digits += den[d]
+                    d += 1
+                if not digits:
+                    return False
+                times = int(digits)
+            variables += [name] * times
+        if not variables or order is not None and order != len(variables) or order is None and len(variables) != 1:
+            return False
+        self.i = k
+        names = ", ".join(variables)
+        if target:  # df/dx: f's derivative, at the values that follow if any
+            args = self.call_args()
+            out.append(f"diff({target}, {names})" + (f"({args})" if args is not None else ""))
+        else:
+            inner = self.call_args()
+            out.append(f"diff({inner if inner is not None else self.term()}, {names})")
+        return True
+
+    def skip_ignored(self) -> None:
+        while (tok := self.peek()) is not None and tok in IGNORED_TOKENS:
+            self.i += 1
+
+    def integral(self, out: list[str]) -> None:
+        lo = hi = None
+        self.skip_ignored()
+        while self.peek() in ("_", "^"):
+            if self.take() == "_":
+                lo = self.arg()
+            else:
+                hi = self.arg()
+        if lo is None or hi is None:
+            raise LatexError("Give the integral its limits, as in ∫₀¹ x² dx")
+        j, depth = self.i, 0
+        while j < len(self.toks):
+            tok = self.toks[j]
+            if depth == 0 and (end := self.differential(j)):
+                body, var = self.toks[self.i:j], end[0]
+                if not body:
+                    raise LatexError("The integral has nothing to integrate")
+                out.append(f"integral({self.sub(body)}, {var}, {lo}, {hi})")
+                self.i = end[1]
+                return
+            depth += {"{": 1, "(": 1, "[": 1, "\\left": 1, "}": -1, ")": -1, "]": -1, "\\right": -1}.get(tok, 0)
+            if depth < 0:
+                break
+            j += 1
+        raise LatexError("End the integral with its variable, as in dx")
+
+    def differential(self, j: int) -> tuple[str, int] | None:
+        """(variable, index after it) if a differential (dx, \\mathrm{d}x, \\differentialD x) starts at j
+        and ends the integral."""
+        toks = self.toks
+        if toks[j] in ("d", "\\differentialD"):
+            k = j + 1
+        elif toks[j] == "\\mathrm" and toks[j + 1:j + 4] == ["{", "d", "}"]:
+            k = j + 4
+        else:
+            return None
+        while k < len(toks) and toks[k] in ("\\,", "\\ ", "\\;", "\\:", "\\!"):
+            k += 1
+        if k >= len(toks) or not (len(toks[k]) == 1 and toks[k].isalpha() and toks[k].isascii()):
+            return None
+        var, k = toks[k], k + 1
+        if k + 1 < len(toks) and toks[k] == "_":
+            sub, k = self.raw(k + 1)
+            var += "_" + "".join(sub)
+        if k < len(toks) and toks[k] not in TERM_STOP and toks[k] not in IGNORED_TOKENS:
+            return None
+        return var, k
+
+    def series(self, out: list[str], cmd: str) -> None:
+        sub = upper = None
+        self.skip_ignored()
+        while self.peek() in ("_", "^"):
+            if self.take() == "_":
+                sub, self.i = self.raw(self.i)
+            else:
+                upper = self.arg()
+        if not sub or "=" not in sub or upper is None:
+            raise LatexError(f"Give the {'sum' if cmd == 'sum' else 'product'} its limits, as in n=1 below and 10 above")
+        eq = sub.index("=")
+        var = "".join(sub[:eq])
+        if not re.fullmatch(r"[A-Za-z]\w*", var):
+            raise LatexError("The variable below the sign must be a name, as in n=1")
+        lower = self.sub(sub[eq + 1:])
+        name = "sum" if cmd == "sum" else "prod"
+        out.append(f"{name}({self.term()}, {var}, {lower}, {upper})")
 
     def function(self, out: list[str], name: str) -> None:
         power = base = None
@@ -275,6 +542,13 @@ class _Parser:
 
 
 OPERATORS = {"+", "-", "*", "/", "^", "%", "=", ",", ")", "]", "|"}
+IGNORED_TOKENS = {"\\" + c for c in IGNORED}
+
+
+def _plain_tokens(toks: list[str]) -> list[str]:
+    """A fraction argument's tokens without braces, spacing and \\mathrm/\\operatorname wrappers."""
+    return [("d" if t == "\\differentialD" else t) for t in toks
+            if t not in ("{", "}") and t not in NAME_COMMANDS_TOKENS and t not in IGNORED_TOKENS]
 
 
 def _join(items: list[str]) -> str:

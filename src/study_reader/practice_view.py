@@ -117,6 +117,11 @@ class _Bridge(QObject):
         self.panel.refresh()
 
     @Slot(str)
+    def calculate(self, latex: str) -> None:
+        """A question's definition, for the calculator beside the panel (desktop only)."""
+        self.panel.calculationRequested.emit(latex)
+
+    @Slot(str)
     def open(self, what: str) -> None:
         if what == "calc":
             self.panel.calculatorRequested.emit()
@@ -136,6 +141,7 @@ class PracticePanel(QWidget):
     countsChanged = Signal()  # a question was attempted, suspended or deleted
     editRequested = Signal(int)  # question id, to open in the browser
     calculatorRequested = Signal()  # the Calculator button: show or hide the calculator beside it
+    calculationRequested = Signal(str)  # LaTeX of a question's f(x) = … or v = 12, to define in the calculator
     chatPanelRequested = Signal()  # the Chat button: show or hide the chat panel beside it
     makeRequested = Signal(int)  # Make a deck with Claude, under the deck picked (0: none, or several)
     questionShown = Signal(object)  # the book id (None if it has none) of the question on display, each time it is drawn
