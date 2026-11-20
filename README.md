@@ -2,6 +2,28 @@
 
 A Linux PDF/EPUB/web-page reader where any selected passage or screenshot region can be sent to a Claude chat. Each passage you ask about gets its own chat, and every chat shares the whole book as context. Quizzes Claude writes become practice questions that come back right before you'd forget them.
 
+## What it does
+
+- **Whole-book context.** The book is loaded once into a base Claude session and every chat forks it, so each question already has the whole book behind it and the prompt cache stays warm (see [How the shared context works](#how-the-shared-context-works)).
+- **Ask about anything on the page.** Select a passage, or drag a rectangle around a figure or equation, and send it to its own chat.
+- **Quizzes that come back.** Questions Claude writes go into a spaced-repetition queue (FSRS), with an Android companion app for practice, synced over Syncthing.
+- **Web pages too.** LessWrong, Alignment Forum and EA Forum posts are fetched through the sites' API.
+- **Also:** read-aloud, a symbolic calculator and an Anki importer.
+
+About 24,900 lines of Python with 8,800 lines of tests, and in daily use.
+
+## Install
+
+Linux only for now. You need [pixi](https://pixi.sh) and the `claude` CLI, logged in.
+
+```sh
+git clone https://github.com/JapanColorado/study-reader.git
+cd study-reader
+pixi run app
+```
+
+The Android companion is a signed APK on the [Releases page](https://github.com/JapanColorado/study-reader/releases).
+
 ## Run
 
 ```sh
@@ -88,3 +110,11 @@ The first message about a book sends its full text to Claude once, in a "base" s
 - Visualizations run in a sandboxed frame with no network access. Bundled d3 v7 and Chart.js v4 (in `assets/viz/`) are inlined when a visualization uses them.
 - The chat view uses software rendering because GPU compositing in QtWebEngine leaves it blank on some Wayland compositors (seen on COSMIC). Set `STUDY_READER_WEB_GPU=1` to re-enable GPU rendering.
 - EPUBs are rendered by MuPDF as fixed pages, with limited CSS support.
+
+## How this was built
+
+Built with [Claude Code](https://claude.com/claude-code), and most commits say so. I decide what to make, write the specification, review the changes and use the result every day.
+
+## License
+
+[MIT](LICENSE)

@@ -3,7 +3,7 @@ phone_sync.export_snapshot, and records what the desktop's practice.py and gamif
 the Kotlin port can be checked against the real thing (QueueTest.kt).
 
 Run with the desktop's Python (from android/):
-    PYTHONPATH=../src /home/russell/Projects/study-reader/.pixi/envs/default/bin/python scripts/queue_fixtures.py [out_dir]
+    PYTHONPATH=../src ../.pixi/envs/default/bin/python scripts/queue_fixtures.py [out_dir]
 Writes core/src/test/resources/queue_snapshot.db and queue_cases.json. Times are local: run the
 tests in the same time zone (TZ is pinned to UTC here and in the Gradle test task).
 """

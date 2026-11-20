@@ -38,4 +38,4 @@ app = "python -m study_reader"
 test = "pytest -q tests"
 # Live check of priming + forking; makes real Claude requests.
 check-claude = "python scripts/check_forking.py"
-install-desktop = "install -Dm644 study-reader.desktop ~/.local/share/applications/study-reader.desktop && install -Dm644 src/study_reader/assets/icon.svg ~/.local/share/icons/hicolor/scalable/apps/study-reader.svg"
+install-desktop = "sed -e \"s|@PIXI@|$PIXI_EXE|\" -e \"s|@REPO@|$PIXI_PROJECT_ROOT|\" study-reader.desktop | install -Dm644 /dev/stdin ~/.local/share/applications/study-reader.desktop && install -Dm644 src/study_reader/assets/icon.svg ~/.local/share/icons/hicolor/scalable/apps/study-reader.svg"

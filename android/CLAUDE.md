@@ -18,7 +18,7 @@ pixi run logs         # logcat for the running app
 
 Android SDK: `~/Android/Sdk`. Parity fixtures are made by the desktop's Python, run directly
 (running pixi in the repo root would build the desktop env):
-`PYTHONPATH=../src /home/russell/Projects/study-reader/.pixi/envs/default/bin/python scripts/<name>.py`
+`PYTHONPATH=../src ../.pixi/envs/default/bin/python scripts/<name>.py`
 (`fsrs_fixtures.py`, `grading_fixtures.py`, `queue_fixtures.py`; each takes an output path, a folder for
 `queue_fixtures.py`). The desktop's `tests/test_android_fixtures.py` makes each again and fails when a
 committed fixture no longer matches the desktop's code: regenerate it, then run `pixi run test` here and port
